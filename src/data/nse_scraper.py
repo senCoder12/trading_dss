@@ -25,6 +25,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from curl_cffi import requests as cffi_requests
 from tenacity import (
     before_sleep_log,
     retry,
@@ -34,6 +35,9 @@ from tenacity import (
 )
 
 from config.constants import IST_TIMEZONE, NSE_BASE_URL, NSE_HEADERS, USER_AGENT_ROTATION
+
+# Browser to impersonate for TLS fingerprinting (curl_cffi)
+_IMPERSONATE: str = "chrome131"
 from config.settings import settings
 from src.data.rate_limiter import RateLimiter, create_nse_limiter
 from src.utils.cache import TTLCache
@@ -110,7 +114,7 @@ class NSEScraper:
         rate_limiter: Optional[RateLimiter] = None,
         cache: Optional[TTLCache] = None,
     ) -> None:
-        self._session = requests.Session()
+        self._session = cffi_requests.Session(impersonate=_IMPERSONATE)
         self._rate_limiter = rate_limiter or create_nse_limiter()
         self._cache: TTLCache = cache or TTLCache(default_ttl=_CACHE_TTL_PRICE)
         self._warmed_up: bool = False
@@ -132,10 +136,26 @@ class NSEScraper:
         age = time.monotonic() - self._session_created_at
         return age < _SESSION_TTL
 
-    def _build_headers(self) -> dict[str, str]:
-        """Return NSE headers with a randomly chosen User-Agent."""
+    def _build_headers(self, for_api: bool = False) -> dict[str, str]:
+        """Return NSE headers with a randomly chosen User-Agent.
+
+        Parameters
+        ----------
+        for_api:
+            When True, set Sec-Fetch headers appropriate for an XHR/API
+            call (same-site fetch) rather than a top-level page navigation.
+        """
         headers = dict(NSE_HEADERS)
         headers["User-Agent"] = random.choice(USER_AGENT_ROTATION)
+        if for_api:
+            headers["Accept"] = "*/*"
+            headers["Sec-Fetch-Dest"] = "empty"
+            headers["Sec-Fetch-Mode"] = "cors"
+            headers["Sec-Fetch-Site"] = "same-origin"
+            headers.pop("Sec-Fetch-User", None)
+            headers.pop("Upgrade-Insecure-Requests", None)
+            headers["Referer"] = "https://www.nseindia.com/"
+            headers["X-Requested-With"] = "XMLHttpRequest"
         return headers
 
     # ── Session management ────────────────────────────────────────────────────
@@ -149,11 +169,11 @@ class NSEScraper:
         NSEScraperError:
             On any network or HTTP failure during warm-up.
         """
-        headers = self._build_headers()
+        headers = self._build_headers(for_api=False)
         try:
             resp = self._session.get(NSE_BASE_URL, headers=headers, timeout=15)
             resp.raise_for_status()
-        except requests.RequestException as exc:
+        except Exception as exc:
             raise NSEScraperError(f"NSE warm-up failed: {exc}") from exc
 
         self._warmed_up = True
@@ -177,7 +197,7 @@ class NSEScraper:
         """Close the current session and open a fresh one, then warm it up."""
         logger.info("NSE: refreshing session")
         self._session.close()
-        self._session = requests.Session()
+        self._session = cffi_requests.Session(impersonate=_IMPERSONATE)
         self._warmed_up = False
         self._warm_up_internal()
 
@@ -236,15 +256,17 @@ class NSEScraper:
             self._warm_up_internal()
 
         url = NSE_BASE_URL + endpoint
-        headers = self._build_headers()
+        headers = self._build_headers(for_api=True)
         self._rate_limiter.wait_and_acquire()
 
         t0 = time.monotonic()
         try:
             resp = self._session.get(url, headers=headers, params=params, timeout=10)
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            raise _NSETransientError(f"Transient network error: {exc}") from exc
-        except requests.RequestException as exc:
+        except Exception as exc:
+            # curl_cffi raises its own exception types for timeouts/connection errors
+            exc_name = type(exc).__name__.lower()
+            if "timeout" in exc_name or "connection" in exc_name:
+                raise _NSETransientError(f"Transient network error: {exc}") from exc
             raise NSEScraperError(f"Request failed: {exc}") from exc
 
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -262,10 +284,8 @@ class NSEScraper:
         if resp.status_code == 429:
             raise _NSETransientError("NSE rate limit exceeded (429)")
 
-        try:
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            raise NSEScraperError(f"HTTP {resp.status_code}: {exc}") from exc
+        if resp.status_code >= 400:
+            raise NSEScraperError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
         try:
             data = resp.json()
@@ -333,8 +353,10 @@ class NSEScraper:
             "high": f(entry.get("high")),
             "low": f(entry.get("low")),
             "close": f(entry.get("previousClose")),
-            "change": f(entry.get("change")),
-            "change_pct": f(entry.get("pChange")),
+            "change": f(entry.get("variation", entry.get("change"))),
+            "change_pct": f(entry.get("percentChange", entry.get("pChange"))),
+            "previousClose": f(entry.get("previousClose")),
+            "last": f(entry.get("last")),
             "advances": int(entry.get("advances") or 0),
             "declines": int(entry.get("declines") or 0),
             "unchanged": int(entry.get("unchanged") or 0),

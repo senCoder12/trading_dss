@@ -53,13 +53,13 @@ async def get_quote(
             return {
                 "index_id": index_id,
                 "display_name": defn.display_name,
-                "last": quote.get("last"),
+                "last": quote.get("last") or quote.get("ltp"),
                 "open": quote.get("open"),
                 "high": quote.get("high"),
                 "low": quote.get("low"),
-                "previous_close": quote.get("previousClose"),
+                "previous_close": quote.get("previousClose") or quote.get("close"),
                 "change": quote.get("change"),
-                "pct_change": quote.get("pChange"),
+                "pct_change": quote.get("change_pct"),
                 "advances": quote.get("advances"),
                 "declines": quote.get("declines"),
             }
@@ -71,20 +71,19 @@ async def get_quote(
 @router.get("/vix", summary="India VIX current reading")
 async def get_vix() -> dict:
     """Return the latest India VIX value and regime."""
-    from src.data.vix_data import VIXFetcher
+    from src.data.vix_data import VIXTracker
     try:
         with NSEScraper() as scraper:
-            fetcher = VIXFetcher(scraper)
-            snapshot = fetcher.fetch()
-            if snapshot is None:
+            tracker = VIXTracker(scraper)
+            vix_data = tracker.get_current_vix()
+            if vix_data is None:
                 raise HTTPException(status_code=503, detail="VIX data unavailable")
+            regime = tracker.get_vix_regime()
             return {
-                "value": snapshot.value,
-                "previous_close": snapshot.previous_close,
-                "change": snapshot.change,
-                "pct_change": snapshot.pct_change,
-                "regime": snapshot.regime.value,
-                "is_elevated": snapshot.is_elevated,
+                "value": vix_data.value,
+                "change": vix_data.change,
+                "change_pct": vix_data.change_pct,
+                "regime": regime,
             }
     except NSEScraperError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -97,18 +96,18 @@ async def get_fii_dii() -> dict:
     try:
         with NSEScraper() as scraper:
             fetcher = FIIDIIFetcher(scraper)
-            activity = fetcher.get_latest()
+            activity = fetcher.fetch_today_fii_dii()
             if activity is None:
                 raise HTTPException(status_code=503, detail="FII/DII data unavailable")
             return {
-                "trade_date": str(activity.trade_date),
-                "fii_buy": activity.fii_buy,
-                "fii_sell": activity.fii_sell,
-                "fii_net": activity.fii_net,
-                "dii_buy": activity.dii_buy,
-                "dii_sell": activity.dii_sell,
-                "dii_net": activity.dii_net,
-                "total_net": activity.total_net,
+                "trade_date": str(activity.date),
+                "fii_buy": activity.fii_buy_value,
+                "fii_sell": activity.fii_sell_value,
+                "fii_net": activity.fii_net_value,
+                "dii_buy": activity.dii_buy_value,
+                "dii_sell": activity.dii_sell_value,
+                "dii_net": activity.dii_net_value,
+                "total_net": activity.fii_net_value + activity.dii_net_value,
             }
     except NSEScraperError as exc:
         raise HTTPException(status_code=503, detail=str(exc))

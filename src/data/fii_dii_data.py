@@ -53,6 +53,9 @@ class FIIDIIFetcher:
     def fetch_today_fii_dii(self) -> Optional[FIIDIIData]:
         """
         Fetch the most recent FII/DII activity entry.
+
+        NSE returns a list of records with ``category`` (``"FII/FPI"`` or
+        ``"DII"``), ``date``, ``buyValue``, ``sellValue``, ``netValue``.
         """
         raw = self._scraper.get_fii_dii_activity()
         if not raw:
@@ -62,23 +65,44 @@ class FIIDIIFetcher:
         records = raw if isinstance(raw, list) else raw.get("data", [])
         if not records:
             return None
-            
-        # Try to distinguish segments if possible. Typically, the endpoint returns cash segment.
-        latest = records[0]
-        
+
+        fii_rec: Optional[dict] = None
+        dii_rec: Optional[dict] = None
+        trade_date = date.today()
+
+        for rec in records:
+            cat = (rec.get("category") or "").upper()
+            if "FII" in cat or "FPI" in cat:
+                fii_rec = rec
+            elif "DII" in cat:
+                dii_rec = rec
+
+        if fii_rec:
+            trade_date = self._parse_date(fii_rec.get("date", ""))
+        elif dii_rec:
+            trade_date = self._parse_date(dii_rec.get("date", ""))
+
+        def _val(rec: Optional[dict], key: str) -> float:
+            if rec is None:
+                return 0.0
+            v = rec.get(key, 0.0)
+            try:
+                return float(str(v).replace(",", ""))
+            except (TypeError, ValueError):
+                return 0.0
+
         try:
-            trade_date = self._parse_date(latest.get("date", ""))
             return FIIDIIData(
                 date=trade_date,
-                fii_buy_value=float(latest.get("fiiBuyValue", 0.0) or 0.0),
-                fii_sell_value=float(latest.get("fiiSellValue", 0.0) or 0.0),
-                fii_net_value=float(latest.get("fiiNetValue", 0.0) or 0.0),
-                dii_buy_value=float(latest.get("diiBuyValue", 0.0) or 0.0),
-                dii_sell_value=float(latest.get("diiSellValue", 0.0) or 0.0),
-                dii_net_value=float(latest.get("diiNetValue", 0.0) or 0.0),
+                fii_buy_value=_val(fii_rec, "buyValue"),
+                fii_sell_value=_val(fii_rec, "sellValue"),
+                fii_net_value=_val(fii_rec, "netValue"),
+                dii_buy_value=_val(dii_rec, "buyValue"),
+                dii_sell_value=_val(dii_rec, "sellValue"),
+                dii_net_value=_val(dii_rec, "netValue"),
             )
         except Exception as e:
-            logger.error(f"Failed to parse FII/DII data: {e} | raw: {latest}")
+            logger.error(f"Failed to parse FII/DII data: {e} | raw: {records}")
             return None
 
     def fetch_historical_fii_dii(self, start_date: date, end_date: date) -> list[FIIDIIData]:

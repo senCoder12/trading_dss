@@ -13,12 +13,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.dependencies import get_index_registry
-from src.data.index_registry import IndexDefinition, IndexRegistry
+from src.data.index_registry import Index, IndexRegistry
 
 router = APIRouter()
 
 
-def _to_dict(defn: IndexDefinition) -> dict:
+def _to_dict(defn: Index) -> dict:
     return {
         "id": defn.id,
         "display_name": defn.display_name,
@@ -39,7 +39,7 @@ async def list_indices(
     registry: IndexRegistry = Depends(get_index_registry),
 ) -> list[dict]:
     """Return metadata for all active indices."""
-    return [_to_dict(i) for i in registry.all(active_only=True)]
+    return [_to_dict(i) for i in registry.get_all_indices(active_only=True)]
 
 
 @router.get("/{index_id}", summary="Get a single index by ID")
