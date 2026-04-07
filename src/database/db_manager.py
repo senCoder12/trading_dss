@@ -93,7 +93,7 @@ class DatabaseManager:
         wal_mode: Optional[bool] = None,
         timeout: Optional[int] = None,
     ) -> None:
-        self._db_path: Path = db_path or settings.database.path
+        self._db_path: Path = Path(db_path) if db_path is not None else settings.database.path
         self._wal_mode: bool = wal_mode if wal_mode is not None else settings.database.wal_mode
         self._timeout: int = timeout or settings.database.timeout_seconds
         self._local: threading.local = threading.local()

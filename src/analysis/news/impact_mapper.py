@@ -200,8 +200,8 @@ class NewsImpactMapper:
             "NIFTY FMCG": "NIFTY_FMCG",
             "NIFTY REALTY": "NIFTY_REALTY",
             "NIFTY ENERGY": "NIFTY_ENERGY",
-            "NIFTY MIDCAP": "NIFTY_MIDCAP",
-            "NIFTY SMALLCAP": "NIFTY_SMALLCAP",
+            "NIFTY MIDCAP": "NIFTY_MIDCAP100",
+            "NIFTY SMALLCAP": "NIFTY_SMALLCAP100",
             "NIFTY FINANCIAL SERVICES": "FINNIFTY",
             "INDIA VIX": "INDIA_VIX",
         }

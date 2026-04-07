@@ -187,8 +187,10 @@ class TimeDecayEngine:
         session = get_market_session(current_time)
         during_market = session == MarketSession.OPEN
 
-        # Previous trading day news
-        if article_date < today and is_trading_day(article_date):
+        # Previous trading day news: only discount during an open market session.
+        # When the market is closed, elapsed time is already frozen at the prior
+        # market close — applying the multiplier again would double-penalise.
+        if article_date < today and is_trading_day(article_date) and during_market:
             decay *= _PREVIOUS_DAY_MULTIPLIER
 
         # Pre-market news (article before today's open, now during market hours)

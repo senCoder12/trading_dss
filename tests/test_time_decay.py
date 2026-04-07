@@ -221,9 +221,10 @@ class TestMarketClosedFreeze:
 
     def test_decay_frozen_on_weekend(self) -> None:
         """Article from Friday market, checked Saturday → frozen at Friday close."""
-        article = datetime(2026, 4, 3, 14, 0, tzinfo=_IST)  # Friday
-        friday_close = datetime(2026, 4, 3, 15, 30, tzinfo=_IST)
-        saturday = datetime(2026, 4, 4, 12, 0, tzinfo=_IST)
+        # Use 2026-04-10 (regular Friday); 2026-04-03 is Good Friday (market holiday)
+        article = datetime(2026, 4, 10, 14, 0, tzinfo=_IST)  # Friday
+        friday_close = datetime(2026, 4, 10, 15, 30, tzinfo=_IST)
+        saturday = datetime(2026, 4, 11, 12, 0, tzinfo=_IST)
 
         decay_close = self.engine.calculate_decay(article, friday_close, "MEDIUM")
         decay_sat = self.engine.calculate_decay(article, saturday, "MEDIUM")

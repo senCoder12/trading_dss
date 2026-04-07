@@ -397,9 +397,9 @@ GROUP BY nii.index_id
 
 INSERT_ANOMALY_EVENT = """
 INSERT INTO anomaly_events
-    (index_id, timestamp, anomaly_type, severity, details, is_active)
+    (index_id, timestamp, anomaly_type, severity, category, details, message, is_active)
 VALUES
-    (?, ?, ?, ?, ?, ?)
+    (?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 UPDATE_ANOMALY_DEACTIVATE = """
@@ -424,6 +424,27 @@ LIST_ANOMALIES_BY_TYPE = """
 SELECT * FROM anomaly_events
 WHERE anomaly_type = ? AND is_active = 1
 ORDER BY timestamp DESC
+"""
+
+LIST_ANOMALIES_BY_CATEGORY = """
+SELECT * FROM anomaly_events
+WHERE category = ?
+  AND is_active = 1
+  AND timestamp >= ?
+ORDER BY timestamp DESC
+LIMIT ?
+"""
+
+# Phase 4 — cooldown dedup: fetch the single most recent event for
+# a given (index_id, anomaly_type) pair to check whether we are
+# within the suppression window.
+GET_LATEST_ANOMALY_BY_KEY = """
+SELECT id, timestamp, severity
+FROM   anomaly_events
+WHERE  index_id     = ?
+  AND  anomaly_type = ?
+ORDER  BY timestamp DESC
+LIMIT  1
 """
 
 # ============================================================================

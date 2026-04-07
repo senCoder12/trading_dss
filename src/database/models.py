@@ -172,15 +172,21 @@ class NewsIndexImpact:
 @dataclass
 class AnomalyEvent:
     """
-    Detected market anomaly (volume spike, OI spike, breakout, etc.).
+    Detected market anomaly — volume/price anomalies, OI spikes, breakouts, etc.
+
+    Phase 4 extended fields:
+    - ``category``: broad bucket for filtering ("VOLUME" | "PRICE" | "OI" | "OTHER")
+    - ``message``: human-readable one-liner for dashboards and alerts
     """
 
     id: Optional[int]
     index_id: str
     timestamp: str
-    anomaly_type: str                # "OI_SPIKE"|"VOLUME_SPIKE"|"BREAKOUT"|"FII_UNUSUAL"
+    anomaly_type: str                # e.g. "VOLUME_SPIKE" | "ABSORPTION" | "GAP_UP" | …
     severity: str                    # "HIGH" | "MEDIUM" | "LOW"
-    details: str                     # JSON string with specific numbers
+    category: str                    # "VOLUME" | "PRICE" | "OI" | "OTHER"
+    details: str                     # JSON string with detector-specific numbers
+    message: str                     # Human-readable alert text
     is_active: bool
 
 
@@ -430,20 +436,27 @@ TABLE_DDL: dict[str, list[str]] = {
     ],
 
     # ── anomaly events ────────────────────────────────────────────────────────
+    # Phase 4: anomaly_type is open-ended (no CHECK) to allow new detector types
+    # without further migrations.  category groups them for fast dashboard filtering.
     "anomaly_events": [
         """
         CREATE TABLE IF NOT EXISTS anomaly_events (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             index_id     TEXT    NOT NULL REFERENCES index_master(id),
             timestamp    TEXT    NOT NULL,
-            anomaly_type TEXT    NOT NULL
-                         CHECK (anomaly_type IN ('OI_SPIKE','VOLUME_SPIKE','BREAKOUT','FII_UNUSUAL')),
+            anomaly_type TEXT    NOT NULL,
             severity     TEXT    NOT NULL DEFAULT 'MEDIUM'
                          CHECK (severity IN ('HIGH','MEDIUM','LOW')),
+            category     TEXT    NOT NULL DEFAULT 'OTHER'
+                         CHECK (category IN ('VOLUME','PRICE','OI','OTHER')),
             details      TEXT    NOT NULL DEFAULT '{}',
+            message      TEXT    NOT NULL DEFAULT '',
             is_active    INTEGER NOT NULL DEFAULT 1
         )
         """,
+        "CREATE INDEX IF NOT EXISTS idx_anomaly_id_ts       ON anomaly_events (index_id, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_anomaly_type_active ON anomaly_events (anomaly_type, is_active)",
+        "CREATE INDEX IF NOT EXISTS idx_anomaly_cat_active  ON anomaly_events (category, is_active)",
     ],
 
     # ── trading signals ───────────────────────────────────────────────────────
