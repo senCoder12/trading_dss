@@ -406,6 +406,47 @@ UPDATE_ANOMALY_DEACTIVATE = """
 UPDATE anomaly_events SET is_active = 0 WHERE id = ?
 """
 
+UPDATE_ANOMALY_RESOLVE = """
+UPDATE anomaly_events
+SET    is_active = 0,
+       details   = ?
+WHERE  id = ?
+"""
+
+LIST_ACTIVE_ANOMALIES_FILTERED = """
+SELECT * FROM anomaly_events
+WHERE is_active = 1
+ORDER BY
+    CASE severity WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END,
+    timestamp DESC
+"""
+
+LIST_ANOMALY_HISTORY = """
+SELECT * FROM anomaly_events
+WHERE index_id = ?
+  AND timestamp >= ?
+ORDER BY timestamp DESC
+"""
+
+AGG_ANOMALY_STATS = """
+SELECT
+    COUNT(*)                                AS total,
+    category,
+    severity,
+    index_id,
+    anomaly_type
+FROM anomaly_events
+WHERE timestamp >= ?
+GROUP BY category, severity, index_id, anomaly_type
+"""
+
+LIST_SHORT_LIVED_ALERTS = """
+SELECT id, timestamp, anomaly_type, is_active, details
+FROM anomaly_events
+WHERE timestamp >= ?
+  AND is_active = 0
+"""
+
 LIST_ACTIVE_ANOMALIES = """
 SELECT * FROM anomaly_events
 WHERE is_active = 1

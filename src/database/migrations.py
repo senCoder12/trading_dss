@@ -168,6 +168,41 @@ def _v7_fii_dii_date_index(db: DatabaseManager) -> None:
     """)
 
 
+@migration(version=8, description="Expand anomaly_events category CHECK to include FII_DII and DIVERGENCE")
+def _v8_anomaly_category_expand(db: DatabaseManager) -> None:
+    # SQLite cannot ALTER CHECK constraints — rebuild the table.
+    db.execute("ALTER TABLE anomaly_events RENAME TO _anomaly_events_old")
+    db.execute("""
+        CREATE TABLE anomaly_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            index_id     TEXT    NOT NULL REFERENCES index_master(id),
+            timestamp    TEXT    NOT NULL,
+            anomaly_type TEXT    NOT NULL,
+            severity     TEXT    NOT NULL DEFAULT 'MEDIUM'
+                         CHECK (severity IN ('HIGH','MEDIUM','LOW')),
+            category     TEXT    NOT NULL DEFAULT 'OTHER'
+                         CHECK (category IN ('VOLUME','PRICE','OI','FII_DII','DIVERGENCE','OTHER')),
+            details      TEXT    NOT NULL DEFAULT '{}',
+            message      TEXT    NOT NULL DEFAULT '',
+            is_active    INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    db.execute("""
+        INSERT INTO anomaly_events (id, index_id, timestamp, anomaly_type,
+                                    severity, category, details, message, is_active)
+        SELECT id, index_id, timestamp, anomaly_type,
+               severity,
+               CASE WHEN category IN ('VOLUME','PRICE','OI','FII_DII','DIVERGENCE','OTHER')
+                    THEN category ELSE 'OTHER' END,
+               details, message, is_active
+        FROM _anomaly_events_old
+    """)
+    db.execute("DROP TABLE _anomaly_events_old")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_id_ts       ON anomaly_events (index_id, timestamp)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_type_active ON anomaly_events (anomaly_type, is_active)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_cat_active  ON anomaly_events (category, is_active)")
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

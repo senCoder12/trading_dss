@@ -448,7 +448,7 @@ TABLE_DDL: dict[str, list[str]] = {
             severity     TEXT    NOT NULL DEFAULT 'MEDIUM'
                          CHECK (severity IN ('HIGH','MEDIUM','LOW')),
             category     TEXT    NOT NULL DEFAULT 'OTHER'
-                         CHECK (category IN ('VOLUME','PRICE','OI','OTHER')),
+                         CHECK (category IN ('VOLUME','PRICE','OI','FII_DII','DIVERGENCE','OTHER')),
             details      TEXT    NOT NULL DEFAULT '{}',
             message      TEXT    NOT NULL DEFAULT '',
             is_active    INTEGER NOT NULL DEFAULT 1
