@@ -347,11 +347,12 @@ class DecisionEngine:
         -------
         list[DecisionResult]
         """
-        index_ids = self.registry.get_indices_with_options()
-        if not index_ids:
+        fo_indices = self.registry.get_indices_with_options()
+        if not fo_indices:
             logger.warning("DecisionEngine.run_all_indices: no F&O indices in registry")
             return []
 
+        index_ids = [idx.id for idx in fo_indices]
         results: list[DecisionResult] = []
         for i, index_id in enumerate(index_ids):
             try:
@@ -457,7 +458,7 @@ class DecisionEngine:
         if signal_type == "NO_TRADE" or not result.is_actionable:
             return ""
 
-        idx = self.registry.get_by_id(result.index_id)
+        idx = self.registry.get_index(result.index_id)
         display_name = idx.display_name if idx else result.index_id
         direction = "CALL" if signal_type == "BUY_CALL" else "PUT"
 
@@ -553,11 +554,11 @@ class DecisionEngine:
         )
 
         # Per-index rows
-        for index_id in self.registry.get_indices_with_options():
+        for idx in self.registry.get_indices_with_options():
             try:
-                dashboard.indices.append(self._build_index_dashboard(index_id))
+                dashboard.indices.append(self._build_index_dashboard(idx.id))
             except Exception:
-                logger.exception("get_dashboard_data: IndexDashboard failed for %s", index_id)
+                logger.exception("get_dashboard_data: IndexDashboard failed for %s", idx.id)
 
         # Portfolio / today stats
         try:
@@ -681,7 +682,7 @@ class DecisionEngine:
         except Exception:
             logger.debug("Step 1: intraday unavailable for %s", index_id)
 
-        index_def = self.registry.get_by_id(index_id)
+        index_def = self.registry.get_index(index_id)
         if index_def and index_def.has_options:
             try:
                 options_chain = self._load_options_chain(index_id)

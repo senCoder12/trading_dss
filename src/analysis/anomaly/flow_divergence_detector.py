@@ -250,6 +250,21 @@ class FIIFlowDetector:
         events: list[AnomalyEvent] = []
         now = datetime.now(tz=_IST)
 
+        if today_data is None:
+            logger.info(
+                "FII anomaly detection: no FII/DII data available for today. "
+                "Data is published after market close (~6PM IST). "
+                "FII analysis will activate once data collection begins."
+            )
+            return []
+
+        if baselines is None or baselines.avg_fii_net_daily == 0:
+            logger.info(
+                "FII anomaly detection: insufficient historical FII data for baselines. "
+                "Need 10+ trading days of FII/DII data. Currently accumulating."
+            )
+            return []
+
         # ── 1. FII flow Z-score ──────────────────────────────────────
         fii_z = _z_score(today_data.fii_net_value, baselines.avg_fii_net_daily,
                          baselines.std_fii_net_daily)
@@ -890,9 +905,16 @@ class CrossIndexDivergenceDetector:
         now = datetime.now(tz=_IST)
         returns: dict[str, float] = {}
 
+        # Count how many sector indices have sufficient data
+        available_sectors = []
+        skipped_sectors = []
+
         for idx_id, df in all_sector_indices_df.items():
-            if df is None or len(df) < 5:
+            if df is None or len(df) < 10:
+                skipped_sectors.append(f"{idx_id} ({len(df) if df is not None else 0} bars)")
                 continue
+            
+            available_sectors.append(idx_id)
             df_sorted = df.sort_values("date").reset_index(drop=True)
             close_start = _safe_float(df_sorted["close"].iloc[-5])
             close_end = _safe_float(df_sorted["close"].iloc[-1])
@@ -900,8 +922,19 @@ class CrossIndexDivergenceDetector:
                 ret = ((close_end - close_start) / close_start) * 100
                 returns[idx_id] = round(ret, 2)
 
-        if len(returns) < 4:
+        if len(available_sectors) < 4:
+            logger.info(
+                f"Sector rotation: insufficient data — only {len(available_sectors)} sectors available "
+                f"(need 4+). Available: {available_sectors}. "
+                f"Skipped: {skipped_sectors}. Analysis skipped."
+            )
             return []
+
+        if skipped_sectors:
+            logger.info(
+                f"Sector rotation: analyzing {len(available_sectors)} sectors, "
+                f"skipped {len(skipped_sectors)}: {skipped_sectors}"
+            )
 
         # Sort by return
         sorted_returns = sorted(returns.items(), key=lambda x: x[1], reverse=True)
@@ -987,13 +1020,21 @@ class CrossIndexDivergenceDetector:
             Anomalies in unified format with ``category = "DIVERGENCE"``.
         """
         now = datetime.now(tz=_IST)
-        events: list[AnomalyEvent] = []
+        results = []
+        pairs_checked = 0
+        pairs_skipped = 0
+        skip_reasons = []  # Track why pairs were skipped
 
         if index_data is None:
             index_data = self._load_index_data()
 
         if not index_data:
-            return events
+            logger.info(
+                "Divergence detection: no index data available. "
+                "Cross-index divergence analysis is inactive. "
+                "Run 'python scripts/seed_historical.py' to populate database."
+            )
+            return []
 
         # Check for broad selloff first
         broad_selloff = self._check_broad_selloff(index_data)
@@ -1002,41 +1043,110 @@ class CrossIndexDivergenceDetector:
         for pair_id, pair_cfg in self._pairs.items():
             idx1_id = pair_cfg["index1"]
             idx2_id = pair_cfg["index2"]
+            pair_name = f"{idx1_id} vs {idx2_id}"
+
             df1 = index_data.get(idx1_id)
             df2 = index_data.get(idx2_id)
-            if df1 is None or df2 is None:
+
+            # Check index 1 data
+            df1_len = len(df1) if df1 is not None else 0
+            if df1_len < 20:
+                reason = f"{pair_name}: {idx1_id} has {df1_len} bars (need 20+)"
+                skip_reasons.append(reason)
+                logger.info(f"Divergence skip — {reason}")
+                pairs_skipped += 1
                 continue
 
+            # Check index 2 data
+            df2_len = len(df2) if df2 is not None else 0
+            if df2_len < 20:
+                reason = f"{pair_name}: {idx2_id} has {df2_len} bars (need 20+)"
+                skip_reasons.append(reason)
+                logger.info(f"Divergence skip — {reason}")
+                pairs_skipped += 1
+                continue
+
+            # Check overlapping date range
+            try:
+                if 'date' in df1.columns:
+                    dates1 = set(df1['date'])
+                    dates2 = set(df2['date'])
+                elif 'timestamp' in df1.columns:
+                    dates1 = set(df1['timestamp'].dt.date if hasattr(df1['timestamp'], 'dt') else df1['timestamp'])
+                    dates2 = set(df2['timestamp'].dt.date if hasattr(df2['timestamp'], 'dt') else df2['timestamp'])
+                else:
+                    dates1 = set(df1.index) if hasattr(df1.index, '__iter__') else set()
+                    dates2 = set(df2.index) if hasattr(df2.index, '__iter__') else set()
+
+                overlap_count = len(dates1 & dates2)
+            except Exception:
+                overlap_count = min(df1_len, df2_len)
+
+            if overlap_count < 15:
+                reason = f"{pair_name}: only {overlap_count} overlapping days (need 15+)"
+                skip_reasons.append(reason)
+                logger.info(f"Divergence skip — {reason}")
+                pairs_skipped += 1
+                continue
+
+            # Data sufficient — run detection
             cooldown_key = f"DIVERGENCE_{pair_id}"
             if self._is_on_cooldown(cooldown_key):
+                pairs_checked += 1
                 continue
 
-            anomaly = self.detect_divergence(pair_id, df1, df2)
-            if anomaly is not None:
-                # In broad selloff, only flag if it's a VIX divergence
-                if broad_selloff and anomaly.anomaly_type != "VIX_DIVERGENCE":
-                    continue
+            pairs_checked += 1
+            try:
+                anomaly = self.detect_divergence(pair_id, df1, df2)
+                if anomaly is not None:
+                    # In broad selloff, only flag if it's a VIX divergence
+                    if broad_selloff and anomaly.anomaly_type != "VIX_DIVERGENCE":
+                        continue
 
-                events.append(AnomalyEvent(
-                    index_id=f"{idx1_id}|{idx2_id}",
-                    timestamp=now,
-                    anomaly_type=anomaly.anomaly_type,
-                    severity=anomaly.severity,
-                    category="DIVERGENCE",
-                    details=json.dumps({
-                        "pair": anomaly.pair,
-                        "current_corr": anomaly.current_correlation,
-                        "expected_corr": anomaly.expected_correlation,
-                        "idx1_ret": anomaly.index1_return_pct,
-                        "idx2_ret": anomaly.index2_return_pct,
-                        "magnitude": anomaly.divergence_magnitude,
-                        "implication": anomaly.implication,
-                        **anomaly.details,
-                    }),
-                    message=anomaly.message,
-                    cooldown_key=cooldown_key,
-                ))
-                self._set_cooldown(cooldown_key)
+                    results.append(AnomalyEvent(
+                        index_id=f"{idx1_id}|{idx2_id}",
+                        timestamp=now,
+                        anomaly_type=anomaly.anomaly_type,
+                        severity=anomaly.severity,
+                        category="DIVERGENCE",
+                        details=json.dumps({
+                            "pair": anomaly.pair,
+                            "current_corr": anomaly.current_correlation,
+                            "expected_corr": anomaly.expected_correlation,
+                            "idx1_ret": anomaly.index1_return_pct,
+                            "idx2_ret": anomaly.index2_return_pct,
+                            "magnitude": anomaly.divergence_magnitude,
+                            "implication": anomaly.implication,
+                            **anomaly.details,
+                        }),
+                        message=anomaly.message,
+                        cooldown_key=cooldown_key,
+                    ))
+                    self._set_cooldown(cooldown_key)
+            except Exception as e:
+                logger.error(f"Divergence detection error for {pair_name}: {e}")
+
+        # === LOGGING SUMMARY ===
+        total_pairs = pairs_checked + pairs_skipped
+
+        if pairs_skipped > 0 and pairs_checked == 0:
+            logger.info(
+                f"Divergence detection: ALL {pairs_skipped}/{total_pairs} pairs skipped "
+                f"due to insufficient data. Cross-index divergence analysis is inactive. "
+                f"Need at least 2 indices with 20+ overlapping trading days. "
+                f"Run 'python scripts/seed_historical.py' or wait for data collector to accumulate data."
+            )
+        elif pairs_skipped > 0:
+            logger.info(
+                f"Divergence detection: checked {pairs_checked}/{total_pairs} pairs, "
+                f"skipped {pairs_skipped} (insufficient data). "
+                f"Found {len(results)} anomalie(s)."
+            )
+        else:
+            logger.debug(
+                f"Divergence detection: checked {pairs_checked}/{total_pairs} pairs. "
+                f"Found {len(results)} anomalie(s)."
+            )
 
         # Sector rotation
         sector_data = {k: v for k, v in index_data.items()
@@ -1047,7 +1157,7 @@ class CrossIndexDivergenceDetector:
                 cooldown_key = "DIVERGENCE_SECTOR_ROTATION"
                 if self._is_on_cooldown(cooldown_key):
                     continue
-                events.append(AnomalyEvent(
+                results.append(AnomalyEvent(
                     index_id="MARKET",
                     timestamp=now,
                     anomaly_type="SECTOR_ROTATION",
@@ -1068,7 +1178,7 @@ class CrossIndexDivergenceDetector:
         elif broad_selloff:
             cooldown_key = "DIVERGENCE_BROAD_SELLOFF"
             if not self._is_on_cooldown(cooldown_key):
-                events.append(AnomalyEvent(
+                results.append(AnomalyEvent(
                     index_id="MARKET",
                     timestamp=now,
                     anomaly_type="BROAD_MARKET_SELLOFF",
@@ -1080,7 +1190,7 @@ class CrossIndexDivergenceDetector:
                 ))
                 self._set_cooldown(cooldown_key)
 
-        return events
+        return results
 
     # ------------------------------------------------------------------
     # Internal helpers

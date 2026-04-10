@@ -5,6 +5,12 @@ Manages the full lifecycle of anomaly alerts: creation → active → resolved/e
 Provides filtering, history, statistics, and automatic stale-alert resolution.
 """
 
+# ================================================================
+# TABLE OWNERSHIP: This class is the SOLE writer for `anomaly_events`.
+# No other module should INSERT, UPDATE, or DELETE from anomaly_events.
+# Sub-detectors return AnomalyEvent objects → AlertManager persists them.
+# ================================================================
+
 from __future__ import annotations
 
 import json
@@ -82,10 +88,16 @@ class AlertManager:
         """Load currently active alerts from the database into memory.
 
         Also auto-resolves any stale alerts left over from a prior process
-        that exited without cleaning up.
+        that exited without cleaning up.  Resolution criteria:
+        - VOLUME/PRICE alerts older than 30 minutes
+        - OI alerts older than 60 minutes
+        - DIVERGENCE alerts older than 120 minutes
+        - ANY alert from a previous trading day
+        Sets ``resolution_reason`` in the details JSON for audit trail.
         """
         rows = self.db.fetch_all(Q.LIST_ACTIVE_ANOMALIES)
         now = datetime.now(tz=_IST)
+        today = now.date()
         loaded = 0
         stale_resolved = 0
 
@@ -98,13 +110,29 @@ class AlertManager:
                     ts = ts.replace(tzinfo=_IST)
                 category = row.get("category", "OTHER") or "OTHER"
 
-                # Skip and resolve alerts that are already stale on load
+                # Determine if stale: from a previous trading day OR exceeded TTL
+                is_previous_day = ts.date() < today
                 max_age = self._max_age_for_category(category, now)
-                if (now - ts) > max_age:
+                is_ttl_expired = (now - ts) > max_age
+
+                if is_previous_day or is_ttl_expired:
                     stale_resolved += 1
-                    # Resolve directly in DB — don't go through resolve_alert
-                    # to avoid lock re-entry
-                    self.db.execute(Q.UPDATE_ANOMALY_DEACTIVATE, (alert_id,))
+                    reason = (
+                        "auto_resolved_on_startup_previous_day"
+                        if is_previous_day
+                        else "auto_resolved_on_startup"
+                    )
+                    # Merge resolution_reason into details JSON
+                    try:
+                        details = json.loads(row.get("details") or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        details = {}
+                    details["resolution_reason"] = reason
+                    details["resolved_at"] = now.isoformat()
+                    self.db.execute(
+                        Q.UPDATE_ANOMALY_RESOLVE,
+                        (json.dumps(details), alert_id),
+                    )
                     continue
 
                 self._active_cache[alert_id] = AnomalyEvent(

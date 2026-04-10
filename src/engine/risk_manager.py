@@ -314,6 +314,88 @@ class RiskManager:
 
         self._load_open_positions()
         self._refresh_daily_pnl()
+        self._cleanup_on_startup()
+
+    # ------------------------------------------------------------------
+    # Startup cleanup
+    # ------------------------------------------------------------------
+
+    def _cleanup_on_startup(self) -> None:
+        """Resolve orphaned open positions from previous sessions.
+
+        On restart, any trading_signals with outcome='OPEN' from before today's
+        market open are stale. We can't reliably track them anymore, so we resolve
+        them based on current market state or mark them expired.
+        """
+        try:
+            from src.utils.market_hours import MarketHoursManager
+            from src.utils.date_utils import get_ist_now
+
+            mh = MarketHoursManager()
+            now = get_ist_now()
+            today_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+
+            orphaned = self._db.fetch_all(
+                """SELECT id, index_id, signal_type, entry_price, target_price, stop_loss, generated_at
+                   FROM trading_signals
+                   WHERE outcome = 'OPEN' AND generated_at < ?""",
+                (today_open.isoformat(),)
+            )
+
+            if not orphaned:
+                return
+
+            resolved_count = 0
+            for signal in orphaned:
+                resolution = "EXPIRED"
+                exit_price = None
+                pnl = None
+
+                if mh.is_market_open():
+                    try:
+                        latest = self._db.fetch_one(
+                            """SELECT close FROM price_data
+                               WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1""",
+                            (signal['index_id'],)
+                        )
+                        if latest and latest['close']:
+                            current_price = latest['close']
+                            exit_price = current_price
+
+                            if signal['signal_type'] == 'BUY_CALL':
+                                if current_price <= signal['stop_loss']:
+                                    resolution = "LOSS"
+                                    pnl = signal['stop_loss'] - signal['entry_price']
+                                elif current_price >= signal['target_price']:
+                                    resolution = "WIN"
+                                    pnl = signal['target_price'] - signal['entry_price']
+                            elif signal['signal_type'] == 'BUY_PUT':
+                                if current_price >= signal['stop_loss']:
+                                    resolution = "LOSS"
+                                    pnl = signal['entry_price'] - signal['stop_loss']
+                                elif current_price <= signal['target_price']:
+                                    resolution = "WIN"
+                                    pnl = signal['entry_price'] - signal['target_price']
+                    except Exception as e:
+                        logger.debug(f"Could not determine outcome for signal {signal['id']}: {e}")
+
+                self._db.execute(
+                    """UPDATE trading_signals
+                       SET outcome = ?, actual_exit_price = ?, actual_pnl = ?, closed_at = ?
+                       WHERE id = ?""",
+                    (resolution, exit_price, pnl, now.isoformat(), signal['id'])
+                )
+                resolved_count += 1
+                logger.info(
+                    f"Startup cleanup: resolved signal #{signal['id']} "
+                    f"({signal['index_id']} {signal['signal_type']}) as {resolution}"
+                )
+
+            if resolved_count > 0:
+                logger.info(f"Startup cleanup: resolved {resolved_count} orphaned position(s)")
+
+        except Exception as e:
+            logger.error(f"Startup cleanup failed (non-fatal): {e}")
 
     # ------------------------------------------------------------------
     # Public API — signal refinement

@@ -8,6 +8,13 @@ and continuous improvement.
 Thread-safe: all public methods acquire ``_lock`` before touching shared state.
 """
 
+# ================================================================
+# TABLE OWNERSHIP: This class is the SOLE writer for `trading_signals`.
+# No other module should INSERT, UPDATE, or DELETE from trading_signals.
+# SignalGenerator returns TradingSignal → SignalTracker persists them.
+# RiskManager may call SignalTracker methods to update outcomes.
+# ================================================================
+
 from __future__ import annotations
 
 import json
@@ -133,6 +140,46 @@ class SignalTracker:
         self._recent: dict[str, dict] = {}
 
         logger.info("SignalTracker initialised (capital=₹%.0f)", capital)
+        self._cleanup_on_startup()
+
+    # ------------------------------------------------------------------
+    # Startup cleanup
+    # ------------------------------------------------------------------
+
+    def _cleanup_on_startup(self) -> None:
+        """Resolve any OPEN signals that RiskManager may have missed.
+
+        Safety net: if RiskManager cleanup already resolved a signal (closed_at is set),
+        we skip it here. Only process signals that are still truly orphaned.
+        """
+        try:
+            from src.utils.date_utils import get_ist_now
+            now = get_ist_now()
+            today_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+
+            still_orphaned = self._db.fetch_all(
+                """SELECT id, index_id, signal_type FROM trading_signals
+                   WHERE outcome = 'OPEN' AND generated_at < ? AND closed_at IS NULL""",
+                (today_open.isoformat(),)
+            )
+
+            for signal in still_orphaned:
+                self._db.execute(
+                    """UPDATE trading_signals
+                       SET outcome = 'EXPIRED', closed_at = ?
+                       WHERE id = ?""",
+                    (now.isoformat(), signal['id'])
+                )
+                logger.info(
+                    f"SignalTracker cleanup: expired signal #{signal['id']} "
+                    f"({signal['index_id']} {signal['signal_type']})"
+                )
+
+            if still_orphaned:
+                logger.info(f"SignalTracker cleanup: expired {len(still_orphaned)} orphaned signal(s)")
+
+        except Exception as e:
+            logger.error(f"SignalTracker startup cleanup failed (non-fatal): {e}")
 
     # ------------------------------------------------------------------
     # Public API — signal recording

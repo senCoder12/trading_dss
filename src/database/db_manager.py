@@ -1,3 +1,21 @@
+# ================================================================
+# SCHEMA MODIFICATION POLICY
+# ================================================================
+# ALL schema changes (CREATE TABLE, ALTER TABLE, DROP TABLE,
+# ADD COLUMN, CREATE INDEX) MUST go through migrations.py.
+#
+# NEVER execute DDL statements directly through db_manager methods
+# from application code. NEVER modify the schema manually via CLI.
+#
+# To make a schema change:
+#   1. Add a new migration function in migrations.py: v{N}_description()
+#   2. Register it in the MIGRATIONS list
+#   3. Run: python scripts/validate_config.py
+#   4. Test with a fresh database to verify clean creation
+#
+# The validate_schema() method below enforces this at startup.
+# ================================================================
+
 """
 SQLite database manager — singleton, thread-safe, WAL-mode.
 
@@ -353,6 +371,60 @@ class DatabaseManager:
             return [dict(r) for r in rows]
         except sqlite3.Error as exc:
             raise QueryError(f"fetch_all failed: {exc}\nSQL: {query.strip()[:120]}") from exc
+
+    # ── Schema validation ────────────────────────────────────────────────
+
+    def validate_schema(self) -> tuple[bool, list[str]]:
+        """Validate actual DB schema matches expected schema from models.py.
+
+        Compares every expected table and its columns against what's actually
+        in the database. Catches drift caused by manual changes or failed migrations.
+
+        Returns:
+            Tuple of (is_valid: bool, issues: list[str]).
+            is_valid is True only if zero issues found.
+        """
+        from src.database.models import EXPECTED_SCHEMA
+
+        issues: list[str] = []
+
+        # Get actual tables
+        actual_tables = {
+            row['name']
+            for row in self.fetch_all(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+
+        for table_name, expected_columns in EXPECTED_SCHEMA.items():
+            # Check table exists
+            if table_name not in actual_tables:
+                issues.append(f"Missing table: '{table_name}'")
+                continue
+
+            # Get actual columns
+            actual_cols = {
+                row['name']: row['type']
+                for row in self.fetch_all(f"PRAGMA table_info({table_name})")
+            }
+
+            # Check each expected column exists
+            for col_name, col_type in expected_columns.items():
+                if col_name not in actual_cols:
+                    issues.append(
+                        f"Table '{table_name}' missing column: '{col_name}' (expected {col_type})"
+                    )
+                # Note: SQLite type checking is loose, so we only check column existence,
+                # not exact type match. Type mismatches are rare and usually intentional.
+
+        # Check for unexpected tables (informational, not a failure)
+        expected_table_names = set(EXPECTED_SCHEMA.keys())
+        extra_tables = actual_tables - expected_table_names - {'schema_version'}
+        for t in sorted(extra_tables):
+            issues.append(f"Unexpected table found: '{t}' (not in models.py)")
+
+        is_valid = len(issues) == 0
+        return is_valid, issues
 
     # ── Maintenance ───────────────────────────────────────────────────────────
 

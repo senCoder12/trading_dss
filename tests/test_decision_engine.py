@@ -188,63 +188,122 @@ def _make_technical_result(index_id: str = INDEX_ID) -> TechnicalAnalysisResult:
     from src.analysis.indicators.options_indicators import OptionsSummary
 
     trend = TrendSummary(
-        vote="BULLISH", signal="BULLISH", strength=0.8,
-        ema_20=22_300.0, ema_50=22_100.0, ema_200=21_500.0,
-        adx=28.0, plus_di=20.0, minus_di=12.0,
-        is_above_ema20=True, is_above_ema50=True, is_above_ema200=True,
-        ema_alignment="BULLISH", price_vs_vwap="ABOVE",
-        immediate_support=22_200.0, immediate_resistance=22_600.0,
-        reasoning="Strong uptrend",
+        index_id=index_id,
+        timeframe="1d",
+        timestamp=MORNING,
+        price_vs_ema20="ABOVE",
+        price_vs_ema50="ABOVE",
+        price_vs_ema200="ABOVE",
+        ema_alignment="BULLISH",
+        golden_cross=False,
+        death_cross=False,
+        macd_signal="BULLISH",
+        macd_crossover=None,
+        macd_histogram_trend="RISING",
+        trend_strength="STRONG",
+        trend_direction="UP",
+        trend_vote="BULLISH",
+        trend_confidence=0.8,
     )
     momentum = MomentumSummary(
-        vote="BULLISH", signal="BULLISH", strength=0.65,
-        rsi=58.0, rsi_signal="NEUTRAL",
-        macd_line=45.0, macd_signal=30.0, macd_hist=15.0, macd_trend="BULLISH",
-        stoch_k=62.0, stoch_d=58.0, stoch_signal="NEUTRAL",
-        cci=85.0, cci_signal="NEUTRAL",
-        is_rsi_divergence=False,
-        reasoning="Momentum confirming uptrend",
+        timestamp=MORNING,
+        rsi_value=58.0,
+        rsi_zone="NEUTRAL",
+        rsi_divergence=None,
+        stochastic_k=62.0,
+        stochastic_zone="NEUTRAL",
+        stochastic_crossover=None,
+        cci_value=85.0,
+        cci_zone="NEUTRAL",
+        momentum_vote="BULLISH",
+        momentum_confidence=0.65,
+        overbought_consensus=False,
+        oversold_consensus=False,
+        divergence_detected=False,
+        reversal_warning=None,
     )
     volatility = VolatilitySummary(
-        vote="NEUTRAL", signal="NEUTRAL", strength=0.4,
-        atr=120.0, atr_pct=0.53, bb_width=0.02,
-        bb_upper=22_700.0, bb_lower=22_100.0, bb_mid=22_400.0,
-        price_position="MIDDLE",
-        is_bb_squeeze=False,
-        historical_vol=0.12,
-        reasoning="Normal volatility",
+        timestamp=MORNING,
+        bb_position="MIDDLE",
+        bb_squeeze=False,
+        bb_bandwidth_percentile=50.0,
+        atr_value=120.0,
+        atr_pct=0.53,
+        volatility_level="NORMAL",
+        suggested_sl=110.0,
+        suggested_target=170.0,
+        hv_current=0.12,
+        hv_regime="NORMAL",
+        vix_regime=None,
+        volatility_vote="NEUTRAL",
+        volatility_confidence=0.4,
+        position_size_modifier=1.0,
+        breakout_alert=False,
+        mean_reversion_setup=False,
     )
     volume = VolumeSummary(
-        vote="BULLISH", signal="BULLISH", strength=0.6,
-        volume_ratio=1.8, volume_trend="INCREASING",
-        obv_trend="RISING", vwap=22_380.0,
+        timestamp=MORNING,
         price_vs_vwap="ABOVE",
-        reasoning="Volume confirming move",
+        vwap_zone="ABOVE",
+        institutional_bias="NEUTRAL",
+        obv_trend="RISING",
+        obv_divergence=None,
+        accumulation_distribution="ACCUMULATION",
+        poc=22_400.0,
+        value_area_high=22_600.0,
+        value_area_low=22_200.0,
+        in_value_area=True,
+        volume_ratio=1.8,
+        volume_confirms_price=True,
+        volume_vote="BULLISH",
+        volume_confidence=0.6,
     )
     opts = OptionsSummary(
-        vote="BULLISH", signal="BULLISH", strength=0.7,
-        pcr=1.15, pcr_signal="BULLISH",
+        timestamp=MORNING,
+        index_id=index_id,
+        expiry_date=date(2026, 4, 10),
+        days_to_expiry=2,
+        pcr=1.15,
+        pcr_signal="BULLISH",
+        oi_support=22_000.0,
+        oi_resistance=22_800.0,
+        expected_range=(22_200.0, 22_700.0),
         max_pain=22_400.0,
-        ce_support=22_000.0, pe_resistance=22_800.0,
+        max_pain_pull="NEUTRAL",
+        oi_change_signal="BULLISH",
+        dominant_buildup="PE_WRITING",
+        atm_iv=14.5,
+        iv_regime="NORMAL",
         iv_skew=0.02,
-        highest_ce_oi_strike=22_600.0, highest_pe_oi_strike=22_200.0,
-        reasoning="PCR bullish",
+        options_vote="BULLISH",
+        options_confidence=0.7,
     )
     quant = QuantSummary(
-        vote="NEUTRAL", signal="NEUTRAL", strength=0.4,
-        beta=0.95, correlation=0.88,
-        mean_reversion_signal="NEUTRAL",
-        z_score=0.3,
-        reasoning="Quant neutral",
+        timestamp=MORNING,
+        zscore=0.3,
+        zscore_zone="NEUTRAL",
+        mean_reversion_signal=None,
+        beta=0.95,
+        alpha=None,
+        beta_interpretation=None,
+        statistical_regime="NORMAL",
+        quant_vote="NEUTRAL",
+        quant_confidence=0.4,
     )
     from src.analysis.indicators.smart_money import SmartMoneyScore
     smart = SmartMoneyScore(
-        vote="BULLISH", signal="BULLISH", strength=0.65,
-        institutional_bias="ACCUMULATION",
-        fii_bias="BULLISH",
-        dii_bias="NEUTRAL",
-        smart_money_vs_retail="ALIGNED",
-        reasoning="FII buying",
+        score=0.65,
+        grade="B",
+        smfi_component=0.6,
+        vsd_component=0.5,
+        btd_component=0.7,
+        oimi_component=0.6,
+        lai_component=0.5,
+        smart_money_bias="ACCUMULATION",
+        key_finding="FII buying detected",
+        actionable_insight="Institutional accumulation supports long bias",
+        data_completeness=1.0,
+        confidence=0.65,
     )
 
     return TechnicalAnalysisResult(
@@ -305,6 +364,44 @@ def tmp_db(tmp_path: Path) -> DatabaseManager:
             (idx_id, display, idx_id, f"^{idx_id}", "NSE",
              lot, 1, idx_id, "broad_market", 1, now, now),
         )
+
+    # Seed price data so _step_gather_data finds bars
+    import numpy as np
+    rng = np.random.default_rng(42)
+    start = datetime(2025, 6, 1, 9, 15, 0, tzinfo=_IST)
+    for idx_id, base in [("NIFTY50", SPOT), ("BANKNIFTY", 48_200.0)]:
+        close = base
+        for i in range(60):
+            ts = (start + timedelta(days=i)).isoformat()
+            change = rng.normal(0, base * 0.005)
+            close = max(base * 0.85, close + change)
+            h = close + abs(rng.normal(0, base * 0.002))
+            l = close - abs(rng.normal(0, base * 0.002))
+            o = close + rng.normal(0, base * 0.001)
+            db.execute(
+                """
+                INSERT OR IGNORE INTO price_data
+                    (index_id, timestamp, open, high, low, close, volume, source, timeframe)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (idx_id, ts, round(o, 2), round(h, 2), round(l, 2),
+                 round(close, 2), 2_000_000, "yfinance", "1d"),
+            )
+        # Current 5m bar
+        db.execute(
+            """
+            INSERT OR IGNORE INTO price_data
+                (index_id, timestamp, open, high, low, close, volume, source, timeframe)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (idx_id, now, close, close + 20, close - 10, close + 5, 500_000, "nse_live", "5m"),
+        )
+
+    # Seed VIX
+    db.execute(
+        "INSERT OR IGNORE INTO vix_data (timestamp, vix_value, vix_change, vix_change_pct) VALUES (?,?,?,?)",
+        (now, 14.5, -0.3, -2.0),
+    )
     return db
 
 
@@ -348,10 +445,12 @@ def engine(tmp_db: DatabaseManager, tmp_path: Path) -> DecisionEngine:
         patch("src.engine.decision_engine.SignalGenerator") as MockSG,
         patch("src.engine.decision_engine.RiskManager") as MockRM,
     ):
-        # Registry
+        # Registry — return Index-like objects with .id attribute
+        _nifty_idx = MagicMock(id="NIFTY50", display_name="NIFTY 50", has_options=True)
+        _bn_idx = MagicMock(id="BANKNIFTY", display_name="NIFTY BANK", has_options=True)
         mock_reg = MagicMock()
-        mock_reg.get_indices_with_options.return_value = ["NIFTY50", "BANKNIFTY"]
-        mock_reg.get_by_id.side_effect = lambda idx: MagicMock(
+        mock_reg.get_indices_with_options.return_value = [_nifty_idx, _bn_idx]
+        mock_reg.get_index.side_effect = lambda idx: MagicMock(
             display_name={"NIFTY50": "NIFTY 50", "BANKNIFTY": "NIFTY BANK"}.get(idx, idx),
             has_options=True,
             is_active=True,

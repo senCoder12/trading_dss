@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
+from config.settings import get_anomaly_thresholds
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class Baselines:
     """Rolling statistical baselines for one index, recomputed daily."""
 
     index_id: str
-    computed_at: datetime
+    computed_at: Optional[datetime] = None
     avg_volume_20d: float = 0.0
     std_volume_20d: float = 0.0
     avg_range_20d: float = 0.0
@@ -159,8 +160,10 @@ class VolumePriceDetector:
     more frequently than the configured window.
     """
 
-    def __init__(self, db: DatabaseManager) -> None:
+    def __init__(self, db: DatabaseManager, timeframe: str = "5m") -> None:
         self.db = db
+        self.timeframe = timeframe
+        self.thresholds = get_anomaly_thresholds(timeframe)
         # {index_id: Baselines}
         self._baselines: dict[str, Baselines] = {}
         # {cooldown_key: last_alert_datetime}
@@ -168,31 +171,54 @@ class VolumePriceDetector:
         # {index_id: list[dict]} — recent bars cache for acceleration check
         self._recent_bars: dict[str, list[dict]] = {}
 
+    def set_timeframe(self, timeframe: str) -> None:
+        """Switch threshold profile (e.g. when backtesting on daily vs live on 5m)."""
+        self.timeframe = timeframe
+        self.thresholds = get_anomaly_thresholds(timeframe)
+
     # ------------------------------------------------------------------
     # Baselines
     # ------------------------------------------------------------------
 
     def get_baselines(self, index_id: str) -> Optional[Baselines]:
         """Return cached baselines for *index_id*, or ``None``."""
-        return self._baselines.get(index_id)
+        cached = self._baselines.get(index_id)
+        if cached is None:
+            return None
+
+        # Reject uncached fallbacks that somehow got into the cache
+        if cached.computed_at is None:
+            if index_id in self._baselines:
+                del self._baselines[index_id]
+            return None
+
+        # Check staleness — recompute after 24 hours
+        now = datetime.now(tz=_IST)
+        age_seconds = (now - cached.computed_at).total_seconds()
+        if age_seconds > 86400:
+            logger.debug(f"Baselines {index_id}: stale ({age_seconds/3600:.1f}h). Evicting cache.")
+            del self._baselines[index_id]
+            return None
+
+        return cached
 
     def update_baselines(self, index_id: str, price_df: pd.DataFrame) -> Baselines:
         """Compute and cache rolling baselines from historical OHLCV data.
 
-        Parameters
-        ----------
-        index_id:
-            Index identifier (e.g. ``"NIFTY50"``).
-        price_df:
-            DataFrame with columns ``open, high, low, close, volume`` and a
-            DatetimeIndex (or ``timestamp`` column).  Must contain at least 5
-            rows; ideally ≥ 20 for meaningful statistics.
-
-        Returns
-        -------
-        Baselines
-            Freshly computed baselines, also cached in ``self._baselines``.
+        Prevents cache poisoning by validating data before storage.
         """
+        MIN_BARS = 10
+
+        if price_df is None or len(price_df) < MIN_BARS:
+            logger.warning(
+                f"Baselines {index_id}: insufficient data "
+                f"({len(price_df) if price_df is not None else 0} bars, need {MIN_BARS}). "
+                f"Using conservative defaults. NOT caching — will retry next call."
+            )
+            fallback = self._create_fallback_baselines(index_id)
+            fallback.computed_at = None
+            return fallback
+
         df = price_df.copy()
 
         # Normalise index
@@ -208,6 +234,16 @@ class VolumePriceDetector:
         avg_volume = float(vol.mean()) if len(vol) > 0 else 0.0
         std_volume = float(vol.std(ddof=1)) if len(vol) > 1 else 0.0
 
+        # Validate before caching — reject garbage
+        if avg_volume <= 0:
+            logger.warning(
+                f"Baselines {index_id}: computed avg_volume is 0 despite {len(df)} bars. "
+                f"Data may be corrupt. NOT caching."
+            )
+            fallback = self._create_fallback_baselines(index_id)
+            fallback.computed_at = None
+            return fallback
+
         daily_range = (recent["high"] - recent["low"]).astype(float)
         avg_range = float(daily_range.mean()) if len(daily_range) > 0 else 0.0
 
@@ -220,8 +256,6 @@ class VolumePriceDetector:
         intraday_vol = ((recent["high"] - recent["low"]) / recent["open"]).astype(float)
         avg_intraday_volatility = float(intraday_vol.mean()) if len(intraday_vol) > 0 else 0.0
 
-        # First-15-min range and last-30-min volume are only meaningful with
-        # intraday data.  For daily bars we leave them as 0.
         typical_first_15min_range = 0.0
         typical_last_30min_volume = 0.0
 
@@ -238,7 +272,20 @@ class VolumePriceDetector:
             typical_last_30min_volume=typical_last_30min_volume,
         )
         self._baselines[index_id] = baselines
+        logger.debug(f"Baselines cached {index_id}: avg_vol={baselines.avg_volume_20d:.0f}")
         return baselines
+
+    def _create_fallback_baselines(self, index_id: str) -> Baselines:
+        """Create conservative high-threshold baselines when real data is missing."""
+        return Baselines(
+            index_id=index_id,
+            computed_at=None,
+            avg_volume_20d=1e9,  # High volume baseline to prevent spikes
+            std_volume_20d=1e9,
+            avg_range_20d=1e6,
+            avg_range_pct_20d=1.0,
+            avg_body_20d=1e6,
+        )
 
     # ------------------------------------------------------------------
     # Volume anomaly detection
@@ -294,13 +341,13 @@ class VolumePriceDetector:
 
         adjusted_z = z_score / threshold_mult
 
-        if adjusted_z > 4.0:
+        if adjusted_z > self.thresholds["volume_zscore_extreme"]:
             anomaly_type = "VOLUME_SPIKE"
             severity = "HIGH"
-        elif adjusted_z > 3.0:
+        elif adjusted_z > self.thresholds["volume_zscore_high"]:
             anomaly_type = "VOLUME_SPIKE"
             severity = "HIGH"
-        elif adjusted_z > 2.0:
+        elif adjusted_z > self.thresholds["volume_zscore_elevated"]:
             anomaly_type = "VOLUME_SPIKE"
             severity = "MEDIUM"
 
@@ -310,7 +357,7 @@ class VolumePriceDetector:
             prev_3_avg = sum(
                 _safe_float(b.get("volume")) for b in prev_bars[-3:]
             ) / 3.0
-            if prev_3_avg > 0 and volume > 3 * prev_3_avg:
+            if prev_3_avg > 0 and volume > self.thresholds["volume_acceleration_multiplier"] * prev_3_avg:
                 # Acceleration overrides a weaker spike
                 if severity is None or severity == "MEDIUM":
                     anomaly_type = "SUDDEN_ACCELERATION"
@@ -324,9 +371,9 @@ class VolumePriceDetector:
         # --- Check 4: Absorption (high volume, tiny price move) ---
         avg_body = baselines.avg_body_20d
         if (
-            z_score > 2.5
+            adjusted_z > self.thresholds["volume_zscore_high"]
             and avg_body > 0
-            and abs(close - open_) < 0.3 * avg_body
+            and abs(close - open_) < self.thresholds["absorption_body_ratio"] * avg_body
         ):
             anomaly_type = "ABSORPTION"
             severity = "HIGH"
@@ -428,11 +475,11 @@ class VolumePriceDetector:
             if prev_close > 0:
                 gap_pct = ((open_ - prev_close) / prev_close) * 100
                 abs_gap = abs(gap_pct)
-                if abs_gap >= 0.5:
+                if abs_gap >= self.thresholds["price_gap_threshold_pct"]:
                     direction = "GAP_UP" if gap_pct > 0 else "GAP_DOWN"
-                    if abs_gap >= 2.0:
+                    if abs_gap >= self.thresholds["extreme_move_multiplier"]:
                         sev = "HIGH"
-                    elif abs_gap >= 1.0:
+                    elif abs_gap >= self.thresholds["large_move_multiplier"]:
                         sev = "HIGH"
                     else:
                         sev = "MEDIUM"
@@ -452,7 +499,7 @@ class VolumePriceDetector:
         from datetime import time as _t
 
         if ts.time() <= _t(11, 15):
-            if move_from_open > 3 * avg_range:
+            if move_from_open > self.thresholds["extreme_move_multiplier"] * avg_range:
                 candidates.append((
                     "EXTREME_INTRADAY_MOVE",
                     "HIGH",
@@ -461,7 +508,7 @@ class VolumePriceDetector:
                     f"{index_id}: Extreme intraday move ({move_pct:.2f}%, "
                     f"{move_from_open / avg_range:.1f}x avg range) within first 2 hours",
                 ))
-            elif move_from_open > 2 * avg_range:
+            elif move_from_open > self.thresholds["large_move_multiplier"] * avg_range:
                 candidates.append((
                     "LARGE_INTRADAY_MOVE",
                     "HIGH",
@@ -486,8 +533,8 @@ class VolumePriceDetector:
                 down_move_pct = ((day_open - day_low) / day_open) * 100
                 up_from_low_pct = ((close - day_low) / day_open) * 100
 
-                # Bearish reversal: went up >1% then pulled back >0.7%
-                if up_move_pct > 1.0 and down_from_high_pct > 0.7:
+                # Bearish reversal: went up > X% then pulled back > Y%
+                if up_move_pct > self.thresholds["reversal_move_pct"] and down_from_high_pct > self.thresholds["reversal_retrace_pct"]:
                     candidates.append((
                         "INTRADAY_REVERSAL",
                         "MEDIUM",
@@ -500,8 +547,8 @@ class VolumePriceDetector:
                         f"{index_id}: Bearish intraday reversal — rallied {up_move_pct:.2f}% "
                         f"then pulled back {down_from_high_pct:.2f}%",
                     ))
-                # Bullish reversal: went down >1% then recovered >0.7%
-                elif down_move_pct > 1.0 and up_from_low_pct > 0.7:
+                # Bullish reversal: went down > X% then recovered > Y%
+                elif down_move_pct > self.thresholds["reversal_move_pct"] and up_from_low_pct > self.thresholds["reversal_retrace_pct"]:
                     candidates.append((
                         "INTRADAY_REVERSAL",
                         "MEDIUM",
@@ -516,8 +563,8 @@ class VolumePriceDetector:
                     ))
 
         # --- 4. Range expansion ---
-        if day_range_vs_avg > 1.5:
-            sev = "HIGH" if day_range_vs_avg > 2.5 else "MEDIUM"
+        if day_range_vs_avg > self.thresholds["range_expansion_multiplier"]:
+            sev = "HIGH" if day_range_vs_avg > self.thresholds["extreme_move_multiplier"] else "MEDIUM"
             candidates.append((
                 "RANGE_EXPANSION",
                 sev,
@@ -528,7 +575,7 @@ class VolumePriceDetector:
             ))
 
         # --- 5. Compression ---
-        if ts.time() >= _t(12, 0) and day_range_vs_avg < 0.3:
+        if ts.time() >= _t(12, 0) and day_range_vs_avg < self.thresholds["compression_multiplier"]:
             candidates.append((
                 "COMPRESSION",
                 "LOW",
@@ -610,7 +657,7 @@ class VolumePriceDetector:
                 last_ts = pd.Timestamp(row["timestamp"])
                 if last_ts.tzinfo is None:
                     last_ts = last_ts.tz_localize(_IST)
-                cooldown_min = _COOLDOWN_MINUTES.get(ev.severity, 15)
+                cooldown_min = self._get_cooldown_minutes(ev.severity)
                 if (ev.timestamp - last_ts.to_pydatetime()) < timedelta(minutes=cooldown_min):
                     logger.debug(
                         "Skipping duplicate %s for %s (within cooldown)",
@@ -646,8 +693,16 @@ class VolumePriceDetector:
         last = self._cooldowns.get(key)
         if last is None:
             return False
-        cooldown_min = _COOLDOWN_MINUTES.get(event.severity, 15)
+        cooldown_min = self._get_cooldown_minutes(event.severity)
         return (event.timestamp - last) < timedelta(minutes=cooldown_min)
+
+    def _get_cooldown_minutes(self, severity: str) -> float:
+        """Helper to get cooldown minutes from thresholds."""
+        if severity == "HIGH":
+            return self.thresholds.get("cooldown_high_seconds", 600) / 60
+        if severity == "MEDIUM":
+            return self.thresholds.get("cooldown_medium_seconds", 900) / 60
+        return self.thresholds.get("cooldown_low_seconds", 1800) / 60
 
     def _set_cooldown(self, event: AnomalyEvent) -> None:
         self._cooldowns[event.cooldown_key] = event.timestamp

@@ -214,6 +214,45 @@ class NewsEngine:
         self._last_decayed: list[DecayedArticle] = []
 
         logger.info("NewsEngine initialised")
+        self._cleanup_on_startup()
+
+    # ------------------------------------------------------------------
+    # Startup cleanup
+    # ------------------------------------------------------------------
+
+    def _cleanup_on_startup(self) -> None:
+        """Mark stale unprocessed articles from previous sessions as processed.
+
+        Articles fetched more than 6 hours ago that were never processed are too
+        old to meaningfully analyze — their sentiment impact has decayed to near zero.
+        """
+        try:
+            from src.utils.date_utils import get_ist_now
+            from datetime import timedelta as _td
+
+            now = get_ist_now()
+            cutoff = (now - _td(hours=6)).isoformat()
+
+            self.db.execute(
+                """UPDATE news_articles
+                   SET is_processed = TRUE
+                   WHERE is_processed = FALSE AND fetched_at < ?""",
+                (cutoff,)
+            )
+
+            stale = self.db.fetch_one(
+                """SELECT COUNT(*) as c FROM news_articles
+                   WHERE is_processed = TRUE AND fetched_at < ?
+                   AND fetched_at > ?""",
+                (cutoff, (now - _td(hours=12)).isoformat())
+            )
+            count = stale['c'] if stale else 0
+
+            if count > 0:
+                logger.info(f"News cleanup: marked {count} stale unprocessed article(s) as processed")
+
+        except Exception as e:
+            logger.error(f"News startup cleanup failed (non-fatal): {e}")
 
     # ------------------------------------------------------------------
     # Public API

@@ -160,6 +160,32 @@ def check_database(reporter: Reporter) -> None:
         reporter.log_pass("Database", f"SQLite OK, {table_count} tables created")
     except Exception as exc:
         reporter.log_fail("Database", str(exc), "Check directory read/write permissions for data/db folder.")
+        return
+
+    # Run migrations
+    try:
+        from src.database.migrations import run_migrations
+        applied = run_migrations(db)
+        if applied:
+            reporter.log_pass("Migrations", f"{applied} new migration(s) applied")
+        else:
+            reporter.log_pass("Migrations", "Schema up to date")
+    except Exception as exc:
+        reporter.log_fail("Migrations", str(exc), "Check src/database/migrations.py for errors.")
+
+    # Schema validation
+    try:
+        is_valid, issues = db.validate_schema()
+        if is_valid:
+            reporter.log_pass("Schema validation", "All tables and columns match expected schema")
+        else:
+            for issue in issues:
+                if "Unexpected table" in issue:
+                    reporter.log_warn("Schema", issue)
+                else:
+                    reporter.log_fail("Schema", issue, "Run migrations to fix: python -c \"from src.database.migrations import run_migrations; run_migrations()\"")
+    except Exception as exc:
+        reporter.log_fail("Schema validation", str(exc), "Check src/database/models.py EXPECTED_SCHEMA.")
 
 
 def check_network(reporter: Reporter) -> None:

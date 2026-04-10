@@ -203,6 +203,95 @@ def _v8_anomaly_category_expand(db: DatabaseManager) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_cat_active  ON anomaly_events (category, is_active)")
 
 
+@migration(version=9, description="Fix anomaly_events schema: add cooldown_key, expand severity CHECK, ensure all columns")
+def _v9_fix_anomaly_events_schema(db: DatabaseManager) -> None:
+    """Ensure anomaly_events has all required columns and no restrictive CHECK on anomaly_type.
+
+    Bug: Direct schema modifications caused drift. This migration ensures
+    the table matches the expected schema regardless of current state.
+    """
+    # Check current columns
+    current_cols = {row['name'] for row in db.fetch_all("PRAGMA table_info(anomaly_events)")}
+
+    added: list[str] = []
+    if 'category' not in current_cols:
+        db.execute("ALTER TABLE anomaly_events ADD COLUMN category TEXT DEFAULT 'UNKNOWN'")
+        added.append('category')
+    if 'message' not in current_cols:
+        db.execute("ALTER TABLE anomaly_events ADD COLUMN message TEXT DEFAULT ''")
+        added.append('message')
+    if 'cooldown_key' not in current_cols:
+        db.execute("ALTER TABLE anomaly_events ADD COLUMN cooldown_key TEXT DEFAULT ''")
+        added.append('cooldown_key')
+
+    # Test if there's a restrictive CHECK constraint on anomaly_type
+    # by attempting an insert with a non-standard type
+    needs_rebuild = False
+    try:
+        db.execute(
+            """INSERT INTO anomaly_events
+               (index_id, timestamp, anomaly_type, severity, details, is_active)
+               VALUES ('__TEST__', datetime('now'), 'EXTENSIBILITY_TEST', 'LOW', '{}', 0)"""
+        )
+        db.execute("DELETE FROM anomaly_events WHERE index_id = '__TEST__'")
+    except Exception:
+        needs_rebuild = True
+
+    # Also check if severity CHECK is missing EXTREME
+    if not needs_rebuild:
+        try:
+            db.execute(
+                """INSERT INTO anomaly_events
+                   (index_id, timestamp, anomaly_type, severity, details, is_active)
+                   VALUES ('__TEST__', datetime('now'), 'TEST', 'EXTREME', '{}', 0)"""
+            )
+            db.execute("DELETE FROM anomaly_events WHERE index_id = '__TEST__'")
+        except Exception:
+            needs_rebuild = True
+
+    if needs_rebuild:
+        # Rebuild table without restrictive CHECK constraint on anomaly_type
+        # and with expanded severity CHECK
+        db.execute("ALTER TABLE anomaly_events RENAME TO _anomaly_events_backup")
+        db.execute("""
+            CREATE TABLE anomaly_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                index_id     TEXT    NOT NULL,
+                timestamp    TEXT    NOT NULL,
+                anomaly_type TEXT    NOT NULL,
+                severity     TEXT    NOT NULL DEFAULT 'MEDIUM'
+                             CHECK (severity IN ('LOW','MEDIUM','HIGH','EXTREME')),
+                category     TEXT    NOT NULL DEFAULT 'OTHER'
+                             CHECK (category IN ('VOLUME','PRICE','OI','FII_DII','DIVERGENCE','OTHER')),
+                details      TEXT    NOT NULL DEFAULT '{}',
+                message      TEXT    NOT NULL DEFAULT '',
+                cooldown_key TEXT    NOT NULL DEFAULT '',
+                is_active    INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        # Migrate data — handle column mismatch gracefully
+        backup_cols = {row['name'] for row in db.fetch_all("PRAGMA table_info(_anomaly_events_backup)")}
+        common_cols = backup_cols & {
+            'id', 'index_id', 'timestamp', 'anomaly_type', 'severity',
+            'details', 'is_active', 'category', 'message', 'cooldown_key',
+        }
+        cols_str = ', '.join(sorted(common_cols))
+        db.execute(f"INSERT INTO anomaly_events ({cols_str}) SELECT {cols_str} FROM _anomaly_events_backup")
+        db.execute("DROP TABLE _anomaly_events_backup")
+        added.append('TABLE_REBUILT')
+
+    # Ensure indices exist
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_active    ON anomaly_events(is_active, index_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_timestamp ON anomaly_events(timestamp)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_type      ON anomaly_events(anomaly_type)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_id_ts       ON anomaly_events (index_id, timestamp)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_type_active ON anomaly_events (anomaly_type, is_active)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_anomaly_cat_active  ON anomaly_events (category, is_active)")
+
+    if added:
+        logger.info(f"Migration v9: anomaly_events schema fixed — {', '.join(added)}")
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

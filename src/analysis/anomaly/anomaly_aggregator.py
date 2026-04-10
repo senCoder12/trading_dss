@@ -151,13 +151,14 @@ class AnomalyAggregator:
     concurrent scheduler calls do not corrupt shared state.
     """
 
-    def __init__(self, db: DatabaseManager) -> None:
+    def __init__(self, db: DatabaseManager, timeframe: str = "5m") -> None:
         self.db = db
+        self.timeframe = timeframe
         self._lock = threading.Lock()
 
         # Sub-detectors
-        self.volume_price = VolumePriceDetector(db)
-        self.oi_detector = OIAnomalyDetector(db)
+        self.volume_price = VolumePriceDetector(db, timeframe=timeframe)
+        self.oi_detector = OIAnomalyDetector(db, timeframe=timeframe)
         self.fii_detector = FIIFlowDetector(db)
         self.divergence_detector = CrossIndexDivergenceDetector(db)
 
@@ -192,6 +193,7 @@ class AnomalyAggregator:
         previous_chain=None,
         expiry_date=None,
         days_to_expiry: int = 0,
+        timeframe: Optional[str] = None,
     ) -> AnomalyDetectionResult:
         """Run ALL relevant detectors for a single index in one call.
 
@@ -225,6 +227,12 @@ class AnomalyAggregator:
         all_new: list[AnomalyEvent] = []
 
         with self._lock:
+            # 0. Handle timeframe override
+            if timeframe and timeframe != self.timeframe:
+                self.volume_price.set_timeframe(timeframe)
+                self.oi_detector.set_timeframe(timeframe)
+                self.timeframe = timeframe
+
             # 1. Ensure baselines
             vp_bl = self._ensure_vp_baselines(index_id, recent_price_bars)
 
@@ -481,7 +489,7 @@ class AnomalyAggregator:
     ) -> Baselines:
         """Get or compute volume/price baselines."""
         bl = self._vp_baselines.get(index_id)
-        if bl is not None:
+        if bl is not None and bl.computed_at is not None:
             # Recompute if older than 4 hours
             age = datetime.now(tz=_IST) - bl.computed_at
             if age < timedelta(hours=4) and bl.avg_volume_20d > 0:
@@ -497,7 +505,9 @@ class AnomalyAggregator:
         if len(recent_bars) >= 5:
             df = pd.DataFrame(recent_bars)
             bl = self.volume_price.update_baselines(index_id, df)
-            self._vp_baselines[index_id] = bl
+            # Only cache if baselines were actually computed (not fallback)
+            if bl.computed_at is not None:
+                self._vp_baselines[index_id] = bl
             return bl
 
         # Fallback: empty baselines — NOT cached so we recompute next cycle

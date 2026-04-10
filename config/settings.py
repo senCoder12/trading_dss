@@ -66,6 +66,115 @@ class PollingSettings(BaseSettings):
     model_config = {"env_prefix": "POLL_", "extra": "ignore"}
 
 
+ANOMALY_THRESHOLDS: dict[str, dict[str, float | int]] = {
+    "intraday": {
+        # Volume thresholds
+        "volume_zscore_elevated": 2.0,
+        "volume_zscore_high": 3.0,
+        "volume_zscore_extreme": 4.0,
+        "volume_acceleration_multiplier": 3.0,
+        "absorption_body_ratio": 0.3,
+
+        # Price thresholds
+        "price_gap_threshold_pct": 0.5,
+        "large_move_multiplier": 2.0,
+        "extreme_move_multiplier": 3.0,
+        "reversal_move_pct": 1.0,
+        "reversal_retrace_pct": 0.7,
+        "range_expansion_multiplier": 1.5,
+        "compression_multiplier": 0.3,
+
+        # OI thresholds
+        "oi_spike_zscore_medium": 2.5,
+        "oi_spike_zscore_high": 4.0,
+        "oi_concentration_change_pct": 20,
+        "oi_one_sided_ratio": 3.0,
+
+        # PCR thresholds
+        "pcr_zscore_extreme": 2.0,
+        "pcr_rapid_shift_threshold": 0.15,
+        "pcr_absolute_high": 1.5,
+        "pcr_absolute_low": 0.5,
+
+        # Max Pain thresholds
+        "max_pain_jump_pct": 1.0,
+        "spot_max_pain_diverge_pct": 2.0,
+
+        # IV thresholds
+        "iv_crush_pct": 20,
+        "iv_explosion_pct": 30,
+        "iv_skew_extreme_multiplier": 2.0,
+
+        # Cooldown durations (seconds)
+        "cooldown_low_seconds": 1800,
+        "cooldown_medium_seconds": 900,
+        "cooldown_high_seconds": 600,
+    },
+    "daily": {
+        # Volume — wider thresholds for daily bars
+        "volume_zscore_elevated": 2.5,
+        "volume_zscore_high": 3.5,
+        "volume_zscore_extreme": 5.0,
+        "volume_acceleration_multiplier": 4.0,
+        "absorption_body_ratio": 0.2,
+
+        # Price — daily moves are naturally larger
+        "price_gap_threshold_pct": 1.5,
+        "large_move_multiplier": 2.5,
+        "extreme_move_multiplier": 4.0,
+        "reversal_move_pct": 2.0,
+        "reversal_retrace_pct": 1.5,
+        "range_expansion_multiplier": 2.0,
+        "compression_multiplier": 0.4,
+
+        # OI — daily OI changes are bigger
+        "oi_spike_zscore_medium": 3.0,
+        "oi_spike_zscore_high": 5.0,
+        "oi_concentration_change_pct": 30,
+        "oi_one_sided_ratio": 4.0,
+
+        # PCR
+        "pcr_zscore_extreme": 2.5,
+        "pcr_rapid_shift_threshold": 0.25,
+        "pcr_absolute_high": 1.7,
+        "pcr_absolute_low": 0.4,
+
+        # Max Pain
+        "max_pain_jump_pct": 2.0,
+        "spot_max_pain_diverge_pct": 3.0,
+
+        # IV
+        "iv_crush_pct": 25,
+        "iv_explosion_pct": 40,
+        "iv_skew_extreme_multiplier": 2.5,
+
+        # Cooldown — one bar IS one day, so cooldowns are much longer
+        "cooldown_low_seconds": 86400,
+        "cooldown_medium_seconds": 86400,
+        "cooldown_high_seconds": 43200,
+    },
+}
+
+
+def get_anomaly_thresholds(timeframe: str) -> dict:
+    """Return the appropriate anomaly threshold profile for a given timeframe.
+
+    Intraday timeframes (1m, 3m, 5m, 15m, 30m, 1h) use tighter thresholds.
+    Daily and above (1d, 1w, 1M) use wider thresholds to avoid false positives.
+
+    Args:
+        timeframe: Bar timeframe string, e.g. "5m", "1h", "1d"
+
+    Returns:
+        Dict of threshold key-value pairs for the appropriate profile.
+    """
+    intraday_timeframes = {"1m", "3m", "5m", "15m", "30m", "1h"}
+    if timeframe in intraday_timeframes:
+        return ANOMALY_THRESHOLDS["intraday"]
+    return ANOMALY_THRESHOLDS["daily"]
+
+
+
 class SignalThresholds(BaseSettings):
     """Thresholds that trigger trading signal conditions."""
 

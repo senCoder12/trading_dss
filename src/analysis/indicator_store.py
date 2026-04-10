@@ -112,6 +112,10 @@ class IndicatorStore:
             "REVERSAL_WARNING": "BREAKOUT",
         }
 
+        # TODO: remove direct INSERT INTO anomaly_events - violates single
+        # persistence path. AlertManager is the sole writer for anomaly_events.
+        # These alerts should be returned as AnomalyEvent objects and routed
+        # through AlertManager.create_alert() instead.
         if result.alerts:
             alert_params = []
             for alert in result.alerts:

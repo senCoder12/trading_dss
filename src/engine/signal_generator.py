@@ -1100,6 +1100,10 @@ class SignalGenerator:
 
     # ------------------------------------------------------------------
     # Database persistence
+    # TODO: remove _save_signal - violates single persistence path.
+    # SignalTracker is the sole writer for trading_signals.
+    # This method should be removed and the caller should let
+    # SignalTracker.record_signal() handle persistence instead.
     # ------------------------------------------------------------------
 
     def _save_signal(

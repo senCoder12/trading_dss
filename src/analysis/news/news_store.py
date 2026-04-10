@@ -5,6 +5,12 @@ All SQL reads and writes for the news subsystem go through this class.
 NewsEngine is the only caller; nothing else should import NewsStore directly.
 """
 
+# ================================================================
+# TABLE OWNERSHIP: This class is the SOLE writer for `news_articles`
+# and `news_index_impact` tables.
+# No other module should INSERT, UPDATE, or DELETE from these tables.
+# ================================================================
+
 from __future__ import annotations
 
 import logging

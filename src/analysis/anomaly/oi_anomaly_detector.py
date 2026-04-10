@@ -24,6 +24,7 @@ from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
 from src.data.options_chain import OptionsChainData, OptionStrike, OISummary
 from src.analysis.anomaly.volume_price_detector import AnomalyEvent
+from config.settings import get_anomaly_thresholds
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class OIBaselines:
     """Rolling statistical baselines for OI/options behaviour over 20 days."""
 
     index_id: str
+    computed_at: Optional[datetime] = None
     avg_total_oi: float = 0.0
     std_total_oi: float = 0.0
     avg_oi_change_per_3min: float = 0.0
@@ -128,8 +130,10 @@ class OIAnomalyDetector:
     snapshots, and a cooldown tracker to suppress duplicate alerts.
     """
 
-    def __init__(self, db: DatabaseManager) -> None:
+    def __init__(self, db: DatabaseManager, timeframe: str = "5m") -> None:
         self.db = db
+        self.timeframe = timeframe
+        self.thresholds = get_anomaly_thresholds(timeframe)
         # {index_id: OIBaselines}
         self._baselines: dict[str, OIBaselines] = {}
         # {index_id: list[OISummary]} -- last 10 snapshots
@@ -141,15 +145,42 @@ class OIAnomalyDetector:
         # {index_id: list[AnomalyEvent]} -- active anomalies
         self._active_anomalies: dict[str, list[AnomalyEvent]] = {}
 
+    def set_timeframe(self, timeframe: str) -> None:
+        """Switch threshold profile (e.g. when backtesting on daily vs live on 5m)."""
+        self.timeframe = timeframe
+        self.thresholds = get_anomaly_thresholds(timeframe)
+
     # ------------------------------------------------------------------
     # Baselines
     # ------------------------------------------------------------------
 
     def get_baselines(self, index_id: str) -> Optional[OIBaselines]:
-        return self._baselines.get(index_id)
+        cached = self._baselines.get(index_id)
+        if cached is None:
+            return None
+
+        # Reject uncached fallbacks
+        if cached.computed_at is None:
+            if index_id in self._baselines:
+                del self._baselines[index_id]
+            return None
+
+        # Check staleness — recompute after 24 hours
+        now = datetime.now(tz=_IST)
+        age_seconds = (now - cached.computed_at).total_seconds()
+        if age_seconds > 86400:
+            logger.debug(f"OI Baselines {index_id}: stale ({age_seconds/3600:.1f}h). Evicting cache.")
+            del self._baselines[index_id]
+            return None
+
+        return cached
 
     def update_oi_baselines(self, index_id: str) -> OIBaselines:
-        """Compute OI baselines from the last 20 trading days of oi_aggregated data."""
+        """Compute OI baselines from the last 20 trading days of oi_aggregated data.
+
+        Prevents cache poisoning by validating data before storage.
+        """
+        MIN_BARS = 10
         end = datetime.now(tz=_IST)
         start = end - timedelta(days=30)  # fetch 30 calendar days to get ~20 trading days
 
@@ -158,9 +189,14 @@ class OIAnomalyDetector:
             (index_id, "%", start.isoformat(), end.isoformat()),
         )
 
-        if not rows:
-            bl = OIBaselines(index_id=index_id)
-            self._baselines[index_id] = bl
+        if not rows or len(rows) < MIN_BARS:
+            logger.warning(
+                f"OI Baselines {index_id}: insufficient data "
+                f"({len(rows) if rows else 0} bars, need {MIN_BARS}). "
+                f"NOT caching."
+            )
+            bl = OIBaselines(index_id=index_id, computed_at=None)
+            # Return but DO NOT cache
             return bl
 
         df = pd.DataFrame(rows)
@@ -168,6 +204,15 @@ class OIAnomalyDetector:
         # Total OI per snapshot
         total_ois = (df["total_ce_oi"].astype(float) + df["total_pe_oi"].astype(float))
         avg_total_oi = float(total_ois.mean()) if len(total_ois) > 0 else 0.0
+
+        # Validate before caching
+        if avg_total_oi <= 0:
+            logger.warning(
+                f"OI Baselines {index_id}: computed avg_total_oi is 0 despite {len(df)} bars. "
+                "Data may be corrupt. NOT caching."
+            )
+            return OIBaselines(index_id=index_id, computed_at=None)
+
         std_total_oi = float(total_ois.std(ddof=1)) if len(total_ois) > 1 else 0.0
 
         # OI change between consecutive snapshots
@@ -188,6 +233,7 @@ class OIAnomalyDetector:
 
         bl = OIBaselines(
             index_id=index_id,
+            computed_at=datetime.now(tz=_IST),
             avg_total_oi=avg_total_oi,
             std_total_oi=std_total_oi,
             avg_oi_change_per_3min=avg_oi_change,
@@ -197,6 +243,7 @@ class OIAnomalyDetector:
             avg_max_pain_shift_per_day=avg_mp_shift,
         )
         self._baselines[index_id] = bl
+        logger.debug(f"OI Baselines cached {index_id}: avg_total_oi={bl.avg_total_oi:.0f}")
         return bl
 
     # ------------------------------------------------------------------
@@ -241,7 +288,7 @@ class OIAnomalyDetector:
         # --- Check 1: Total OI change z-score ---
         z = _z_score(change, baselines.avg_oi_change_per_3min, baselines.std_oi_change_per_3min)
 
-        if z > 4.0 * threshold_mult:
+        if z > self.thresholds["oi_spike_zscore_high"] * threshold_mult:
             results.append(OIAnomaly(
                 index_id=index_id,
                 timestamp=now,
@@ -256,7 +303,7 @@ class OIAnomalyDetector:
                     f"(z={z:.1f}), possible large institutional activity"
                 ),
             ))
-        elif z > 2.5 * threshold_mult:
+        elif z > self.thresholds["oi_spike_zscore_medium"] * threshold_mult:
             results.append(OIAnomaly(
                 index_id=index_id,
                 timestamp=now,
@@ -289,7 +336,7 @@ class OIAnomalyDetector:
                         continue
                     oi_change_abs = abs(cur_oi - prev_oi_val)
                     oi_change_pct = (oi_change_abs / prev_oi_val) * 100
-                    if oi_change_pct > 20.0 / threshold_mult:
+                    if oi_change_pct > self.thresholds["oi_concentration_change_pct"] / threshold_mult:
                         near_atm = sp in atm_range
                         sev = "HIGH" if near_atm else "MEDIUM"
                         results.append(OIAnomaly(
@@ -321,7 +368,7 @@ class OIAnomalyDetector:
         pe_change = abs(current_snapshot.total_pe_oi - previous_snapshot.total_pe_oi)
 
         if ce_change > 0 and pe_change > 0:
-            if ce_change > 3 * pe_change:
+            if ce_change > self.thresholds["oi_one_sided_ratio"] * pe_change:
                 results.append(OIAnomaly(
                     index_id=index_id,
                     timestamp=now,
@@ -340,7 +387,7 @@ class OIAnomalyDetector:
                         f"Heavy CE writing = bearish signal"
                     ),
                 ))
-            elif pe_change > 3 * ce_change:
+            elif pe_change > self.thresholds["oi_one_sided_ratio"] * ce_change:
                 results.append(OIAnomaly(
                     index_id=index_id,
                     timestamp=now,
@@ -411,7 +458,7 @@ class OIAnomalyDetector:
         z = _z_score(current_pcr, baselines.avg_pcr, baselines.std_pcr)
 
         # --- Check 1: PCR z-score extremes ---
-        if z > 2.0:
+        if z > self.thresholds["pcr_zscore_extreme"]:
             results.append(OIAnomaly(
                 index_id=index_id,
                 timestamp=now,
@@ -429,7 +476,7 @@ class OIAnomalyDetector:
                     f"heavy put writing, bullish sentiment"
                 ),
             ))
-        elif z < -2.0:
+        elif z < -self.thresholds["pcr_zscore_extreme"]:
             results.append(OIAnomaly(
                 index_id=index_id,
                 timestamp=now,
@@ -452,7 +499,7 @@ class OIAnomalyDetector:
         if len(pcr_history) >= 2:
             oldest_in_window = pcr_history[0]
             pcr_shift = abs(current_pcr - oldest_in_window)
-            if pcr_shift > 0.15:
+            if pcr_shift > self.thresholds["pcr_rapid_shift_threshold"]:
                 direction = "BULLISH" if current_pcr > oldest_in_window else "BEARISH"
                 results.append(OIAnomaly(
                     index_id=index_id,
@@ -473,29 +520,29 @@ class OIAnomalyDetector:
                 ))
 
         # --- Check 3: PCR at historical extremes ---
-        if current_pcr > 1.5:
+        if current_pcr > self.thresholds["pcr_absolute_high"]:
             results.append(OIAnomaly(
                 index_id=index_id,
                 timestamp=now,
                 anomaly_type="PCR_EXTREME",
                 severity="MEDIUM",
-                details={"pcr": round(current_pcr, 3), "threshold": 1.5},
+                details={"pcr": round(current_pcr, 3), "threshold": self.thresholds["pcr_absolute_high"]},
                 directional_implication="BULLISH",
                 message=(
-                    f"{index_id}: PCR at extreme high ({current_pcr:.2f} > 1.5) — "
+                    f"{index_id}: PCR at extreme high ({current_pcr:.2f} > {self.thresholds['pcr_absolute_high']}) — "
                     f"contrarian signal: excessive put buying may indicate bottom"
                 ),
             ))
-        elif current_pcr < 0.5:
+        elif current_pcr < self.thresholds["pcr_absolute_low"]:
             results.append(OIAnomaly(
                 index_id=index_id,
                 timestamp=now,
                 anomaly_type="PCR_EXTREME",
                 severity="MEDIUM",
-                details={"pcr": round(current_pcr, 3), "threshold": 0.5},
+                details={"pcr": round(current_pcr, 3), "threshold": self.thresholds["pcr_absolute_low"]},
                 directional_implication="BEARISH",
                 message=(
-                    f"{index_id}: PCR at extreme low ({current_pcr:.2f} < 0.5) — "
+                    f"{index_id}: PCR at extreme low ({current_pcr:.2f} < {self.thresholds['pcr_absolute_low']}) — "
                     f"contrarian signal: excessive call buying may indicate top"
                 ),
             ))
@@ -521,9 +568,9 @@ class OIAnomalyDetector:
         if previous_max_pain <= 0 or spot_price <= 0:
             return results
 
-        # --- Check 1: Max pain jump (>1% shift in session) ---
+        # --- Check 1: Max pain jump (> X% shift in session) ---
         mp_shift_pct = abs(current_max_pain - previous_max_pain) / previous_max_pain * 100
-        if mp_shift_pct > 1.0:
+        if mp_shift_pct > self.thresholds["max_pain_jump_pct"]:
             results.append(OIAnomaly(
                 index_id=index_id,
                 timestamp=now,
@@ -544,9 +591,9 @@ class OIAnomalyDetector:
                 ),
             ))
 
-        # --- Check 2: Spot vs max pain divergence (>2%) ---
+        # --- Check 2: Spot vs max pain divergence (> X%) ---
         divergence_pct = abs(spot_price - current_max_pain) / current_max_pain * 100
-        if divergence_pct > 2.0:
+        if divergence_pct > self.thresholds["spot_max_pain_diverge_pct"]:
             # Convergence probability increases closer to expiry
             if days_to_expiry <= 0:
                 convergence_prob = 0.9
@@ -616,9 +663,9 @@ class OIAnomalyDetector:
         atm_iv = (atm_ce_iv + atm_pe_iv) / 2 if atm_ce_iv > 0 and atm_pe_iv > 0 else max(atm_ce_iv, atm_pe_iv)
 
         if baseline_mid > 0:
-            # --- Check 1: IV crush (ATM IV dropped >20% from baseline) ---
+            # --- Check 1: IV crush (ATM IV dropped > X% from baseline) ---
             iv_drop_pct = (baseline_mid - atm_iv) / baseline_mid * 100
-            if iv_drop_pct > 20.0:
+            if iv_drop_pct > self.thresholds["iv_crush_pct"]:
                 results.append(OIAnomaly(
                     index_id=index_id,
                     timestamp=now,
@@ -637,9 +684,9 @@ class OIAnomalyDetector:
                     ),
                 ))
 
-            # --- Check 2: IV explosion (ATM IV spiked >30% above baseline) ---
+            # --- Check 2: IV explosion (ATM IV spiked > X% above baseline) ---
             iv_spike_pct = (atm_iv - baseline_mid) / baseline_mid * 100
-            if iv_spike_pct > 30.0:
+            if iv_spike_pct > self.thresholds["iv_explosion_pct"]:
                 results.append(OIAnomaly(
                     index_id=index_id,
                     timestamp=now,
@@ -661,8 +708,8 @@ class OIAnomalyDetector:
         # --- Check 3: IV skew anomaly (put IV >> call IV) ---
         if atm_ce_iv > 0 and atm_pe_iv > 0:
             skew_ratio = atm_pe_iv / atm_ce_iv
-            # Normal skew is ~1.0-1.3; extreme is >2.0
-            if skew_ratio > 2.0:
+            # Normal skew is ~1.0-1.3; extreme is > X
+            if skew_ratio > self.thresholds["iv_skew_extreme_multiplier"]:
                 results.append(OIAnomaly(
                     index_id=index_id,
                     timestamp=now,
@@ -860,7 +907,7 @@ class OIAnomalyDetector:
                 last_ts = pd.Timestamp(row["timestamp"])
                 if last_ts.tzinfo is None:
                     last_ts = last_ts.tz_localize(_IST)
-                cooldown_min = _COOLDOWN_MINUTES.get(ev.severity, 15)
+                cooldown_min = self._get_cooldown_minutes(ev.severity)
                 if (ev.timestamp - last_ts.to_pydatetime()) < timedelta(minutes=cooldown_min):
                     continue
 
@@ -889,8 +936,16 @@ class OIAnomalyDetector:
         last = self._cooldowns.get(key)
         if last is None:
             return False
-        cooldown_min = _COOLDOWN_MINUTES.get(event.severity, 15)
+        cooldown_min = self._get_cooldown_minutes(event.severity)
         return (event.timestamp - last) < timedelta(minutes=cooldown_min)
+
+    def _get_cooldown_minutes(self, severity: str) -> float:
+        """Helper to get cooldown minutes from thresholds."""
+        if severity == "HIGH":
+            return self.thresholds.get("cooldown_high_seconds", 600) / 60
+        if severity == "MEDIUM":
+            return self.thresholds.get("cooldown_medium_seconds", 900) / 60
+        return self.thresholds.get("cooldown_low_seconds", 1800) / 60
 
     def _set_cooldown(self, event: AnomalyEvent) -> None:
         self._cooldowns[event.cooldown_key] = event.timestamp

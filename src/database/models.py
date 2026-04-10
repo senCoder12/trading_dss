@@ -187,6 +187,7 @@ class AnomalyEvent:
     category: str                    # "VOLUME" | "PRICE" | "OI" | "OTHER"
     details: str                     # JSON string with detector-specific numbers
     message: str                     # Human-readable alert text
+    cooldown_key: str                # Dedup key for cooldown logic
     is_active: bool
 
 
@@ -446,11 +447,12 @@ TABLE_DDL: dict[str, list[str]] = {
             timestamp    TEXT    NOT NULL,
             anomaly_type TEXT    NOT NULL,
             severity     TEXT    NOT NULL DEFAULT 'MEDIUM'
-                         CHECK (severity IN ('HIGH','MEDIUM','LOW')),
+                         CHECK (severity IN ('LOW','MEDIUM','HIGH','EXTREME')),
             category     TEXT    NOT NULL DEFAULT 'OTHER'
                          CHECK (category IN ('VOLUME','PRICE','OI','FII_DII','DIVERGENCE','OTHER')),
             details      TEXT    NOT NULL DEFAULT '{}',
             message      TEXT    NOT NULL DEFAULT '',
+            cooldown_key TEXT    NOT NULL DEFAULT '',
             is_active    INTEGER NOT NULL DEFAULT 1
         )
         """,
@@ -555,3 +557,85 @@ TABLE_CREATION_ORDER: list[str] = [
     "vix_data",
     "system_health",
 ]
+
+
+# ================================================================
+# EXPECTED SCHEMA — Source of truth for schema validation
+# Maps table_name → {column_name: column_type}
+# Update this whenever adding a migration that changes schema.
+# ================================================================
+
+EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
+    "index_master": {
+        "id": "TEXT", "display_name": "TEXT", "nse_symbol": "TEXT",
+        "yahoo_symbol": "TEXT", "exchange": "TEXT", "lot_size": "INTEGER",
+        "has_options": "INTEGER", "option_symbol": "TEXT",
+        "sector_category": "TEXT", "is_active": "INTEGER",
+        "created_at": "TEXT", "updated_at": "TEXT",
+    },
+    "price_data": {
+        "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",
+        "open": "REAL", "high": "REAL", "low": "REAL", "close": "REAL",
+        "volume": "REAL", "vwap": "REAL", "source": "TEXT", "timeframe": "TEXT",
+    },
+    "options_chain_snapshot": {
+        "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",
+        "expiry_date": "TEXT", "strike_price": "REAL", "option_type": "TEXT",
+        "open_interest": "INTEGER", "oi_change": "INTEGER", "volume": "INTEGER",
+        "ltp": "REAL", "iv": "REAL", "bid_price": "REAL", "ask_price": "REAL",
+    },
+    "oi_aggregated": {
+        "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",
+        "expiry_date": "TEXT", "total_ce_oi": "INTEGER", "total_pe_oi": "INTEGER",
+        "total_ce_oi_change": "INTEGER", "total_pe_oi_change": "INTEGER",
+        "pcr": "REAL", "max_pain_strike": "REAL",
+        "highest_ce_oi_strike": "REAL", "highest_pe_oi_strike": "REAL",
+    },
+    "technical_indicators": {
+        "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",
+        "timeframe": "TEXT", "vwap": "REAL", "ema_20": "REAL", "ema_50": "REAL",
+        "rsi_14": "REAL", "support_1": "REAL", "resistance_1": "REAL",
+        "support_2": "REAL", "resistance_2": "REAL", "avg_volume_20": "REAL",
+        "technical_signal": "TEXT", "signal_strength": "REAL",
+    },
+    "news_articles": {
+        "id": "INTEGER", "title": "TEXT", "summary": "TEXT",
+        "source": "TEXT", "url": "TEXT", "published_at": "TEXT",
+        "fetched_at": "TEXT", "raw_sentiment_score": "REAL",
+        "adjusted_sentiment": "REAL", "impact_category": "TEXT",
+        "source_credibility": "REAL", "is_processed": "INTEGER",
+    },
+    "news_index_impact": {
+        "id": "INTEGER", "news_id": "INTEGER", "index_id": "TEXT",
+        "relevance_score": "REAL", "mapped_via": "TEXT",
+    },
+    "anomaly_events": {
+        "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",
+        "anomaly_type": "TEXT", "severity": "TEXT", "category": "TEXT",
+        "details": "TEXT", "message": "TEXT", "cooldown_key": "TEXT",
+        "is_active": "INTEGER",
+    },
+    "trading_signals": {
+        "id": "INTEGER", "index_id": "TEXT", "generated_at": "TEXT",
+        "signal_type": "TEXT", "confidence_level": "TEXT",
+        "entry_price": "REAL", "target_price": "REAL",
+        "stop_loss": "REAL", "risk_reward_ratio": "REAL",
+        "regime": "TEXT", "technical_vote": "TEXT", "options_vote": "TEXT",
+        "news_vote": "TEXT", "anomaly_vote": "TEXT",
+        "reasoning": "TEXT", "outcome": "TEXT",
+        "actual_exit_price": "REAL", "actual_pnl": "REAL", "closed_at": "TEXT",
+    },
+    "fii_dii_activity": {
+        "id": "INTEGER", "date": "TEXT", "category": "TEXT",
+        "buy_value": "REAL", "sell_value": "REAL", "net_value": "REAL",
+        "segment": "TEXT",
+    },
+    "vix_data": {
+        "id": "INTEGER", "timestamp": "TEXT", "vix_value": "REAL",
+        "vix_change": "REAL", "vix_change_pct": "REAL",
+    },
+    "system_health": {
+        "id": "INTEGER", "timestamp": "TEXT", "component": "TEXT",
+        "status": "TEXT", "message": "TEXT", "response_time_ms": "INTEGER",
+    },
+}

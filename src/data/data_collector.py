@@ -6,6 +6,17 @@ data collection jobs using APScheduler.  Designed to run as a long-lived
 background process during and around Indian market hours.
 """
 
+# ================================================================
+# TABLE OWNERSHIP: This class is the SOLE writer for:
+#   - price_data
+#   - options_chain_snapshot
+#   - oi_aggregated
+#   - vix_data
+#   - fii_dii_activity
+#   - system_health
+# Analysis components only READ from these tables.
+# ================================================================
+
 from __future__ import annotations
 
 import json
@@ -332,6 +343,10 @@ class DataCollector:
                         self.options_fetcher.save_to_db(chain, self.db)
 
                     # ── OI buildup / spike detection ──────────────────────
+                    # NOTE: Spike detection runs here but persistence is
+                    # handled by AlertManager (sole writer for anomaly_events).
+                    # DataCollector logs spikes; the anomaly subsystem
+                    # picks them up via OIAnomalyDetector → AlertManager.
                     snaps = self.options_fetcher.get_memory_snapshots(
                         sym, chain.expiry_date
                     )
@@ -339,29 +354,19 @@ class DataCollector:
                         prev_chain = snaps[0]
                         spikes = self.options_fetcher.detect_oi_spikes(chain, prev_chain)
                         for spike in spikes:
-                            if not self.dry_run:
-                                pct = abs(spike.change_pct)
-                                severity = (
-                                    "HIGH" if pct >= _SPIKE_HIGH_PCT
-                                    else "MEDIUM" if pct >= _SPIKE_MEDIUM_PCT
-                                    else "LOW"
-                                )
-                                details = json.dumps({
-                                    "option_type":  spike.option_type,
-                                    "strike":       spike.strike_price,
-                                    "prev_oi":      spike.previous_oi,
-                                    "curr_oi":      spike.current_oi,
-                                    "change_pct":   spike.change_pct,
-                                    "is_new_pos":   spike.is_new_position,
-                                })
-                                self.db.execute(Q.INSERT_ANOMALY_EVENT, (
-                                    idx.id,
-                                    chain.timestamp.isoformat(),
-                                    "OI_SPIKE",
-                                    severity,
-                                    details,
-                                    1,  # is_active
-                                ))
+                            pct = abs(spike.change_pct)
+                            severity = (
+                                "HIGH" if pct >= _SPIKE_HIGH_PCT
+                                else "MEDIUM" if pct >= _SPIKE_MEDIUM_PCT
+                                else "LOW"
+                            )
+                            logger.info(
+                                "OI spike detected: %s %s strike=%.0f "
+                                "change=%.1f%% severity=%s",
+                                idx.id, spike.option_type,
+                                spike.strike_price, spike.change_pct,
+                                severity,
+                            )
 
                 except Exception as exc:
                     logger.error("Options chain failed for %s: %s", idx.id, exc)
