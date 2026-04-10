@@ -1,84 +1,104 @@
-"""
-CLI backtest runner.
-
-Usage:
-    python scripts/run_backtest.py --index NIFTY50 --start 2022-01-01 --end 2024-01-01
-    python scripts/run_backtest.py --index BANKNIFTY --start 2023-01-01 --capital 500000
-"""
-
-from __future__ import annotations
-
 import argparse
 import sys
-from datetime import date
-from pathlib import Path
+import os
+from datetime import datetime
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from config.logging_config import setup_logging
-from config.settings import settings
-from src.data.index_registry import IndexRegistry
-from src.data.historical_data import HistoricalDataFetcher
-from src.backtest.backtester import Backtester
-from src.analysis.technical import ema
+from src.database.db_manager import DatabaseManager
+from src.backtest.strategy_runner import StrategyRunner, BacktestConfig
+from src.backtest.metrics import MetricsCalculator
+from src.backtest.trade_simulator import SimulatorConfig
+from src.backtest.walk_forward import WalkForwardValidator, WalkForwardConfig
+from src.backtest.report_generator import ReportGenerator
 
-
-def ema_crossover(short: int = 20, long: int = 50):
-    """Return an EMA crossover strategy for given periods."""
-    def strategy(df):
-        if len(df) < long:
-            return 0
-        s = ema(df["close"], short).iloc[-1]
-        l = ema(df["close"], long).iloc[-1]
-        return 1 if s > l else -1
-    return strategy
-
-
-def main() -> None:
-    setup_logging(log_dir=settings.logging.log_dir)
-
-    parser = argparse.ArgumentParser(description="Run a backtest")
-    parser.add_argument("--index", required=True, help="Index ID (e.g. NIFTY50)")
+def main():
+    parser = argparse.ArgumentParser(description="Trading DSS — Backtesting Engine v1.0")
+    parser.add_argument("--index", nargs="+", required=True, help="One or more index IDs")
     parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
-    parser.add_argument("--end", default=None, help="End date YYYY-MM-DD (default today)")
-    parser.add_argument("--capital", type=float, default=100_000.0, help="Initial capital ₹")
-    parser.add_argument("--quantity", type=int, default=1)
-    parser.add_argument("--short-ema", type=int, default=20)
-    parser.add_argument("--long-ema", type=int, default=50)
+    parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
+    parser.add_argument("--timeframe", default="1d", help="Bar timeframe, default '1d'")
+    parser.add_argument("--mode", default="TECHNICAL_ONLY", choices=["TECHNICAL_ONLY", "TECHNICAL_OPTIONS", "FULL"])
+    parser.add_argument("--capital", type=float, default=100000.0, help="Initial capital ₹")
+    parser.add_argument("--risk-per-trade", type=float, default=2.0, help="Max risk %%")
+    parser.add_argument("--min-confidence", default="MEDIUM", choices=["LOW", "MEDIUM", "HIGH"])
+    parser.add_argument("--walk-forward", action="store_true", help="Enable walk-forward validation")
+    parser.add_argument("--train-days", type=int, default=252, help="Walk-forward train window")
+    parser.add_argument("--test-days", type=int, default=63, help="Walk-forward test window")
+    parser.add_argument("--save-report", action="store_true", help="Save report to data/reports/")
+    parser.add_argument("--verbose", action="store_true", help="Show detailed progress")
+    
     args = parser.parse_args()
-
-    registry = IndexRegistry.from_file(settings.indices_config_path)
-    fetcher = HistoricalDataFetcher(registry)
-
-    start = date.fromisoformat(args.start)
-    end = date.fromisoformat(args.end) if args.end else date.today()
-
-    print(f"Downloading {args.index} history from {start} to {end}…")
-    ohlcv = fetcher.fetch(args.index.upper(), start, end)
-    print(f"  {len(ohlcv)} bars downloaded")
-
-    bt = Backtester(initial_capital=args.capital, quantity=args.quantity)
-    result = bt.run(
-        args.index.upper(), ohlcv,
-        ema_crossover(args.short_ema, args.long_ema),
+    
+    try:
+        start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
+        end_date = datetime.strptime(args.end, "%Y-%m-%d").date()
+    except ValueError:
+        print("Error: Invalid date format. Please use YYYY-MM-DD.")
+        sys.exit(1)
+        
+    db = DatabaseManager()
+    db.connect()
+    
+    simulator_config = SimulatorConfig(
+        initial_capital=args.capital,
+        max_risk_per_trade_pct=args.risk_per_trade / 100.0
     )
-
-    m = result.metrics
-    print(f"\n{'─' * 50}")
-    print(f"  BACKTEST RESULTS — {result.index_id}")
-    print(f"  Period : {result.start_date} → {result.end_date}")
-    print(f"{'─' * 50}")
-    print(f"  Capital      : ₹{result.initial_capital:>12,.2f} → ₹{result.final_capital:>12,.2f}")
-    print(f"  Total Return : {m.total_return_pct:>+.2f}%")
-    print(f"  CAGR         : {m.cagr_pct:>+.2f}%")
-    print(f"  Sharpe Ratio : {m.sharpe_ratio:>.3f}")
-    print(f"  Sortino      : {m.sortino_ratio:>.3f}")
-    print(f"  Max Drawdown : {m.max_drawdown_pct:.2f}%")
-    print(f"  Win Rate     : {m.win_rate_pct:.1f}%")
-    print(f"  Profit Factor: {m.profit_factor:.2f}")
-    print(f"  Total Trades : {m.total_trades}")
-    print(f"{'─' * 50}\n")
-
+    
+    for index_id in args.index:
+        print("=" * 44)
+        print("Trading DSS \u2014 Backtesting Engine v1.0")
+        print(f"Index: {index_id}")
+        print(f"Period: {args.start} \u2192 {args.end}")
+        print(f"Mode: {args.mode}")
+        print(f"Capital: \u20b9{args.capital:,.0f}")
+        print("=" * 44)
+        
+        if args.walk_forward:
+            validator = WalkForwardValidator(db)
+            wf_config = WalkForwardConfig(
+                index_id=index_id,
+                full_start_date=start_date,
+                full_end_date=end_date,
+                timeframe=args.timeframe,
+                train_window_days=args.train_days,
+                test_window_days=args.test_days,
+                step_days=args.test_days,
+                simulator_config=simulator_config,
+                mode=args.mode,
+                min_confidence=args.min_confidence
+            )
+            wf_result = validator.run_walk_forward(wf_config)
+            report = ReportGenerator.generate_walk_forward_report(wf_result)
+            print(report)
+            
+            if args.save_report:
+                filepath = ReportGenerator.save_report(report, index_id=f"{index_id}_WF")
+                print(f"Report saved to: {filepath}")
+                
+        else:
+            runner = StrategyRunner(db)
+            config = BacktestConfig(
+                index_id=index_id,
+                start_date=start_date,
+                end_date=end_date,
+                timeframe=args.timeframe,
+                mode=args.mode,
+                simulator_config=simulator_config,
+                min_confidence=args.min_confidence
+            )
+            result = runner.run(config)
+            
+            calc = MetricsCalculator()
+            metrics = calc.calculate_all(result.trade_history, result.equity_curve, simulator_config.initial_capital)
+            
+            report = ReportGenerator.generate_backtest_report(result, metrics)
+            print(report)
+            
+            if args.save_report:
+                filepath = ReportGenerator.save_report(report, index_id=index_id)
+                print(f"Report saved to: {filepath}")
+        print()
 
 if __name__ == "__main__":
     main()

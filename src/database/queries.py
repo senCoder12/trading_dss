@@ -679,3 +679,72 @@ SELECT version FROM schema_version ORDER BY version DESC LIMIT 1
 LIST_ALL_MIGRATIONS = """
 SELECT * FROM schema_version ORDER BY version ASC
 """
+
+# ============================================================================
+# Backtest / data-replay helpers
+# ============================================================================
+
+# Date range available for an index + timeframe
+GET_PRICE_DATE_RANGE = """
+SELECT MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts,
+       COUNT(*) AS bar_count
+FROM price_data
+WHERE index_id = ? AND timeframe = ?
+"""
+
+# All available timeframes for an index
+LIST_AVAILABLE_TIMEFRAMES = """
+SELECT DISTINCT timeframe FROM price_data
+WHERE index_id = ? ORDER BY timeframe
+"""
+
+# All index_ids that have price data
+LIST_INDICES_WITH_DATA = """
+SELECT DISTINCT index_id FROM price_data ORDER BY index_id
+"""
+
+# Options chain snapshot nearest to (and <=) a given timestamp
+GET_OPTIONS_SNAPSHOT_AT_TIME = """
+SELECT * FROM options_chain_snapshot
+WHERE index_id = ? AND timestamp <= ?
+ORDER BY timestamp DESC
+LIMIT 200
+"""
+
+# OI aggregated nearest to (and <=) a given timestamp
+GET_OI_AGGREGATED_AT_TIME = """
+SELECT * FROM oi_aggregated
+WHERE index_id = ? AND timestamp <= ?
+ORDER BY timestamp DESC
+LIMIT 1
+"""
+
+# FII/DII for the most recent date strictly BEFORE the given date
+GET_FII_DII_BEFORE_DATE = """
+SELECT * FROM fii_dii_activity
+WHERE date < ? ORDER BY date DESC LIMIT 10
+"""
+
+# VIX reading nearest to (and <=) a given timestamp
+GET_VIX_AT_TIME = """
+SELECT * FROM vix_data
+WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1
+"""
+
+# Check whether any options data exists in a date range
+AGG_OPTIONS_DATA_EXISTS = """
+SELECT COUNT(*) AS cnt FROM options_chain_snapshot
+WHERE index_id = ? AND timestamp BETWEEN ? AND ?
+"""
+
+# Check whether any FII/DII data exists in a date range
+AGG_FII_DII_DATA_EXISTS = """
+SELECT COUNT(*) AS cnt FROM fii_dii_activity
+WHERE date BETWEEN ? AND ?
+"""
+
+# Check whether any VIX data exists in a date range
+AGG_VIX_DATA_EXISTS = """
+SELECT COUNT(*) AS cnt FROM vix_data
+WHERE timestamp BETWEEN ? AND ?
+"""

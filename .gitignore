@@ -73,3 +73,5 @@ Thumbs.db
 # ── Distribution ──────────────────────────────────────────────────────────────
 *.tar.gz
 *.zip
+
+data/reports/
