@@ -248,7 +248,7 @@ class TrendIndicators:
             return pd.Series(dtype=float)
 
         if len(clean) < period:
-            logger.warning(
+            logger.debug(
                 "DataFrame has %d rows but EMA period is %d — result will be partially NaN.",
                 len(clean),
                 period,

@@ -172,11 +172,9 @@ class MetricsCalculator:
             if not downside_returns:
                 sortino = 999.0
             else:
-                downside_std_daily = statistics.pstdev(downside_returns) if len(downside_returns) > 0 else 0.0
-                downside_std_daily_sampled = statistics.stdev(downside_returns) if len(downside_returns) > 1 else math.sqrt(sum(x*x for x in downside_returns) / len(downside_returns))
+                # Semi-deviation: use all N observations in denominator (standard Sortino formula)
                 downside_variance = sum(r**2 for r in downside_returns) / len(daily_returns)
                 downside_std = math.sqrt(downside_variance) * math.sqrt(252)
-                
                 if downside_std > 0:
                     sortino = (annualized_return - risk_free_rate) / downside_std
                 else:
@@ -412,17 +410,8 @@ class MetricsCalculator:
             
         is_profitable = total_return_amount > 0
         has_edge = expected_value_per_trade > 0 and profit_factor > 1.1
-        
-        # Grading
-        grade = "F"
-        if win_rate > 55 and profit_factor > 1.5 and sharpe > 1.5 and max_drawdown_pct < 15:
-            grade = "A"
-        elif win_rate > 50 and profit_factor > 1.2 and sharpe > 1.0 and max_drawdown_pct < 20:
-            grade = "B"
-        elif win_rate > 45 and profit_factor > 1.0 and sharpe > 0.5:
-            grade = "C"
-        elif profit_factor > 0.8:
-            grade = "D"
+
+        grade = MetricsCalculator._grade_strategy(win_rate, profit_factor, sharpe, max_drawdown_pct)
             
         metrics = BacktestMetrics(
             total_return_pct=round(total_return_pct, 4),
@@ -522,6 +511,18 @@ class MetricsCalculator:
         )
         metrics.assessment = MetricsCalculator.generate_assessment(metrics)
         return metrics
+
+    @staticmethod
+    def _grade_strategy(win_rate: float, profit_factor: float, sharpe: float, max_drawdown_pct: float) -> str:
+        if win_rate > 55 and profit_factor > 1.5 and sharpe > 1.5 and max_drawdown_pct < 15:
+            return "A"
+        if win_rate > 50 and profit_factor > 1.2 and sharpe > 1.0 and max_drawdown_pct < 20:
+            return "B"
+        if win_rate > 45 and profit_factor > 1.0 and sharpe > 0.5:
+            return "C"
+        if profit_factor > 0.8:
+            return "D"
+        return "F"
 
     @staticmethod
     def _zero_metrics(initial_capital: float) -> BacktestMetrics:

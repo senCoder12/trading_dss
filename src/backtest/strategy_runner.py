@@ -550,6 +550,8 @@ class StrategyRunner:
                     anomaly=anomaly_vote,
                     regime=regime,
                     current_spot_price=time_slice.current_bar["close"],
+                    mode=effective_mode,
+                    timestamp=time_slice.timestamp,
                 )
             except Exception:
                 logger.debug(

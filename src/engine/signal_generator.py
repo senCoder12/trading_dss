@@ -197,6 +197,8 @@ class SignalGenerator:
         anomaly: Optional[AnomalyVote],
         regime: MarketRegime,
         current_spot_price: float,
+        mode: str = "FULL",
+        timestamp: Optional[datetime] = None,
     ) -> TradingSignal:
         """Generate a TradingSignal from all available analysis inputs.
 
@@ -218,8 +220,15 @@ class SignalGenerator:
             Phase 5.1 MarketRegime — always required.
         current_spot_price:
             Latest spot price used as the entry reference.
+        mode:
+            Backtest/trading mode — ``"TECHNICAL_ONLY"``, ``"TECHNICAL_OPTIONS"``,
+            or ``"FULL"`` (default). Controls which missing-source penalties apply.
+        timestamp:
+            Override for the current time (used in backtesting so that
+            time-based checks like market-close proximity use the bar's
+            timestamp rather than the real wall-clock time).
         """
-        now = datetime.now(tz=_IST)
+        now = timestamp if timestamp is not None else datetime.now(tz=_IST)
         self._refresh_daily_cache(now)
         warnings: list[str] = []
 
@@ -267,7 +276,7 @@ class SignalGenerator:
 
         # ── Step 5: Confidence ─────────────────────────────────────────
         confidence_score, confidence_level = self._calculate_confidence(
-            direction, weighted_score, votes, technical, news, anomaly, regime, warnings,
+            direction, weighted_score, votes, technical, news, anomaly, regime, warnings, mode,
         )
 
         if confidence_score < self._min_conf_low:
@@ -572,9 +581,18 @@ class SignalGenerator:
         anomaly: Optional[AnomalyVote],
         regime: MarketRegime,
         warnings: list[str],
+        mode: str = "FULL",
     ) -> tuple[float, str]:
         """Return ``(confidence_score, confidence_level)``."""
-        base = min(abs(weighted_score) / 2.0, 1.0)
+        # In FULL mode, weighted scores routinely exceed 1.0 (many components in
+        # agreement), so we halve to keep base ≤ 1.0.  In TECHNICAL_ONLY mode,
+        # only 3 components contribute, so scores rarely exceed 0.8; dividing by
+        # 2 makes the confidence systematically too low.  Use the raw score
+        # directly so the confidence reflects the available evidence.
+        if mode == "TECHNICAL_ONLY":
+            base = min(abs(weighted_score), 1.0)
+        else:
+            base = min(abs(weighted_score) / 2.0, 1.0)
         adj = 0.0
 
         is_bullish = direction == "BUY_CALL"
@@ -648,12 +666,23 @@ class SignalGenerator:
         if news and news.active_article_count <= 2:
             adj -= 0.05
 
-        # Penalty per missing data source
-        missing = sum([
-            technical.options is None,
-            news is None,
-            technical.smart_money is None,
-        ])
+        # Penalty per missing data source — only count sources expected in this mode.
+        # TECHNICAL_ONLY: options and news are intentionally absent, no penalty.
+        # TECHNICAL_OPTIONS: news is intentionally absent; penalise missing options.
+        # FULL: all three sources are expected.
+        if mode == "TECHNICAL_ONLY":
+            missing = sum([technical.smart_money is None])
+        elif mode == "TECHNICAL_OPTIONS":
+            missing = sum([
+                technical.options is None,
+                technical.smart_money is None,
+            ])
+        else:
+            missing = sum([
+                technical.options is None,
+                news is None,
+                technical.smart_money is None,
+            ])
         adj -= 0.05 * missing
 
         score = max(_CONF_FLOOR, min(_CONF_CEILING, base + adj))
@@ -680,18 +709,28 @@ class SignalGenerator:
         confidence_level: str,
     ) -> tuple[float, float, float, float]:
         """Return ``(entry, target, stop_loss, risk_reward_ratio)``."""
+        import math
         atr = technical.volatility.atr_value
-        if not atr or atr <= 0:
+        if not atr or not math.isfinite(atr) or atr <= 0:
             atr = entry_price * 0.005  # fallback: 0.5% of price
 
         sl_mult = regime.stop_loss_multiplier
+        if not sl_mult or not math.isfinite(sl_mult) or sl_mult <= 0:
+            sl_mult = 1.5  # fallback
         rr = 1.5 if confidence_level == "HIGH" else 2.0
 
+        support = technical.immediate_support
+        resistance = technical.immediate_resistance
+        if not support or not math.isfinite(support) or support <= 0:
+            support = entry_price * 0.98   # fallback: 2% below entry
+        if not resistance or not math.isfinite(resistance) or resistance <= 0:
+            resistance = entry_price * 1.02  # fallback: 2% above entry
+
         if direction == "BUY_CALL":
-            stop_loss = technical.immediate_support - atr * sl_mult * 0.5
+            stop_loss = support - atr * sl_mult * 0.5
             target = entry_price + atr * sl_mult * rr
         else:  # BUY_PUT
-            stop_loss = technical.immediate_resistance + atr * sl_mult * 0.5
+            stop_loss = resistance + atr * sl_mult * 0.5
             target = entry_price - atr * sl_mult * rr
 
         stop_loss = max(stop_loss, 0.01)
