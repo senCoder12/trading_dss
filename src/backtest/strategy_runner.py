@@ -40,6 +40,7 @@ from src.analysis.anomaly.anomaly_aggregator import AnomalyAggregator, AnomalyVo
 from src.analysis.news.news_engine import NewsVote
 from src.analysis.technical_aggregator import TechnicalAggregator
 from src.backtest.data_replay import DataReplayEngine, ReplayIterator, ReplaySession
+from src.backtest.metrics import BacktestMetrics, MetricsCalculator
 from src.backtest.trade_simulator import (
     ClosedTrade,
     EquityPoint,
@@ -151,8 +152,8 @@ class BacktestResult:
     actionable_signals: int
     executed_trades: int
 
-    # Core metrics — populated by Step 6.4 metrics calculator
-    metrics: Optional[dict] = None
+    # Core metrics — populated by MetricsCalculator at end of run()
+    metrics: Optional[BacktestMetrics] = None
 
     # Equity curve
     equity_curve: list[EquityPoint] = field(default_factory=list)
@@ -311,6 +312,14 @@ def _build_result(
     initial = config.simulator_config.initial_capital
     final = state.current_capital + state.unrealized_pnl
     total_bars = session.total_bars
+    trade_history = simulator.trade_history
+    equity_curve = list(simulator.equity_curve)
+
+    metrics = MetricsCalculator.calculate_all(
+        trade_history=trade_history,
+        equity_curve=equity_curve,
+        initial_capital=initial,
+    )
 
     return BacktestResult(
         config=config,
@@ -319,12 +328,13 @@ def _build_result(
         end_date=session.actual_end,
         total_bars=total_bars,
         trading_days=session.trading_days,
-        trade_history=simulator.trade_history,
-        total_trades=len(simulator.trade_history),
+        trade_history=trade_history,
+        total_trades=len(trade_history),
         total_signals_generated=total_bars,
         actionable_signals=len(signals_generated),
         executed_trades=len(signals_generated),
-        equity_curve=list(simulator.equity_curve),
+        metrics=metrics,
+        equity_curve=equity_curve,
         initial_capital=initial,
         final_capital=round(final, 2),
         total_return_pct=round(((final - initial) / initial) * 100, 4)
