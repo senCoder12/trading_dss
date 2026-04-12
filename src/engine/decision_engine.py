@@ -39,6 +39,7 @@ Add these jobs to ``src/data/data_collector.py``:
 from __future__ import annotations
 
 import logging
+import os
 import time
 import threading
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from config.constants import IST_TIMEZONE
+from config.settings import KILL_SWITCH_FILE
 from src.data.index_registry import get_registry
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
@@ -60,6 +62,7 @@ from src.analysis.anomaly.anomaly_aggregator import (
 from src.engine.regime_detector import RegimeDetector, MarketRegime, SignalWeights
 from src.engine.signal_generator import SignalGenerator, TradingSignal
 from src.engine.risk_manager import RiskManager, RefinedSignal, RiskConfig
+from src.data.rate_limiter import freshness_tracker
 from src.engine.signal_tracker import SignalTracker
 
 logger = logging.getLogger(__name__)
@@ -115,6 +118,9 @@ class DecisionResult:
 
     # ── Condensed dashboard summary ───────────────────────────────────
     dashboard_summary: dict = field(default_factory=dict)
+
+    # ── Data-quality warnings (e.g. stale feeds) ─────────────────────
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -210,6 +216,91 @@ class DecisionEngine:
         logger.info("DecisionEngine initialised — all sub-components ready")
 
     # ------------------------------------------------------------------
+    # Kill switch
+    # ------------------------------------------------------------------
+
+    def _is_kill_switch_active(self) -> bool:
+        """Check if emergency kill switch is active.
+
+        Kill switch can be activated by:
+        1. Creating file: data/KILL_SWITCH
+        2. Inserting kill_switch=ACTIVE in system_health table
+
+        When active, NO new signals are generated.  Open positions are NOT
+        automatically closed (that requires manual decision).
+        """
+        # File-based check (fastest, works even if DB is down)
+        if os.path.exists(KILL_SWITCH_FILE):
+            return True
+
+        # DB-based check (for remote activation)
+        try:
+            row = self._db.fetch_one(
+                "SELECT status FROM system_health "
+                "WHERE component = 'kill_switch' ORDER BY timestamp DESC LIMIT 1",
+                (),
+            )
+            if row and row["status"] == "ACTIVE":
+                return True
+        except Exception:
+            pass  # If DB check fails, rely on file check only
+
+        return False
+
+    def activate_kill_switch(self, reason: str = "Manual activation") -> None:
+        """Activate emergency kill switch."""
+        from src.utils.date_utils import get_ist_now
+
+        with open(KILL_SWITCH_FILE, "w") as f:
+            f.write(f"Activated at {get_ist_now().isoformat()}\nReason: {reason}\n")
+
+        try:
+            self._db.execute(
+                "INSERT INTO system_health (timestamp, component, status, message) "
+                "VALUES (?, 'kill_switch', 'ACTIVE', ?)",
+                (get_ist_now().isoformat(), reason),
+            )
+        except Exception:
+            logger.warning("Kill switch file created but DB record failed")
+
+        logger.critical("KILL SWITCH ACTIVATED: %s", reason)
+
+    def deactivate_kill_switch(self) -> None:
+        """Deactivate emergency kill switch."""
+        from src.utils.date_utils import get_ist_now
+
+        if os.path.exists(KILL_SWITCH_FILE):
+            os.remove(KILL_SWITCH_FILE)
+
+        try:
+            self._db.execute(
+                "INSERT INTO system_health (timestamp, component, status, message) "
+                "VALUES (?, 'kill_switch', 'INACTIVE', 'Deactivated')",
+                (get_ist_now().isoformat(),),
+            )
+        except Exception:
+            logger.warning("Kill switch file removed but DB record failed")
+
+        logger.info("Kill switch deactivated — signal generation resumed")
+
+    def _kill_switch_no_trade(self, index_id: str) -> DecisionResult:
+        """Return a safe NO_TRADE DecisionResult for kill-switch scenarios."""
+        now = datetime.now(tz=_IST)
+        regime = self._fallback_regime(index_id, "Kill switch active")
+        signal = self._make_no_trade_signal(
+            index_id, regime, "EMERGENCY: Kill switch active. All signal generation halted.",
+        )
+        signal.warnings.append("KILL_SWITCH_ACTIVE")
+        return DecisionResult(
+            index_id=index_id,
+            timestamp=now,
+            signal=signal,
+            is_actionable=False,
+            alert_message="KILL SWITCH ACTIVE — System halted. Remove data/KILL_SWITCH to resume.",
+            alert_priority="CRITICAL",
+        )
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -237,6 +328,11 @@ class DecisionEngine:
         DecisionResult
             Always returns — never raises.
         """
+        # EMERGENCY CHECK — before any computation
+        if self._is_kill_switch_active():
+            logger.critical("KILL SWITCH ACTIVE — all signal generation halted")
+            return self._kill_switch_no_trade(index_id)
+
         cycle_start = time.monotonic()
         now = datetime.now(tz=_IST)
         step_timings: dict[str, int] = {}
@@ -258,6 +354,18 @@ class DecisionEngine:
 
         price_df = self._build_price_df(daily_rows, intraday_rows)
         current_price = float(current_bar["close"]) if current_bar else 0.0
+
+        # ── Stale-data check (non-blocking — adds warnings) ──────────
+        stale_warnings: list[str] = []
+        _stale_confidence_penalty = 0.0
+        for dtype, max_age in (("index_prices", 300), ("options_chain", 600), ("vix", 480)):
+            if freshness_tracker.is_stale(dtype, max_age_seconds=max_age):
+                age = freshness_tracker.get_age_seconds(dtype)
+                age_str = f"{age:.0f}s" if age is not None else "never fetched"
+                msg = f"Stale data: {dtype} ({age_str} old, max {max_age}s)"
+                stale_warnings.append(msg)
+                logger.warning("DecisionEngine [%s]: %s", index_id, msg)
+                _stale_confidence_penalty += 0.1  # 0.1 per stale source
 
         # ── Step 2: Technical Analysis ─────────────────────────────────
         t0 = time.monotonic()
@@ -307,6 +415,16 @@ class DecisionEngine:
 
         total_ms = int((time.monotonic() - cycle_start) * 1000)
 
+        # ── Apply stale-data confidence penalty ──────────────────────
+        if _stale_confidence_penalty > 0 and hasattr(final_signal, "confidence_score"):
+            original = final_signal.confidence_score or 0.0
+            penalized = max(0.0, original - _stale_confidence_penalty)
+            object.__setattr__(final_signal, "confidence_score", penalized)
+            logger.info(
+                "DecisionEngine [%s]: confidence reduced %.2f → %.2f (stale data)",
+                index_id, original, penalized,
+            )
+
         result = DecisionResult(
             index_id=index_id,
             timestamp=now,
@@ -320,6 +438,7 @@ class DecisionEngine:
             total_duration_ms=total_ms,
             alert_message=alert_message,
             alert_priority=alert_priority,
+            warnings=stale_warnings,
         )
         result.dashboard_summary = self._build_dashboard_summary(result, current_price)
 
@@ -347,6 +466,10 @@ class DecisionEngine:
         -------
         list[DecisionResult]
         """
+        if self._is_kill_switch_active():
+            logger.critical("KILL SWITCH ACTIVE — skipping all indices")
+            return []
+
         fo_indices = self.registry.get_indices_with_options()
         if not fo_indices:
             logger.warning("DecisionEngine.run_all_indices: no F&O indices in registry")

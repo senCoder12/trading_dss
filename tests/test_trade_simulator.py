@@ -122,6 +122,7 @@ def config() -> SimulatorConfig:
         max_positions_per_index=1,
         slippage_points=2.0,
         use_percentage_slippage=False,
+        use_variable_spread=False,
         intraday_only=True,
         force_exit_minutes_before_close=5,
     )
@@ -172,6 +173,7 @@ class TestEntryExecution:
         """Percentage-based slippage model."""
         cfg = SimulatorConfig(
             use_percentage_slippage=True,
+            use_variable_spread=False,
             slippage_pct=0.05,  # 0.05%
         )
         sim = TradeSimulator(cfg)
@@ -689,6 +691,7 @@ class TestPnLCalculation:
         cfg = SimulatorConfig(
             initial_capital=100_000.0,
             slippage_points=0.0,  # Zero slippage for exact math
+            use_variable_spread=False,
             brokerage_per_order=20.0,
             stt_rate=0.000625,
             exchange_charges_pct=0.00053,

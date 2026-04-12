@@ -40,6 +40,93 @@ _MARKET_CLOSE_MINUTE = 30
 
 
 # ---------------------------------------------------------------------------
+# Variable Bid-Ask Spread Model
+# ---------------------------------------------------------------------------
+
+
+class SpreadModel:
+    """Models bid-ask spread for Indian index options based on moneyness and time to expiry.
+
+    The spread is the HIDDEN cost most retail traders ignore. It's the difference
+    between the price you see (mid) and the price you actually get (bid for sells, ask for buys).
+    Half the spread is effectively slippage on each side.
+    """
+
+    def estimate_spread(
+        self,
+        index_id: str,
+        spot_price: float,
+        strike_price: float | None,
+        option_premium: float | None,
+        days_to_expiry: int | None,
+        is_expiry_day: bool = False,
+        hour_of_day: int | None = None,
+    ) -> float:
+        """Estimate half-spread (one-side slippage) in index points.
+
+        Returns estimated slippage in INDEX POINTS (not option premium points).
+        This is what gets added/subtracted from the signal's entry/exit price.
+        """
+        # Base spread by index liquidity
+        base_spreads = {
+            "NIFTY50": 0.5,       # Most liquid
+            "BANKNIFTY": 0.8,     # Very liquid
+            "FINNIFTY": 1.5,      # Moderate
+            "MIDCPNIFTY": 2.0,    # Less liquid
+        }
+        base = base_spreads.get(index_id, 2.0)  # Default for unknown indices
+
+        # Moneyness multiplier (OTM options have wider spreads)
+        moneyness_mult = 1.0
+        if strike_price and spot_price:
+            otm_pct = abs(strike_price - spot_price) / spot_price * 100
+            if otm_pct < 1.0:
+                moneyness_mult = 1.0    # ATM — tightest spread
+            elif otm_pct < 2.0:
+                moneyness_mult = 1.3    # Slightly OTM
+            elif otm_pct < 3.0:
+                moneyness_mult = 1.8    # OTM
+            elif otm_pct < 5.0:
+                moneyness_mult = 2.5    # Deep OTM
+            else:
+                moneyness_mult = 4.0    # Very deep OTM — very wide spreads
+
+        # Time to expiry multiplier (spreads widen near expiry)
+        expiry_mult = 1.0
+        if days_to_expiry is not None:
+            if days_to_expiry > 5:
+                expiry_mult = 1.0     # Normal
+            elif days_to_expiry > 2:
+                expiry_mult = 1.2     # Slightly wider
+            elif days_to_expiry > 0:
+                expiry_mult = 1.5     # Expiry week
+            else:
+                expiry_mult = 2.5     # Expiry day — significantly wider
+
+        # Expiry day last hour — spreads explode
+        if is_expiry_day and hour_of_day is not None and hour_of_day >= 14:
+            expiry_mult *= 1.5  # Additional 50% wider in last 1.5 hours
+
+        # Option premium floor — very cheap options have proportionally huge spreads
+        premium_mult = 1.0
+        if option_premium is not None and option_premium > 0:
+            if option_premium < 5:
+                premium_mult = 3.0    # ₹5 option with ₹2 spread = 40% slippage!
+            elif option_premium < 15:
+                premium_mult = 2.0
+            elif option_premium < 50:
+                premium_mult = 1.3
+
+        half_spread = base * moneyness_mult * expiry_mult * premium_mult
+
+        # Cap: spread shouldn't exceed 5 points for NIFTY, 10 for others
+        max_spread = 5.0 if index_id == "NIFTY50" else 10.0
+        half_spread = min(half_spread, max_spread)
+
+        return round(half_spread, 2)
+
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
@@ -68,6 +155,8 @@ class SimulatorConfig:
     slippage_points: float = 2.0
     slippage_pct: float = 0.05
     use_percentage_slippage: bool = False
+    use_variable_spread: bool = True       # Use SpreadModel instead of fixed slippage
+    spread_model: Optional[SpreadModel] = None  # Custom model (uses default if None)
 
     # Execution rules
     intraday_only: bool = True
@@ -131,6 +220,9 @@ class TradeExecution:
     risk_amount: float = 0.0
     confidence_level: str = "LOW"
 
+    # Spread cost tracking
+    spread_cost_entry: float = 0.0
+
     # Status
     status: str = "OPEN"
 
@@ -191,6 +283,10 @@ class ClosedTrade:
     strike_price: Optional[float] = None
     option_premium: Optional[float] = None
     expiry: Optional[str] = None
+
+    # Spread cost tracking
+    spread_cost_entry: float = 0.0
+    spread_cost_exit: float = 0.0
 
 
 @dataclass
@@ -342,10 +438,23 @@ class TradeSimulator:
         self._bar_signals.add(bar_key)
 
         # --- Calculate slippage ---
-        if self.config.use_percentage_slippage:
+        if self.config.use_variable_spread:
+            model = self.config.spread_model or SpreadModel()
+            slippage = model.estimate_spread(
+                index_id=index_id,
+                spot_price=current_bar["close"],
+                strike_price=strike_price,
+                option_premium=option_premium,
+                days_to_expiry=getattr(signal, "days_to_expiry", None),
+                is_expiry_day=self._is_expiry_day(timestamp),
+                hour_of_day=self._get_hour(timestamp),
+            )
+        elif self.config.use_percentage_slippage:
             slippage = entry_price * self.config.slippage_pct / 100
         else:
             slippage = self.config.slippage_points
+
+        entry_spread_cost = slippage  # Record for ClosedTrade
 
         if signal_type == "BUY_CALL":
             actual_entry = entry_price + slippage
@@ -421,6 +530,7 @@ class TradeSimulator:
             entry_cost=round(entry_cost, 2),
             risk_amount=round(risk_amount, 2),
             confidence_level=confidence_level,
+            spread_cost_entry=round(entry_spread_cost, 2),
             status="OPEN",
         )
 
@@ -554,10 +664,23 @@ class TradeSimulator:
         is_call = position.trade_type == "BUY_CALL"
 
         # --- Exit slippage (always adverse) ---
-        if cfg.use_percentage_slippage:
+        if cfg.use_variable_spread:
+            model = cfg.spread_model or SpreadModel()
+            slippage = model.estimate_spread(
+                index_id=position.index_id,
+                spot_price=exit_price,
+                strike_price=position.strike_price,
+                option_premium=position.option_premium,
+                days_to_expiry=None,  # Not tracked at exit
+                is_expiry_day=self._is_expiry_day(exit_timestamp),
+                hour_of_day=self._get_hour(exit_timestamp),
+            )
+        elif cfg.use_percentage_slippage:
             slippage = exit_price * cfg.slippage_pct / 100
         else:
             slippage = cfg.slippage_points
+
+        exit_spread_cost = slippage  # Record for ClosedTrade
 
         if is_call:
             actual_exit = exit_price - slippage  # sell lower
@@ -632,6 +755,8 @@ class TradeSimulator:
             strike_price=position.strike_price,
             option_premium=position.option_premium,
             expiry=position.expiry,
+            spread_cost_entry=position.spread_cost_entry,
+            spread_cost_exit=round(exit_spread_cost, 2),
         )
 
         # --- Update state ---
@@ -821,6 +946,20 @@ class TradeSimulator:
             return "TRAILING_SL_HIT" if pos.trailing_sl >= pos.actual_entry_price else "STOP_LOSS_HIT"
         else:
             return "TRAILING_SL_HIT" if pos.trailing_sl <= pos.actual_entry_price else "STOP_LOSS_HIT"
+
+    @staticmethod
+    def _is_expiry_day(ts: datetime) -> bool:
+        """Check if timestamp falls on a weekly expiry day (Thursday for NSE)."""
+        if not isinstance(ts, datetime):
+            return False
+        return ts.weekday() == 3  # Thursday
+
+    @staticmethod
+    def _get_hour(ts: datetime) -> Optional[int]:
+        """Extract hour from timestamp."""
+        if not isinstance(ts, datetime):
+            return None
+        return ts.hour
 
     def _compute_unrealized_pnl(self) -> float:
         """Sum unrealised P&L across open positions (using last known bar close)."""

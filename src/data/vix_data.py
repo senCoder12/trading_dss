@@ -20,6 +20,7 @@ from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
 from config.constants import IST_TIMEZONE
 from config.settings import settings
+from src.data.rate_limiter import freshness_tracker
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class VIXTracker:
             logger.warning("VIX data not available from NSEScraper")
             return None
 
+        freshness_tracker.update("vix")
         return VIXData(
             value=raw.get("vix_value", 0.0),
             change=raw.get("vix_change", 0.0),

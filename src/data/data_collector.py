@@ -38,7 +38,7 @@ from src.data.historical_data import HistoricalDataManager
 from src.data.index_registry import IndexRegistry
 from src.data.nse_scraper import NSEScraper
 from src.data.options_chain import OptionsChainFetcher
-from src.data.rate_limiter import RateLimiter, create_nse_limiter
+from src.data.rate_limiter import GlobalRateLimiter, RateLimiter, create_nse_limiter
 from src.data.vix_data import VIXTracker
 from src.database import queries as Q
 from src.database.db_manager import DatabaseManager
@@ -83,8 +83,8 @@ class DataCollector:
 
         self.market_hours = MarketHoursManager()
 
-        # Shared rate limiter — NSE limits apply; BSE is more lenient
-        self._nse_limiter = create_nse_limiter()
+        # Shared global rate limiter — all NSE components share one instance
+        self._nse_limiter = GlobalRateLimiter.get("nseindia.com", max_requests=25, window_seconds=60)
         self.nse_scraper = NSEScraper(rate_limiter=self._nse_limiter)
         self.bse_scraper = BSEScraper()
         self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper)

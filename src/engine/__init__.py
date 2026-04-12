@@ -5,6 +5,7 @@ from .regime_detector import RegimeDetector, MarketRegime, SignalWeights
 from .signal_generator import SignalGenerator, TradingSignal
 from .risk_manager import RiskManager, RefinedSignal, RiskConfig, PositionUpdate, DailyPnL
 from .signal_tracker import SignalTracker, PerformanceStats, CalibrationReport
+from .shadow_tracker import ShadowTracker, ShadowReport
 
 __all__ = [
     # Master orchestrator
@@ -29,4 +30,7 @@ __all__ = [
     "SignalTracker",
     "PerformanceStats",
     "CalibrationReport",
+    # Shadow tracking
+    "ShadowTracker",
+    "ShadowReport",
 ]

@@ -39,7 +39,13 @@ from config.constants import IST_TIMEZONE, NSE_BASE_URL, NSE_HEADERS, USER_AGENT
 # Browser to impersonate for TLS fingerprinting (curl_cffi)
 _IMPERSONATE: str = "chrome131"
 from config.settings import settings
-from src.data.rate_limiter import RateLimiter, create_nse_limiter
+from src.data.rate_limiter import (
+    GlobalCircuitBreaker,
+    GlobalRateLimiter,
+    RateLimiter,
+    create_nse_limiter,
+    freshness_tracker,
+)
 from src.utils.cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -115,7 +121,9 @@ class NSEScraper:
         cache: Optional[TTLCache] = None,
     ) -> None:
         self._session = cffi_requests.Session(impersonate=_IMPERSONATE)
-        self._rate_limiter = rate_limiter or create_nse_limiter()
+        self._rate_limiter = rate_limiter or GlobalRateLimiter.get(
+            "nseindia.com", max_requests=25, window_seconds=60,
+        )
         self._cache: TTLCache = cache or TTLCache(default_ttl=_CACHE_TTL_PRICE)
         self._warmed_up: bool = False
         self._session_created_at: float = 0.0
@@ -310,9 +318,15 @@ class NSEScraper:
         cache_ttl: Optional[int] = None,
     ) -> Optional[Any]:
         """
-        Wrapper around :meth:`_get` that tracks health stats and returns
-        ``None`` instead of raising on failure.
+        Wrapper around :meth:`_get` that tracks health stats, honours the
+        circuit breaker, and returns ``None`` instead of raising on failure.
         """
+        cb = GlobalCircuitBreaker.get("nse_api", failure_threshold=5, recovery_timeout=120)
+
+        if not cb.can_execute():
+            logger.warning("NSE circuit breaker OPEN — skipping request for %s", endpoint)
+            return None
+
         self._total_requests += 1
         try:
             result = self._get(
@@ -320,10 +334,12 @@ class NSEScraper:
             )
             self._successful += 1
             self._consecutive_failures = 0
+            cb.record_success()
             return result
         except NSEScraperError as exc:
             self._failed += 1
             self._consecutive_failures += 1
+            cb.record_failure()
             if self._consecutive_failures >= 5:
                 logger.critical(
                     "NSE scraper: %d consecutive failures — component health ERROR. Last: %s",
@@ -387,7 +403,10 @@ class NSEScraper:
         )
         if raw is None:
             return None
-        return [self._normalize_index_entry(e) for e in raw.get("data", [])]
+        result = [self._normalize_index_entry(e) for e in raw.get("data", [])]
+        if result:
+            freshness_tracker.update("index_prices")
+        return result
 
     def get_index_quote(self, nse_symbol: str) -> Optional[dict[str, Any]]:
         """
@@ -463,6 +482,7 @@ class NSEScraper:
         for entry in raw.get("data", []):
             sym = entry.get("indexSymbol", "").upper()
             if "VIX" in sym and "INDIA" in sym:
+                freshness_tracker.update("vix")
                 return {
                     "vix_value": f(entry.get("last")),
                     "vix_change": f(entry.get("change")),
@@ -510,7 +530,10 @@ class NSEScraper:
         list[dict] or None:
             Daily buy/sell/net for FII and DII, or ``None`` on failure.
         """
-        return self._call(_ENDPOINTS["fii_dii"])
+        result = self._call(_ENDPOINTS["fii_dii"])
+        if result:
+            freshness_tracker.update("fii_dii")
+        return result
 
     # ── Health ────────────────────────────────────────────────────────────────
 
@@ -531,6 +554,7 @@ class NSEScraper:
             else 0.0
         )
         total = self._total_requests
+        cb = GlobalCircuitBreaker.get("nse_api", failure_threshold=5, recovery_timeout=120)
         return {
             "total_requests": total,
             "successful": self._successful,
@@ -538,6 +562,7 @@ class NSEScraper:
             "success_rate": self._successful / total if total > 0 else 0.0,
             "avg_response_ms": round(avg_ms, 1),
             "consecutive_failures": self._consecutive_failures,
+            "circuit_breaker": cb.get_status(),
         }
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────

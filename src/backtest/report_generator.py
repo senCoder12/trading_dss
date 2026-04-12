@@ -114,18 +114,36 @@ class ReportGenerator:
         _box_period = _center(f"Period: {cfg.start_date} {_arrow} {cfg.end_date}")
         _box_mode = _center(f"Mode: {cfg.mode} | Timeframe: {cfg.timeframe}")
 
+        # Config hash for reproducibility
+        config_hash = getattr(result, "config_hash", None) or ""
+        config_hash_line = (
+            _center(f"Config Hash: {config_hash}  (use for reproducibility)")
+            if config_hash
+            else ""
+        )
+
+        # Slippage description
+        if scfg.use_variable_spread:
+            slippage_desc = "Variable spread model (moneyness + expiry + premium)"
+        else:
+            slippage_desc = f"{scfg.slippage_points} pts fixed"
+
         border = "\u2550" * _BOX_WIDTH
         lines: list[str] = [
             f"\u2554{border}\u2557",
             f"\u2551{_box_title}\u2551",
             f"\u2551{_box_period}\u2551",
             f"\u2551{_box_mode}\u2551",
+        ]
+        if config_hash_line:
+            lines.append(f"\u2551{config_hash_line}\u2551")
+        lines += [
             f"\u2560{border}\u2563",
             "",
             "CONFIGURATION:",
             f"  Capital: \u20b9{capital:,.0f} | Risk/Trade: {risk_per_trade:.1f}% | Risk/Day: {risk_per_day:.1f}%",
             f"  Max Positions: {scfg.max_open_positions} | Min Confidence: {cfg.min_confidence}",
-            f"  Slippage: {scfg.slippage_points} pts | Costs: Realistic (STT+brokerage+GST)",
+            f"  Slippage: {slippage_desc} | Costs: Realistic (STT+brokerage+GST)",
             "",
             "RETURNS:",
             f"  Total Return: {ret_sign}{metrics.total_return_pct:.1f}% (\u20b9{metrics.total_return_amount:,.0f})",

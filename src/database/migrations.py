@@ -292,6 +292,57 @@ def _v9_fix_anomaly_events_schema(db: DatabaseManager) -> None:
         logger.info(f"Migration v9: anomaly_events schema fixed — {', '.join(added)}")
 
 
+@migration(version=10, description="Add audit_json to trading_signals, expand system_health status for kill switch")
+def _v10_audit_json_and_kill_switch(db: DatabaseManager) -> None:
+    """Add structured audit trail column and expand system_health for kill switch.
+
+    - trading_signals.audit_json: stores exact intermediate values for signal replay.
+    - system_health.status CHECK: expanded to include ACTIVE / INACTIVE for kill switch.
+    """
+    changes: list[str] = []
+
+    # -- trading_signals.audit_json --
+    ts_cols = {row["name"] for row in db.fetch_all("PRAGMA table_info(trading_signals)")}
+    if "audit_json" not in ts_cols:
+        db.execute("ALTER TABLE trading_signals ADD COLUMN audit_json TEXT DEFAULT NULL")
+        changes.append("trading_signals.audit_json")
+
+    # -- Expand system_health status CHECK to include ACTIVE / INACTIVE --
+    # Test if the current CHECK constraint allows 'ACTIVE'
+    needs_rebuild = False
+    try:
+        db.execute(
+            """INSERT INTO system_health (timestamp, component, status, message)
+               VALUES (datetime('now'), '__kill_switch_test__', 'ACTIVE', 'test')"""
+        )
+        db.execute("DELETE FROM system_health WHERE component = '__kill_switch_test__'")
+    except Exception:
+        needs_rebuild = True
+
+    if needs_rebuild:
+        db.execute("ALTER TABLE system_health RENAME TO _system_health_backup")
+        db.execute("""
+            CREATE TABLE system_health (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp        TEXT    NOT NULL,
+                component        TEXT    NOT NULL,
+                status           TEXT    NOT NULL DEFAULT 'OK'
+                                 CHECK (status IN ('OK','WARNING','ERROR','ACTIVE','INACTIVE')),
+                message          TEXT,
+                response_time_ms INTEGER
+            )
+        """)
+        backup_cols = {row["name"] for row in db.fetch_all("PRAGMA table_info(_system_health_backup)")}
+        common_cols = backup_cols & {"id", "timestamp", "component", "status", "message", "response_time_ms"}
+        cols_str = ", ".join(sorted(common_cols))
+        db.execute(f"INSERT INTO system_health ({cols_str}) SELECT {cols_str} FROM _system_health_backup")
+        db.execute("DROP TABLE _system_health_backup")
+        changes.append("system_health.status CHECK expanded")
+
+    if changes:
+        logger.info("Migration v10: %s", ", ".join(changes))
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

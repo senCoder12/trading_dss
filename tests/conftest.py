@@ -14,6 +14,20 @@ import pandas as pd
 import pytest
 
 from src.data.index_registry import IndexRegistry
+from src.data.rate_limiter import GlobalCircuitBreaker, GlobalRateLimiter
+
+
+# ── Reset global singletons between tests ────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_singletons():
+    """Ensure each test starts with fresh circuit breakers and rate limiters."""
+    GlobalCircuitBreaker.reset_all()
+    GlobalRateLimiter.reset_all()
+    yield
+    GlobalCircuitBreaker.reset_all()
+    GlobalRateLimiter.reset_all()
 
 
 # ── Minimal valid indices fixture ─────────────────────────────────────────────

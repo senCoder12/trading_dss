@@ -21,9 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
+from datetime import datetime
 from threading import Lock
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+from config.constants import IST_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
@@ -253,3 +258,241 @@ def create_async_nse_limiter(name: str = "nse_async") -> AsyncRateLimiter:
 def create_async_bse_limiter(name: str = "bse_async") -> AsyncRateLimiter:
     """Async variant of :func:`create_bse_limiter`."""
     return AsyncRateLimiter(max_requests=15, window_seconds=60.0, name=name)
+
+
+# ---------------------------------------------------------------------------
+# Global per-domain rate limiter (singleton per domain)
+# ---------------------------------------------------------------------------
+
+
+class GlobalRateLimiter:
+    """Single rate limiter per external domain, shared across all components.
+
+    NSE sees one IP, not separate 'components'. All code hitting nseindia.com
+    MUST acquire from the same limiter instance.
+    """
+
+    _instances: dict[str, RateLimiter] = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def get(
+        cls,
+        domain: str,
+        max_requests: int = 25,
+        window_seconds: int = 60,
+    ) -> RateLimiter:
+        """Get or create a rate limiter for *domain*. Returns same instance for same domain."""
+        with cls._lock:
+            if domain not in cls._instances:
+                cls._instances[domain] = RateLimiter(
+                    max_requests, window_seconds, name=domain,
+                )
+                logger.info(
+                    "GlobalRateLimiter: created limiter for %s (%d req/%ds)",
+                    domain, max_requests, window_seconds,
+                )
+            return cls._instances[domain]
+
+    @classmethod
+    def reset_all(cls) -> None:
+        """Reset all limiters (for testing)."""
+        with cls._lock:
+            cls._instances.clear()
+
+
+# ---------------------------------------------------------------------------
+# Circuit Breaker
+# ---------------------------------------------------------------------------
+
+
+class CircuitBreaker:
+    """Prevents cascading failures when an external service is down.
+
+    States:
+    - CLOSED: Normal operation. Requests pass through.
+    - OPEN: Service is down. Requests fail immediately without hitting the service.
+    - HALF_OPEN: Testing if service recovered. One request allowed through.
+
+    Transitions:
+    - CLOSED -> OPEN: After *failure_threshold* consecutive failures.
+    - OPEN -> HALF_OPEN: After *recovery_timeout* seconds.
+    - HALF_OPEN -> CLOSED: If test request succeeds (*success_threshold* times).
+    - HALF_OPEN -> OPEN: If test request fails (reset recovery timer).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        failure_threshold: int = 5,
+        recovery_timeout: int = 120,
+        success_threshold: int = 2,
+    ) -> None:
+        self.name = name
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.success_threshold = success_threshold
+
+        self.state: str = "CLOSED"
+        self.failure_count: int = 0
+        self.success_count: int = 0
+        self.last_failure_time: datetime | None = None
+        self.opened_at: datetime | None = None
+        self._lock = threading.Lock()
+
+    def can_execute(self) -> bool:
+        """Check if a request should be allowed through."""
+        with self._lock:
+            if self.state == "CLOSED":
+                return True
+
+            if self.state == "OPEN":
+                elapsed = (datetime.now() - self.opened_at).total_seconds()
+                if elapsed >= self.recovery_timeout:
+                    self.state = "HALF_OPEN"
+                    self.success_count = 0
+                    logger.info(
+                        "CircuitBreaker [%s]: OPEN -> HALF_OPEN (testing recovery)", self.name,
+                    )
+                    return True
+                return False
+
+            if self.state == "HALF_OPEN":
+                return True
+
+            return False
+
+    def record_success(self) -> None:
+        """Record a successful request."""
+        with self._lock:
+            self.failure_count = 0
+            if self.state == "HALF_OPEN":
+                self.success_count += 1
+                if self.success_count >= self.success_threshold:
+                    self.state = "CLOSED"
+                    logger.info(
+                        "CircuitBreaker [%s]: HALF_OPEN -> CLOSED (service recovered)", self.name,
+                    )
+
+    def record_failure(self) -> None:
+        """Record a failed request."""
+        with self._lock:
+            self.failure_count += 1
+            self.last_failure_time = datetime.now()
+
+            if self.state == "HALF_OPEN":
+                self.state = "OPEN"
+                self.opened_at = datetime.now()
+                logger.warning(
+                    "CircuitBreaker [%s]: HALF_OPEN -> OPEN (recovery failed)", self.name,
+                )
+            elif self.state == "CLOSED" and self.failure_count >= self.failure_threshold:
+                self.state = "OPEN"
+                self.opened_at = datetime.now()
+                logger.warning(
+                    "CircuitBreaker [%s]: CLOSED -> OPEN (%d consecutive failures). "
+                    "Will retry in %ds.",
+                    self.name, self.failure_count, self.recovery_timeout,
+                )
+
+    def get_status(self) -> dict:
+        """Return a status dict suitable for health dashboards."""
+        with self._lock:
+            return {
+                "name": self.name,
+                "state": self.state,
+                "failure_count": self.failure_count,
+                "last_failure": (
+                    self.last_failure_time.isoformat() if self.last_failure_time else None
+                ),
+            }
+
+
+class GlobalCircuitBreaker:
+    """Singleton registry for :class:`CircuitBreaker` instances."""
+
+    _instances: dict[str, CircuitBreaker] = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def get(cls, name: str, **kwargs: int) -> CircuitBreaker:
+        """Get or create a circuit breaker by *name*."""
+        with cls._lock:
+            if name not in cls._instances:
+                cls._instances[name] = CircuitBreaker(name, **kwargs)
+            return cls._instances[name]
+
+    @classmethod
+    def reset_all(cls) -> None:
+        """Reset all breakers (for testing)."""
+        with cls._lock:
+            cls._instances.clear()
+
+
+# ---------------------------------------------------------------------------
+# Data Freshness Tracker
+# ---------------------------------------------------------------------------
+
+_IST = ZoneInfo(IST_TIMEZONE)
+
+
+def _get_ist_now() -> datetime:
+    return datetime.now(tz=_IST)
+
+
+class DataFreshnessTracker:
+    """Tracks when each data type was last successfully updated.
+
+    Call :meth:`update` after every successful scrape.  Downstream consumers
+    call :meth:`is_stale` to decide whether to trust the data.
+    """
+
+    # Maximum acceptable age per data type (seconds)
+    _MAX_AGES: dict[str, float] = {
+        "index_prices": 120,       # 2 min (normally updates every 60s)
+        "options_chain": 360,      # 6 min (normally updates every 180s)
+        "vix": 240,                # 4 min (normally updates every 120s)
+        "fii_dii": 86400,          # 24 hours (updates daily)
+    }
+
+    def __init__(self) -> None:
+        self._timestamps: dict[str, datetime] = {}
+        self._lock = threading.Lock()
+
+    def update(self, data_type: str) -> None:
+        """Record successful data fetch."""
+        with self._lock:
+            self._timestamps[data_type] = _get_ist_now()
+
+    def get_age_seconds(self, data_type: str) -> float | None:
+        """Get age of data in seconds. ``None`` if never fetched."""
+        with self._lock:
+            ts = self._timestamps.get(data_type)
+            if ts is None:
+                return None
+            return (_get_ist_now() - ts).total_seconds()
+
+    def is_stale(self, data_type: str, max_age_seconds: float) -> bool:
+        """Check if data is older than *max_age_seconds*."""
+        age = self.get_age_seconds(data_type)
+        if age is None:
+            return True  # Never fetched = stale
+        return age > max_age_seconds
+
+    def get_all_status(self) -> dict[str, dict]:
+        """Return freshness status of all tracked data types."""
+        with self._lock:
+            result: dict[str, dict] = {}
+            now = _get_ist_now()
+            for key, ts in self._timestamps.items():
+                age = (now - ts).total_seconds()
+                result[key] = {
+                    "last_update": ts.isoformat(),
+                    "age_seconds": age,
+                    "is_stale": age > self._MAX_AGES.get(key, 300),
+                }
+            return result
+
+
+# Module-level singleton — import and use from anywhere.
+freshness_tracker = DataFreshnessTracker()

@@ -20,6 +20,7 @@ from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
 from config.constants import IST_TIMEZONE
 from src.data.data_validator import validate_options_chain, DataValidationError
+from src.data.rate_limiter import freshness_tracker
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
@@ -148,6 +149,8 @@ class OptionsChainFetcher:
             cache_key=cache_key,
             cache_ttl=60,
         )
+        if raw:
+            freshness_tracker.update("options_chain")
         return raw
 
     def get_options_chain(

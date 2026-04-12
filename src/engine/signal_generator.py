@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -90,6 +91,9 @@ class TradingSignal:
     actual_pnl: Optional[float] = None
     closed_at: Optional[datetime] = None
 
+    # Structured audit trail for replay/debug (exact intermediate values)
+    signal_audit: Optional[dict] = None
+
     # Metadata
     data_completeness: float = 1.0      # 0–1, fraction of data sources available
     signals_generated_today: int = 0    # Running count for this index today
@@ -158,6 +162,68 @@ _ALL_COMPONENTS: frozenset[str] = frozenset(_WEIGHT_ATTR.keys())
 
 
 # ---------------------------------------------------------------------------
+# Signal Deduplicator
+# ---------------------------------------------------------------------------
+
+
+class SignalDeduplicator:
+    """Prevents duplicate signal generation within a time window.
+
+    Dedup key: {index_id}_{signal_type}_{5-minute time bucket}
+    If a signal with the same key was generated within the dedup window,
+    the duplicate is suppressed.
+    """
+
+    def __init__(self, window_seconds: int = 300) -> None:
+        self.window_seconds = window_seconds
+        self._recent_signals: dict[str, datetime] = {}
+        self._lock = threading.Lock()
+
+    def _make_key(self, index_id: str, signal_type: str, timestamp: datetime) -> str:
+        """Create dedup key. Buckets time into 5-minute windows."""
+        bucket = timestamp.replace(
+            minute=(timestamp.minute // 5) * 5,
+            second=0, microsecond=0,
+        )
+        return f"{index_id}_{signal_type}_{bucket.isoformat()}"
+
+    def is_duplicate(self, index_id: str, signal_type: str, timestamp: datetime) -> bool:
+        """Check if this signal was already generated recently."""
+        if signal_type == "NO_TRADE":
+            return False
+
+        key = self._make_key(index_id, signal_type, timestamp)
+        with self._lock:
+            self._cleanup_expired()
+            if key in self._recent_signals:
+                logger.warning(
+                    "Duplicate signal suppressed: %s %s (original at %s)",
+                    index_id, signal_type, self._recent_signals[key].isoformat(),
+                )
+                return True
+            return False
+
+    def record(self, index_id: str, signal_type: str, timestamp: datetime) -> None:
+        """Record a generated signal for future dedup checks."""
+        if signal_type == "NO_TRADE":
+            return
+        key = self._make_key(index_id, signal_type, timestamp)
+        with self._lock:
+            self._recent_signals[key] = timestamp
+
+    def _cleanup_expired(self) -> None:
+        """Remove entries older than the dedup window."""
+        now = datetime.now(tz=_IST)
+        expired = [
+            k for k, v in self._recent_signals.items()
+            if (now - v.replace(tzinfo=_IST) if v.tzinfo is None else now - v).total_seconds()
+            > self.window_seconds * 2
+        ]
+        for k in expired:
+            del self._recent_signals[k]
+
+
+# ---------------------------------------------------------------------------
 # Signal Generator
 # ---------------------------------------------------------------------------
 
@@ -184,6 +250,9 @@ class SignalGenerator:
         # Keyed by index_id; reset at midnight.
         self._today_signals: dict[str, list[TradingSignal]] = {}
         self._today_date: Optional[str] = None  # "YYYY-MM-DD" IST
+
+        # Deduplication — suppress duplicate signals within a 5-minute window
+        self.deduplicator = SignalDeduplicator(window_seconds=300)
 
     # ------------------------------------------------------------------
     # Public API
@@ -349,6 +418,24 @@ class SignalGenerator:
             warnings=list(warnings),
             data_completeness=round(data_completeness, 4),
             signals_generated_today=today_count + 1,
+        )
+
+        # ── Deduplication check ───────────────────────────────────────
+        if signal.signal_type != "NO_TRADE":
+            if self.deduplicator.is_duplicate(index_id, signal.signal_type, now):
+                signal.signal_type = "NO_TRADE"
+                signal.reasoning = (
+                    "Signal suppressed: duplicate within 5-minute window\n"
+                    + signal.reasoning
+                )
+                signal.warnings.append("DUPLICATE_SUPPRESSED")
+                return signal
+            self.deduplicator.record(index_id, signal.signal_type, now)
+
+        # ── Structured audit trail ────────────────────────────────────
+        signal.signal_audit = self._build_audit_trail(
+            index_id, current_spot_price, confidence_score,
+            technical, news, anomaly, regime, signal, votes,
         )
 
         # Persist & cache
@@ -1145,6 +1232,96 @@ class SignalGenerator:
     # SignalTracker.record_signal() handle persistence instead.
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_audit_trail(
+        index_id: str,
+        spot_price: float,
+        base_confidence: float,
+        technical: TechnicalAnalysisResult,
+        news: Optional[NewsVote],
+        anomaly: Optional[AnomalyVote],
+        regime: MarketRegime,
+        signal: TradingSignal,
+        votes: dict[str, tuple[float, float, float]],
+    ) -> dict:
+        """Build a structured audit dict capturing every intermediate value."""
+        return {
+            "generated_at": signal.generated_at.isoformat(),
+            "index_id": index_id,
+            "spot_price": spot_price,
+
+            "technical": {
+                "overall_signal": technical.overall_signal,
+                "overall_confidence": technical.overall_confidence,
+                "trend_vote": technical.trend.trend_vote,
+                "ema_20": float(technical.trend.price_vs_ema20 == "ABOVE") if hasattr(technical.trend, "price_vs_ema20") else None,
+                "price_vs_ema20": technical.trend.price_vs_ema20 if hasattr(technical.trend, "price_vs_ema20") else None,
+                "macd_crossover": technical.trend.macd_crossover if hasattr(technical.trend, "macd_crossover") else None,
+                "adx_value": technical.trend.trend_strength if hasattr(technical.trend, "trend_strength") else None,
+                "rsi_value": technical.momentum.rsi_value,
+                "rsi_zone": technical.momentum.rsi_zone,
+                "rsi_divergence": technical.momentum.rsi_divergence,
+                "bb_position": technical.volatility.bb_position,
+                "bb_squeeze": technical.volatility.bb_squeeze,
+                "atr_value": technical.volatility.atr_value,
+                "vwap_position": technical.volume.price_vs_vwap,
+                "obv_divergence": technical.volume.obv_divergence,
+            },
+
+            "options": {
+                "pcr": technical.options.pcr,
+                "max_pain": technical.options.max_pain,
+                "oi_support": technical.options.oi_support,
+                "oi_resistance": technical.options.oi_resistance,
+                "atm_iv": technical.options.atm_iv,
+                "iv_regime": technical.options.iv_regime,
+                "options_vote": technical.options.options_vote,
+            } if technical.options else None,
+
+            "smart_money": {
+                "score": technical.smart_money.score,
+                "grade": technical.smart_money.grade,
+                "smfi_signal": technical.smart_money.smfi_component,
+            } if technical.smart_money else None,
+
+            "news": {
+                "vote": news.vote,
+                "confidence": news.confidence,
+                "article_count": news.active_article_count,
+                "event_regime": news.event_regime,
+            } if news else None,
+
+            "anomaly": {
+                "vote": anomaly.vote,
+                "risk_level": anomaly.risk_level,
+                "active_alerts": anomaly.active_alerts,
+            } if anomaly else None,
+
+            "regime": {
+                "regime": regime.regime,
+                "trend_regime": regime.trend_regime,
+                "volatility_regime": regime.volatility_regime,
+                "market_phase": regime.market_phase,
+            },
+
+            "computation": {
+                "weighted_score": signal.weighted_score,
+                "vote_breakdown": signal.vote_breakdown,
+                "base_confidence": round(base_confidence, 4),
+                "final_confidence": signal.confidence_score,
+            },
+
+            "levels": {
+                "support_levels": technical.support_levels[:3] if technical.support_levels else [],
+                "resistance_levels": technical.resistance_levels[:3] if technical.resistance_levels else [],
+                "immediate_support": technical.immediate_support,
+                "immediate_resistance": technical.immediate_resistance,
+                "atr_based_sl": technical.suggested_stop_loss_distance,
+            },
+
+            "data_completeness": signal.data_completeness,
+        }
+
     def _save_signal(
         self,
         signal: TradingSignal,
@@ -1171,6 +1348,11 @@ class SignalGenerator:
             "warnings": signal.warnings,
         }, ensure_ascii=False)
 
+        audit_json_str = (
+            json.dumps(signal.signal_audit, ensure_ascii=False, default=str)
+            if signal.signal_audit else None
+        )
+
         try:
             self._db.execute(
                 """
@@ -1178,8 +1360,8 @@ class SignalGenerator:
                     (index_id, generated_at, signal_type, confidence_level,
                      entry_price, target_price, stop_loss, risk_reward_ratio,
                      regime, technical_vote, options_vote, news_vote,
-                     anomaly_vote, reasoning, outcome)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     anomaly_vote, reasoning, outcome, audit_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     signal.index_id,
@@ -1197,6 +1379,7 @@ class SignalGenerator:
                     anomaly_vote_str,
                     reasoning_json,
                     "OPEN",
+                    audit_json_str,
                 ),
             )
         except Exception:

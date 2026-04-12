@@ -299,3 +299,11 @@ class Settings(BaseSettings):
 
 # Module-level singleton — import this everywhere instead of constructing your own
 settings = Settings()
+
+# ---------------------------------------------------------------------------
+# Emergency kill switch
+# ---------------------------------------------------------------------------
+# If this file EXISTS on disk, all signal generation halts immediately.
+# To activate:   touch data/KILL_SWITCH
+# To deactivate: rm data/KILL_SWITCH
+KILL_SWITCH_FILE = str(PROJECT_ROOT / "data" / "KILL_SWITCH")

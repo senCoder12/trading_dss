@@ -114,6 +114,9 @@ class BacktestMetrics:
     strategy_grade: str
     assessment: str
 
+    # === CONFIG VERSIONING ===
+    config_hash: Optional[str] = None
+
 @dataclass
 class ComparisonReport:
     headers: list[str]

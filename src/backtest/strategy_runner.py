@@ -30,6 +30,8 @@ Usage
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -52,6 +54,7 @@ from src.backtest.trade_simulator import (
 from src.database.db_manager import DatabaseManager
 from src.engine.regime_detector import RegimeDetector
 from src.engine.signal_generator import SignalGenerator, TradingSignal
+from src.utils.date_utils import get_ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +169,10 @@ class BacktestResult:
     # Timing
     backtest_duration_seconds: float = 0.0
     bars_per_second: float = 0.0
+
+    # Config versioning — for reproducibility
+    config_snapshot: Optional[dict] = None
+    config_hash: Optional[str] = None
 
     # Data quality
     data_quality_score: float = 1.0
@@ -299,6 +306,52 @@ def _parse_options(options_snapshot: Optional[dict]):
         return None
 
 
+def _snapshot_config(config: BacktestConfig) -> dict:
+    """Create a complete, hashable snapshot of all configuration used in this backtest.
+
+    This snapshot is stored with the BacktestResult so the exact config can be
+    recovered later for reproducibility.
+    """
+    snapshot = {
+        "backtest_config": {
+            "index_id": config.index_id,
+            "start_date": config.start_date.isoformat(),
+            "end_date": config.end_date.isoformat(),
+            "timeframe": config.timeframe,
+            "mode": config.mode,
+            "min_confidence": config.min_confidence,
+            "signal_cooldown_bars": config.signal_cooldown_bars,
+            "max_signals_per_day": config.max_signals_per_day,
+        },
+        "simulator_config": {
+            "initial_capital": config.simulator_config.initial_capital,
+            "max_risk_per_trade_pct": config.simulator_config.max_risk_per_trade_pct,
+            "max_risk_per_day_pct": config.simulator_config.max_risk_per_day_pct,
+            "max_open_positions": config.simulator_config.max_open_positions,
+            "slippage_points": config.simulator_config.slippage_points,
+            "use_variable_spread": config.simulator_config.use_variable_spread,
+            "brokerage_per_order": config.simulator_config.brokerage_per_order,
+            "stt_rate": config.simulator_config.stt_rate,
+            "intraday_only": config.simulator_config.intraday_only,
+            "high_confidence_size_pct": config.simulator_config.high_confidence_size_pct,
+            "medium_confidence_size_pct": config.simulator_config.medium_confidence_size_pct,
+            "low_confidence_size_pct": config.simulator_config.low_confidence_size_pct,
+        },
+        "anomaly_thresholds": {
+            "timeframe": config.anomaly_timeframe or config.timeframe,
+        },
+    }
+
+    # Generate hash from config fields only (excludes timestamp for determinism)
+    config_str = json.dumps(snapshot, sort_keys=True)
+    snapshot["config_hash"] = hashlib.md5(config_str.encode()).hexdigest()[:12]
+
+    # Add timestamp after hash (for informational purposes only)
+    snapshot["snapshot_timestamp"] = get_ist_now().isoformat()
+
+    return snapshot
+
+
 def _build_result(
     config: BacktestConfig,
     session: ReplaySession,
@@ -306,6 +359,7 @@ def _build_result(
     signals_generated: list[dict],
     wall_seconds: float,
     warnings: list[str],
+    config_snapshot: Optional[dict] = None,
 ) -> BacktestResult:
     """Assemble the final BacktestResult from a completed run."""
     state = simulator.get_portfolio_state()
@@ -321,7 +375,7 @@ def _build_result(
         initial_capital=initial,
     )
 
-    return BacktestResult(
+    result = BacktestResult(
         config=config,
         index_id=config.index_id,
         start_date=session.actual_start,
@@ -340,6 +394,8 @@ def _build_result(
         total_return_pct=round(((final - initial) / initial) * 100, 4)
         if initial
         else 0.0,
+        config_snapshot=config_snapshot,
+        config_hash=config_snapshot.get("config_hash") if config_snapshot else None,
         backtest_duration_seconds=round(wall_seconds, 3),
         bars_per_second=round(total_bars / wall_seconds, 1)
         if wall_seconds > 0
@@ -347,6 +403,12 @@ def _build_result(
         data_quality_score=session.data_quality_score,
         warnings=warnings,
     )
+
+    # Link config hash to metrics for traceability
+    if result.metrics is not None and config_snapshot:
+        result.metrics.config_hash = config_snapshot.get("config_hash")
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -414,11 +476,15 @@ class StrategyRunner:
             warmup_bars=config.warmup_bars,
         )
 
+        # ---- Config snapshot for reproducibility ----
+        snapshot = _snapshot_config(config)
+
         if session.total_bars == 0:
             warnings.append("No tradeable bars after warmup — empty result")
             return _build_result(
                 config, session, TradeSimulator(config.simulator_config),
                 [], time.monotonic() - t0, warnings,
+                config_snapshot=snapshot,
             )
 
         if session.total_bars == 1:
@@ -669,7 +735,8 @@ class StrategyRunner:
             )
 
         return _build_result(
-            config, session, simulator, signals_generated, wall_seconds, warnings
+            config, session, simulator, signals_generated, wall_seconds, warnings,
+            config_snapshot=snapshot,
         )
 
     # ------------------------------------------------------------------

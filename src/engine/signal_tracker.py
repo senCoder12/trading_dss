@@ -559,6 +559,13 @@ class SignalTracker:
         reasoning_dict["signal_id"] = signal_id
         reasoning_json = json.dumps(reasoning_dict)
 
+        # Structured audit trail (if present)
+        audit_data = getattr(signal, "signal_audit", None)
+        audit_json_str = (
+            json.dumps(audit_data, ensure_ascii=False, default=str)
+            if audit_data else None
+        )
+
         try:
             self._db.execute(
                 Q.INSERT_TRADING_SIGNAL,
@@ -583,6 +590,22 @@ class SignalTracker:
                     None,  # closed_at
                 ),
             )
+
+            # Persist audit trail if the column exists
+            if audit_json_str:
+                try:
+                    row = self._db.fetch_one(
+                        "SELECT id FROM trading_signals WHERE index_id = ? AND generated_at = ? ORDER BY id DESC LIMIT 1",
+                        (getattr(signal, "index_id", ""), now_ist),
+                    )
+                    if row:
+                        self._db.execute(
+                            "UPDATE trading_signals SET audit_json = ? WHERE id = ?",
+                            (audit_json_str, row["id"]),
+                        )
+                except Exception:
+                    logger.debug("SignalTracker: audit_json column not yet available — skipping")
+
             logger.debug(
                 "SignalTracker: recorded %s %s conf=%s",
                 signal_type,

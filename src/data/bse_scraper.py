@@ -26,7 +26,12 @@ from tenacity import (
 
 from config.constants import BSE_BASE_URL, BSE_HEADERS, IST_TIMEZONE, USER_AGENT_ROTATION
 from config.settings import settings
-from src.data.rate_limiter import RateLimiter, create_bse_limiter
+from src.data.rate_limiter import (
+    GlobalCircuitBreaker,
+    GlobalRateLimiter,
+    RateLimiter,
+    create_bse_limiter,
+)
 from src.utils.cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -97,7 +102,9 @@ class BSEScraper:
         cache: Optional[TTLCache] = None,
     ) -> None:
         self._session = requests.Session()
-        self._rate_limiter = rate_limiter or create_bse_limiter()
+        self._rate_limiter = rate_limiter or GlobalRateLimiter.get(
+            "bseindia.com", max_requests=15, window_seconds=60,
+        )
         self._cache: TTLCache = cache or TTLCache(default_ttl=_CACHE_TTL_PRICE)
 
         # Health tracking
@@ -212,16 +219,25 @@ class BSEScraper:
         cache_key: Optional[str] = None,
         cache_ttl: Optional[int] = None,
     ) -> Optional[Any]:
-        """Wrapper tracking health stats; returns ``None`` instead of raising."""
+        """Wrapper tracking health stats, honouring the circuit breaker;
+        returns ``None`` instead of raising."""
+        cb = GlobalCircuitBreaker.get("bse_api", failure_threshold=5, recovery_timeout=60)
+
+        if not cb.can_execute():
+            logger.warning("BSE circuit breaker OPEN — skipping request for %s", url)
+            return None
+
         self._total_requests += 1
         try:
             result = self._get(url, params=params, cache_key=cache_key, cache_ttl=cache_ttl)
             self._successful += 1
             self._consecutive_failures = 0
+            cb.record_success()
             return result
         except BSEScraperError as exc:
             self._failed += 1
             self._consecutive_failures += 1
+            cb.record_failure()
             if self._consecutive_failures >= 5:
                 logger.critical(
                     "BSE scraper: %d consecutive failures — health ERROR. Last: %s",
@@ -365,6 +381,7 @@ class BSEScraper:
             else 0.0
         )
         total = self._total_requests
+        cb = GlobalCircuitBreaker.get("bse_api", failure_threshold=5, recovery_timeout=60)
         return {
             "total_requests": total,
             "successful": self._successful,
@@ -372,6 +389,7 @@ class BSEScraper:
             "success_rate": self._successful / total if total > 0 else 0.0,
             "avg_response_ms": round(avg_ms, 1),
             "consecutive_failures": self._consecutive_failures,
+            "circuit_breaker": cb.get_status(),
         }
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
