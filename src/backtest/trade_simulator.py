@@ -143,6 +143,11 @@ class SimulatorConfig:
     max_positions_per_index: int = 1
     min_risk_reward_ratio: float = 1.3
 
+    # ATR-based stop/target (used by optimizer)
+    stop_loss_atr_mult: float = 1.5
+    target_atr_mult: float = 2.0
+    trailing_sl_activation: float = 0.5  # move SL to breakeven at this fraction of target
+
     # Cost model (Indian market specific)
     brokerage_per_order: float = 20.0
     stt_rate: float = 0.000625           # 0.0625% on sell side for options

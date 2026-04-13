@@ -22,6 +22,24 @@ from src.backtest.strategy_runner import (
 from src.backtest.metrics import MetricsCalculator, BacktestMetrics
 from src.backtest.walk_forward import WalkForwardValidator, WalkForwardConfig, WalkForwardResult, WindowResult
 from src.backtest.report_generator import ReportGenerator
+from src.backtest.optimizer import (
+    EvaluationResult,
+    OptimizationConfig,
+    OptimizationEngine,
+    OptimizationResult,
+    ParameterApplicator,
+    ParameterDef,
+    ParameterSpace,
+    ParameterSpaceLoader,
+    MonteCarloResult,
+    ParamSensitivity,
+    PeriodResult,
+    RegimeResult,
+    RobustnessReport,
+    RobustnessTester,
+    SensitivityResult,
+    StabilityResult,
+)
 
 __all__ = [
     # Data replay
@@ -50,4 +68,22 @@ __all__ = [
     "WindowResult",
     # Report Generator
     "ReportGenerator",
+    # Optimizer
+    "EvaluationResult",
+    "OptimizationConfig",
+    "OptimizationEngine",
+    "OptimizationResult",
+    "ParameterApplicator",
+    "ParameterDef",
+    "ParameterSpace",
+    "ParameterSpaceLoader",
+    # Robustness testing
+    "MonteCarloResult",
+    "ParamSensitivity",
+    "PeriodResult",
+    "RegimeResult",
+    "RobustnessReport",
+    "RobustnessTester",
+    "SensitivityResult",
+    "StabilityResult",
 ]

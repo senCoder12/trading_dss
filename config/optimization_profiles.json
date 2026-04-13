@@ -1,0 +1,227 @@
+{
+  "conservative": {
+    "description": "Fewer parameters, wider steps. Lowest overfitting risk. Use for initial exploration.",
+    "parameters": [
+      {
+        "name": "stop_loss_atr_multiplier",
+        "display_name": "Stop Loss (ATR multiplier)",
+        "description": "Stop loss distance as multiple of ATR. Higher = wider stop = fewer stopped out but larger losses.",
+        "param_type": "float",
+        "min_value": 1.0,
+        "max_value": 2.5,
+        "step": 0.5,
+        "default": 1.5,
+        "category": "risk",
+        "affects": ["risk_manager"]
+      },
+      {
+        "name": "target_atr_multiplier",
+        "display_name": "Target (ATR multiplier)",
+        "description": "Target distance as multiple of ATR. Must be > stop_loss_atr_multiplier for positive RR.",
+        "param_type": "float",
+        "min_value": 1.5,
+        "max_value": 3.5,
+        "step": 0.5,
+        "default": 2.0,
+        "category": "risk",
+        "affects": ["risk_manager"]
+      },
+      {
+        "name": "min_confidence_filter",
+        "display_name": "Minimum Confidence",
+        "description": "Minimum confidence level to take a trade. Higher = fewer but better trades.",
+        "param_type": "choice",
+        "choices": ["LOW", "MEDIUM", "HIGH"],
+        "default": "MEDIUM",
+        "category": "filter",
+        "affects": ["signal_generator"]
+      },
+      {
+        "name": "signal_cooldown_bars",
+        "display_name": "Signal Cooldown (bars)",
+        "description": "Minimum bars between signals for same index. Prevents overtrading.",
+        "param_type": "int",
+        "min_value": 1,
+        "max_value": 5,
+        "step": 2,
+        "default": 3,
+        "category": "filter",
+        "affects": ["strategy_runner"]
+      }
+    ]
+  },
+  "moderate": {
+    "description": "Balanced parameter count. Good for strategy refinement after conservative pass.",
+    "parameters": [
+      {
+        "name": "stop_loss_atr_multiplier",
+        "display_name": "Stop Loss (ATR multiplier)",
+        "description": "Stop loss distance as multiple of ATR. Higher = wider stop = fewer stopped out but larger losses.",
+        "param_type": "float",
+        "min_value": 1.0,
+        "max_value": 2.5,
+        "step": 0.5,
+        "default": 1.5,
+        "category": "risk",
+        "affects": ["risk_manager"]
+      },
+      {
+        "name": "target_atr_multiplier",
+        "display_name": "Target (ATR multiplier)",
+        "description": "Target distance as multiple of ATR. Must be > stop_loss_atr_multiplier for positive RR.",
+        "param_type": "float",
+        "min_value": 1.5,
+        "max_value": 3.5,
+        "step": 0.5,
+        "default": 2.0,
+        "category": "risk",
+        "affects": ["risk_manager"]
+      },
+      {
+        "name": "min_confidence_filter",
+        "display_name": "Minimum Confidence",
+        "description": "Minimum confidence level to take a trade. Higher = fewer but better trades.",
+        "param_type": "choice",
+        "choices": ["LOW", "MEDIUM", "HIGH"],
+        "default": "MEDIUM",
+        "category": "filter",
+        "affects": ["signal_generator"]
+      },
+      {
+        "name": "signal_cooldown_bars",
+        "display_name": "Signal Cooldown (bars)",
+        "description": "Minimum bars between signals for same index. Prevents overtrading.",
+        "param_type": "int",
+        "min_value": 1,
+        "max_value": 5,
+        "step": 2,
+        "default": 3,
+        "category": "filter",
+        "affects": ["strategy_runner"]
+      },
+      {
+        "name": "risk_per_trade_pct",
+        "display_name": "Risk Per Trade (%)",
+        "description": "Maximum percentage of capital risked per trade.",
+        "param_type": "float",
+        "min_value": 1.0,
+        "max_value": 3.0,
+        "step": 0.5,
+        "default": 2.0,
+        "category": "risk",
+        "affects": ["risk_manager", "trade_simulator"]
+      },
+      {
+        "name": "trailing_sl_activation_pct",
+        "display_name": "Trailing SL Activation (%)",
+        "description": "Move SL to breakeven when profit reaches this fraction of target distance.",
+        "param_type": "float",
+        "min_value": 0.3,
+        "max_value": 0.7,
+        "step": 0.2,
+        "default": 0.5,
+        "category": "exit",
+        "affects": ["trade_simulator"]
+      },
+      {
+        "name": "max_positions",
+        "display_name": "Max Simultaneous Positions",
+        "description": "Maximum open positions at any time.",
+        "param_type": "int",
+        "min_value": 1,
+        "max_value": 5,
+        "step": 2,
+        "default": 3,
+        "category": "risk",
+        "affects": ["risk_manager", "trade_simulator"]
+      }
+    ]
+  },
+  "aggressive": {
+    "description": "Same 7 parameters as moderate but with finer step sizes. HIGH overfitting risk. Only use with 2+ years of data and walk-forward validation.",
+    "parameters": [
+      {
+        "name": "stop_loss_atr_multiplier",
+        "display_name": "Stop Loss (ATR multiplier)",
+        "description": "Stop loss distance as multiple of ATR. Higher = wider stop = fewer stopped out but larger losses.",
+        "param_type": "float",
+        "min_value": 1.0,
+        "max_value": 2.5,
+        "step": 0.25,
+        "default": 1.5,
+        "category": "risk",
+        "affects": ["risk_manager"]
+      },
+      {
+        "name": "target_atr_multiplier",
+        "display_name": "Target (ATR multiplier)",
+        "description": "Target distance as multiple of ATR. Must be > stop_loss_atr_multiplier for positive RR.",
+        "param_type": "float",
+        "min_value": 1.5,
+        "max_value": 3.5,
+        "step": 0.25,
+        "default": 2.0,
+        "category": "risk",
+        "affects": ["risk_manager"]
+      },
+      {
+        "name": "min_confidence_filter",
+        "display_name": "Minimum Confidence",
+        "description": "Minimum confidence level to take a trade. Higher = fewer but better trades.",
+        "param_type": "choice",
+        "choices": ["LOW", "MEDIUM", "HIGH"],
+        "default": "MEDIUM",
+        "category": "filter",
+        "affects": ["signal_generator"]
+      },
+      {
+        "name": "signal_cooldown_bars",
+        "display_name": "Signal Cooldown (bars)",
+        "description": "Minimum bars between signals for same index. Prevents overtrading.",
+        "param_type": "int",
+        "min_value": 1,
+        "max_value": 5,
+        "step": 1,
+        "default": 3,
+        "category": "filter",
+        "affects": ["strategy_runner"]
+      },
+      {
+        "name": "risk_per_trade_pct",
+        "display_name": "Risk Per Trade (%)",
+        "description": "Maximum percentage of capital risked per trade.",
+        "param_type": "float",
+        "min_value": 1.0,
+        "max_value": 3.0,
+        "step": 0.25,
+        "default": 2.0,
+        "category": "risk",
+        "affects": ["risk_manager", "trade_simulator"]
+      },
+      {
+        "name": "trailing_sl_activation_pct",
+        "display_name": "Trailing SL Activation (%)",
+        "description": "Move SL to breakeven when profit reaches this fraction of target distance.",
+        "param_type": "float",
+        "min_value": 0.3,
+        "max_value": 0.7,
+        "step": 0.05,
+        "default": 0.5,
+        "category": "exit",
+        "affects": ["trade_simulator"]
+      },
+      {
+        "name": "max_positions",
+        "display_name": "Max Simultaneous Positions",
+        "description": "Maximum open positions at any time.",
+        "param_type": "int",
+        "min_value": 1,
+        "max_value": 5,
+        "step": 1,
+        "default": 3,
+        "category": "risk",
+        "affects": ["risk_manager", "trade_simulator"]
+      }
+    ]
+  }
+}
