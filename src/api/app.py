@@ -8,15 +8,27 @@ singleton for ASGI deployment.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config.logging_config import setup_logging
 from config.settings import settings
-from src.api.routes import indices, market_data, signals, backtest
+from src.api.routes import (
+    anomalies,
+    backtest,
+    indices,
+    market_data,
+    news,
+    portfolio,
+    signals,
+    system,
+)
+from src.utils.date_utils import get_ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -30,46 +42,90 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         max_bytes=settings.logging.max_bytes,
         backup_count=settings.logging.backup_count,
     )
-    logger.info("trading_dss API starting (env=%s)", settings.environment)
+    logger.info("trading_dss API v1.0.0 starting (env=%s)", settings.environment)
     yield
     logger.info("trading_dss API shutting down")
 
 
 def create_app() -> FastAPI:
-    """
-    Create and configure the FastAPI application.
-
-    Returns
-    -------
-    FastAPI:
-        Fully configured application instance.
-    """
+    """Create and configure the FastAPI application."""
     application = FastAPI(
-        title="trading_dss API",
-        description="Trading Decision Support System for Indian Stock Markets",
-        version="0.1.0",
+        title="Trading Decision Support System API",
+        description="REST API for Indian market trading signals and analysis",
+        version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=_lifespan,
     )
 
+    # CORS for local React dev servers
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ],
         allow_credentials=False,
-        allow_methods=["GET"],
+        allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    application.include_router(indices.router, prefix="/api/v1/indices", tags=["indices"])
-    application.include_router(market_data.router, prefix="/api/v1/market", tags=["market"])
-    application.include_router(signals.router, prefix="/api/v1/signals", tags=["signals"])
-    application.include_router(backtest.router, prefix="/api/v1/backtest", tags=["backtest"])
+    # ── Request timing middleware ─────────────────────────────────────────
+    @application.middleware("http")
+    async def log_slow_requests(request: Request, call_next):
+        start = time.monotonic()
+        response = await call_next(request)
+        elapsed = time.monotonic() - start
+        if elapsed > 1.0:
+            logger.warning(
+                "Slow request: %s %s took %.2fs",
+                request.method,
+                request.url.path,
+                elapsed,
+            )
+        return response
 
-    @application.get("/health", tags=["health"])
-    async def health() -> dict:
-        """Health check endpoint."""
-        return {"status": "ok", "environment": settings.environment}
+    # ── Route modules ────────────────────────────────────────────────────
+    application.include_router(
+        market_data.router, prefix="/api/market", tags=["Market Data"],
+    )
+    application.include_router(
+        signals.router, prefix="/api/signals", tags=["Signals"],
+    )
+    application.include_router(
+        indices.router, prefix="/api/indices", tags=["Indices"],
+    )
+    application.include_router(
+        portfolio.router, prefix="/api/portfolio", tags=["Portfolio"],
+    )
+    application.include_router(
+        news.router, prefix="/api/news", tags=["News"],
+    )
+    application.include_router(
+        anomalies.router, prefix="/api/anomalies", tags=["Anomalies"],
+    )
+    application.include_router(
+        system.router, prefix="/api/system", tags=["System"],
+    )
+    application.include_router(
+        backtest.router, prefix="/api/backtest", tags=["Backtest"],
+    )
+
+    # ── Health check ─────────────────────────────────────────────────────
+    @application.get("/api/health", tags=["Health"])
+    async def health_check():
+        return {"status": "ok", "timestamp": get_ist_now().isoformat()}
+
+    # ── Global error handler ─────────────────────────────────────────────
+    @application.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        logger.error("Unhandled API error on %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error", "detail": str(exc)},
+        )
 
     return application
 

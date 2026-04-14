@@ -1,4 +1,4 @@
-"""Strategy optimisation: parameter spaces, grid search, and applicators."""
+"""Strategy optimisation: parameter spaces, grid search, robustness, and reporting."""
 
 from src.backtest.optimizer.param_space import (
     ParameterApplicator,
@@ -22,6 +22,8 @@ from src.backtest.optimizer.robustness import (
     SensitivityResult,
     StabilityResult,
 )
+from src.backtest.optimizer.report import OptimizationReportGenerator
+from src.backtest.optimizer.param_applier import ApprovedParameterManager
 
 # Legacy grid_optimizer module is available via direct import:
 #   from src.backtest.optimizer.grid_optimizer import GridOptimizer
@@ -44,4 +46,6 @@ __all__ = [
     "RobustnessTester",
     "SensitivityResult",
     "StabilityResult",
+    "OptimizationReportGenerator",
+    "ApprovedParameterManager",
 ]
