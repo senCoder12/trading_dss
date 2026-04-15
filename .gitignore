@@ -75,3 +75,12 @@ Thumbs.db
 *.zip
 
 data/reports/
+
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+
+# ── SQLite databases ──────────────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal

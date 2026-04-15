@@ -57,39 +57,68 @@ without any code changes (just edit `config/indices.json`).
 
 ---
 
-## Quick Start Guide
+## Quick Start
 
-**1. Clone and Install dependencies**
+### First-Time Setup
+
 ```bash
-git clone <repo-url>
-cd trading_dss
-python -m venv .venv
-source .venv/bin/activate
+# 1. Install Python dependencies
 pip install -r requirements.txt
-```
 
-**2. Configure Environment**
-Copy the default environment config and modify Telegram credentials if delivery is desired.
-```bash
-cp .env.example .env
-```
-
-**3. Validate Configuration**
-Ensure everything is correctly configured, the Python version validates, and JSON dependencies resolve without overlap.
-```bash
+# 2. Validate configuration (JSON files, DB, Python version)
 python scripts/validate_config.py
-```
 
-**4. Seed Historical Data**
-Bootstrap your local DB instance with years of historic stock data dynamically derived from active indices.
-```bash
+# 3. Seed historical data (one-time, ~15 min)
 python scripts/seed_historical.py
+
+# 4. Build the React dashboard
+cd frontend && npm install && npm run build && cd ..
+
+# 5. (Optional) Configure Telegram alerts
+#    Add to .env:
+#      TELEGRAM_BOT_TOKEN=your_token
+#      TELEGRAM_CHAT_ID=your_chat_id
 ```
 
-**5. Start Orchestrator**
-Initiate the APScheduler to periodically grab fresh prices and generate signals.
+### Run the System
+
 ```bash
-python scripts/run_data_collector.py
+# Start everything (data collector + API + Telegram bot)
+python scripts/run_system.py
+
+# Dashboard:  http://localhost:8000
+# API Docs:   http://localhost:8000/docs
+# Telegram:   Send /start to your bot
+```
+
+**Mode flags:**
+
+| Flag | Effect |
+|------|--------|
+| `--no-telegram` | Skip Telegram bot |
+| `--api-only` | API + dashboard only (no data collection) |
+| `--collector-only` | Data collection only (no dashboard) |
+| `--api-port 8080` | Use a custom port |
+| `--debug` | Verbose logging |
+| `--dry-run` | Collect data but suppress signal writes |
+
+### Run a Backtest
+
+```bash
+python scripts/run_backtest.py --index NIFTY50 --start 2024-01-01 --end 2024-12-31
+```
+
+### Optimize Strategy Parameters
+
+```bash
+python scripts/run_optimizer.py --index NIFTY50 --start 2024-01-01 --end 2024-12-31 --auto-approve
+```
+
+### Production Build (single command)
+
+```bash
+bash scripts/build.sh       # builds frontend + validates config
+python scripts/run_system.py
 ```
 
 ---

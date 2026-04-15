@@ -210,7 +210,7 @@ class DataCollector:
         if self.force_start:
             return True
         status = self.market_hours.get_market_status()
-        return bool(status.get("status") == "OPEN")
+        return bool(status.get("status") == "open")
 
     # ── Job definitions ────────────────────────────────────────────────────
 
@@ -276,12 +276,15 @@ class DataCollector:
                 if item is None:
                     continue
 
+                ltp = item.get("ltp", 0.0)
                 price_dict = {
-                    "ltp":    item.get("ltp", 0.0),
+                    "ltp":    ltp,
                     "open":   item.get("open", 0.0),
                     "high":   item.get("high", 0.0),
                     "low":    item.get("low", 0.0),
-                    "close":  item.get("close", 0.0),
+                    # NSE returns "close" as previous day's close, not today's LTP.
+                    # For live 1m tick data the current close IS the LTP.
+                    "close":  ltp,
                     "volume": item.get("volume", 0.0),
                 }
                 result = validate_price_data(price_dict)

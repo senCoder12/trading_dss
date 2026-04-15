@@ -1,11 +1,12 @@
 """
 Market data API endpoints (DB-backed).
 
-GET /api/market/prices                         — latest prices for all active indices
-GET /api/market/prices/{index_id}              — detailed price for one index
-GET /api/market/prices/{index_id}/history      — historical OHLCV bars
-GET /api/market/options/{index_id}             — options chain summary
-GET /api/market/vix                            — current VIX reading
+GET /api/market/prices                                   — latest prices for all active indices
+GET /api/market/prices/{index_id}                        — detailed price for one index
+GET /api/market/prices/{index_id}/history                — historical OHLCV bars
+GET /api/market/prices/{index_id}/indicators             — computed technical indicator series
+GET /api/market/options/{index_id}                       — options chain summary
+GET /api/market/vix                                      — current VIX reading
 """
 
 from __future__ import annotations
@@ -261,6 +262,144 @@ async def get_price_history(
         bars=bars,
         count=len(bars),
     )
+
+
+@router.get(
+    "/prices/{index_id}/indicators",
+    summary="Technical indicator series for chart overlays",
+)
+async def get_indicators(
+    index_id: str,
+    timeframe: str = Query(default="1d", description="1m, 5m, 15m, 1h, 1d"),
+    indicators: str = Query(default="", description="Comma-separated: ema9,ema20,ema50,ema200,bb,vwap"),
+    days: int = Query(default=120, ge=1, le=365),
+    db: DatabaseManager = Depends(get_db),
+    registry: IndexRegistry = Depends(get_index_registry),
+) -> dict[str, Any]:
+    """
+    Return pre-computed indicator series aligned to price timestamps.
+
+    Response shape:
+        {
+            "ema20":     [{"time": "2024-01-01T...", "value": 22100.5}, ...],
+            "bb_upper":  [...],
+            "bb_middle": [...],
+            "bb_lower":  [...],
+            "vwap":      [...],
+            "max_pain":  null,
+            "signals":   [{"time": "...", "type": "BUY_CALL", "price": 22200}, ...]
+        }
+    """
+    index_id = index_id.upper()
+    if registry.get_or_none(index_id) is None:
+        raise HTTPException(status_code=404, detail=f"Index not found: {index_id}")
+
+    cache_key = f"indicators_{index_id}_{timeframe}_{indicators}"
+    cached = _cached(cache_key, ttl=60)
+    if cached:
+        return cached
+
+    now = get_ist_now()
+    since = (now - timedelta(days=days)).isoformat()
+
+    rows = db.fetch_all(Q.LIST_PRICE_HISTORY, (index_id, timeframe, since, now.isoformat()))
+
+    result: dict[str, Any] = {"max_pain": None, "signals": []}
+
+    if not rows:
+        return _set_cache(cache_key, result)
+
+    # ── Build DataFrame ───────────────────────────────────────────────────────
+    try:
+        import pandas as pd
+        from src.analysis.technical import (
+            ema as _ema,
+            bollinger_bands as _bb,
+            vwap as _vwap,
+        )
+    except ImportError as exc:
+        logger.warning("pandas/technical not available for indicators: %s", exc)
+        return _set_cache(cache_key, result)
+
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["dt"] = pd.to_datetime(df["timestamp"], utc=False)
+    df = df.sort_values("dt").reset_index(drop=True)
+    # Keep original timestamp strings for output (frontend parses them)
+    ts_list: list[str] = df["timestamp"].tolist()
+    close = df["close"].astype(float)
+
+    ind_list = [i.strip().lower() for i in indicators.split(",") if i.strip()]
+
+    def _to_points(series: "pd.Series") -> list[dict]:
+        out = []
+        for ts, val in zip(ts_list, series):
+            try:
+                if pd.isna(val):
+                    continue
+                out.append({"time": ts, "value": round(float(val), 2)})
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    # ── EMA series ────────────────────────────────────────────────────────────
+    for ind in ind_list:
+        if not ind.startswith("ema"):
+            continue
+        try:
+            period = int(ind[3:])
+        except ValueError:
+            continue
+        if len(df) < period:
+            continue
+        try:
+            result[ind] = _to_points(_ema(close, period))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("EMA %s failed: %s", ind, exc)
+
+    # ── Bollinger Bands ───────────────────────────────────────────────────────
+    if "bb" in ind_list and len(df) >= 20:
+        try:
+            bb_df = _bb(close)
+            result["bb_upper"]  = _to_points(bb_df["bb_upper"])
+            result["bb_middle"] = _to_points(bb_df["bb_mid"])
+            result["bb_lower"]  = _to_points(bb_df["bb_lower"])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Bollinger Bands failed: %s", exc)
+
+    # ── VWAP ──────────────────────────────────────────────────────────────────
+    if "vwap" in ind_list:
+        computed = False
+        if timeframe != "1d" and "volume" in df.columns:
+            try:
+                # vwap() needs a DatetimeIndex and high/low/close/volume columns
+                df_vwap = df[["high", "low", "close", "volume"]].copy().astype(float)
+                df_vwap.index = pd.DatetimeIndex(df["dt"])
+                vwap_series = _vwap(df_vwap)
+                result["vwap"] = _to_points(vwap_series)
+                computed = True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("VWAP compute failed: %s", exc)
+        if not computed and "vwap" in df.columns:
+            # Fall back to stored VWAP column (daily or pre-computed)
+            result["vwap"] = _to_points(df["vwap"].astype(float))
+
+    # ── Signal markers ────────────────────────────────────────────────────────
+    sig_since = (now - timedelta(days=min(days, 90))).isoformat()
+    try:
+        sig_rows = db.fetch_all(Q.LIST_SIGNALS_FOR_INDEX, (index_id, sig_since, 200))
+        result["signals"] = [
+            {
+                "time":  r["generated_at"],
+                "type":  r["signal_type"],
+                "price": r.get("entry_price"),
+            }
+            for r in sig_rows
+            if r.get("signal_type") in ("BUY_CALL", "BUY_PUT")
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Signal fetch failed: %s", exc)
+
+    return _set_cache(cache_key, result)
 
 
 @router.get("/options/{index_id}", response_model=OptionsResponse, summary="Options chain summary")
