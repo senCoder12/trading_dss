@@ -2,15 +2,26 @@ import { Badge } from '../common/Badge';
 import { EmptyState } from '../common/EmptyState';
 import { formatPrice, formatPnL, formatISTDateTime } from '../../utils/formatters';
 import { SIGNAL_TYPE_LABELS } from '../../utils/constants';
-import { BarChart2 } from 'lucide-react';
+import { BarChart2, Download } from 'lucide-react';
 
-export function TradeHistory({ trades }) {
+export function TradeHistory({ trades, days = 7 }) {
   if (!trades?.length) return (
     <EmptyState icon={BarChart2} title="No closed trades" message="Completed trades will appear here" />
   );
 
   return (
     <div className="overflow-x-auto">
+      <div className="flex justify-end px-3 py-2">
+        <button
+          onClick={() => {
+            window.open(`/api/portfolio/trades/export?days=${days}`, '_blank');
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-xs text-slate-300 transition-colors"
+        >
+          <Download size={13} />
+          Export CSV
+        </button>
+      </div>
       <table className="w-full text-xs">
         <thead>
           <tr className="text-slate-400 border-b border-slate-700">

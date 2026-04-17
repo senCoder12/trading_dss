@@ -1,12 +1,11 @@
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts';
-import { usePolling } from '../../hooks/usePolling';
+import { useDataStore } from '../../hooks/useDataStore';
 import { useApi } from '../../hooks/useApi';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
-import { Spinner } from '../common/Spinner';
 import { RefreshIndicator } from '../common/RefreshIndicator';
+import { Skeleton } from '../common/Skeleton';
 import { formatCurrency, formatPercentage, formatPnL } from '../../utils/formatters';
-import { REFRESH_INTERVALS } from '../../utils/constants';
 
 function MiniEquityCurve({ history }) {
   if (!history?.length) return null;
@@ -41,7 +40,7 @@ function MiniEquityCurve({ history }) {
 }
 
 export default function PortfolioSummary() {
-  const { data, loading, error, lastUpdated } = usePolling(api.getPortfolio, REFRESH_INTERVALS.portfolio);
+  const { portfolio: { data, loading, error, lastUpdated } } = useDataStore();
   const { data: histData } = useApi(api.getEquityHistory);
   const history = histData?.history ?? [];
 
@@ -55,7 +54,20 @@ export default function PortfolioSummary() {
       actions={<RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />}
     >
       {loading && !data ? (
-        <div className="flex justify-center p-8"><Spinner /></div>
+        <div className="p-4 space-y-3">
+          <Skeleton width="40%" height="0.75rem" />
+          <Skeleton width="60%" height="1.5rem" />
+          <Skeleton width="30%" height="0.75rem" />
+          <div className="grid grid-cols-3 gap-3 py-3">
+            {Array.from({ length: 3 }, (_, i) => (
+              <div key={i} className="flex flex-col items-center gap-1">
+                <Skeleton width="30px" height="14px" />
+                <Skeleton width="50px" height="10px" />
+              </div>
+            ))}
+          </div>
+          <Skeleton width="100%" height="64px" />
+        </div>
       ) : (
         <div className="p-4">
           {/* Capital */}

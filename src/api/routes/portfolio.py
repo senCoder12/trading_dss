@@ -5,15 +5,19 @@ GET /api/portfolio/summary              — portfolio overview
 GET /api/portfolio/positions            — open positions with live P&L
 GET /api/portfolio/history              — daily P&L history for equity curve
 GET /api/portfolio/trades               — recent closed trades
+GET /api/portfolio/trades/export        — download CSV of trade history
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import get_db
@@ -295,3 +299,61 @@ async def get_trades(
         for r in rows
     ]
     return TradesResponse(trades=trades, count=len(trades), total=total)
+
+
+@router.get("/trades/export", summary="Export trade history as CSV")
+async def export_trades(
+    days: int = Query(default=30, ge=1, le=365),
+    index_id: Optional[str] = Query(default=None),
+    db: DatabaseManager = Depends(get_db),
+):
+    now = get_ist_now()
+    since = (now - timedelta(days=days)).isoformat()
+
+    clauses = ["outcome IN ('WIN', 'LOSS')", "closed_at >= ?"]
+    params: list = [since]
+
+    if index_id:
+        clauses.append("index_id = ?")
+        params.append(index_id.upper())
+
+    where = " AND ".join(clauses)
+
+    rows = db.fetch_all(
+        f"SELECT index_id, signal_type, confidence_level, "
+        f"entry_price, actual_exit_price, stop_loss, target_price, "
+        f"actual_pnl, outcome, generated_at, closed_at "
+        f"FROM trading_signals WHERE {where} "
+        f"ORDER BY closed_at DESC",
+        tuple(params),
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Date", "Index", "Type", "Confidence", "Entry", "Exit",
+        "SL", "Target", "P&L (INR)", "Result", "Opened", "Closed",
+    ])
+    for r in rows:
+        writer.writerow([
+            r.get("closed_at", ""),
+            r["index_id"],
+            r["signal_type"],
+            r["confidence_level"],
+            r.get("entry_price", ""),
+            r.get("actual_exit_price", ""),
+            r.get("stop_loss", ""),
+            r.get("target_price", ""),
+            round(r["actual_pnl"], 2) if r.get("actual_pnl") is not None else "",
+            r.get("outcome", ""),
+            r.get("generated_at", ""),
+            r.get("closed_at", ""),
+        ])
+
+    output.seek(0)
+    filename = f"trades_{date.today().isoformat()}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

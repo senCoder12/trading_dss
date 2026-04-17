@@ -1,7 +1,56 @@
-import { ArrowUpCircle, ArrowDownCircle, MinusCircle, Target, Shield } from 'lucide-react';
+import { ArrowUpCircle, ArrowDownCircle, MinusCircle, Target, Shield, Ticket } from 'lucide-react';
 import { Badge } from '../common/Badge';
 import { formatPrice, formatConfidence, formatPercentage, timeAgo } from '../../utils/formatters';
 import { SIGNAL_TYPE_LABELS } from '../../utils/constants';
+
+function TradeTicket({ trade }) {
+  if (!trade?.strike || !trade?.expiry) return null;
+  const isCall = trade.option_type === 'CE';
+  const pillColor = isCall
+    ? 'bg-green-500/15 text-green-300 border-green-500/30'
+    : 'bg-red-500/15 text-red-300 border-red-500/30';
+  const contract = `${Math.round(trade.strike)} ${trade.option_type ?? ''}`.trim();
+
+  return (
+    <div className="bg-slate-900/60 rounded border border-slate-700/60 p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <Ticket className="w-3.5 h-3.5 text-slate-400" />
+        <span className="text-slate-400 text-[11px] font-medium uppercase tracking-wide">
+          Trade Ticket
+        </span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className={`px-2 py-0.5 rounded border text-xs font-mono font-semibold ${pillColor}`}>
+          {contract}
+        </span>
+        <span className="text-slate-300 text-xs font-mono">{trade.expiry}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div className="text-slate-500">Premium</div>
+          <div className="text-slate-200 font-mono font-semibold">
+            {trade.premium != null ? `₹${trade.premium.toFixed(2)}` : '--'}
+          </div>
+        </div>
+        <div>
+          <div className="text-slate-500">Lots</div>
+          <div className="text-slate-200 font-mono font-semibold">{trade.lots ?? '--'}</div>
+        </div>
+        <div>
+          <div className="text-slate-500">Max Loss</div>
+          <div className="text-red-400 font-mono font-semibold">
+            {trade.max_loss_amount != null ? `₹${Math.round(trade.max_loss_amount).toLocaleString('en-IN')}` : '--'}
+            {trade.risk_pct_of_capital != null && (
+              <span className="text-slate-500 font-normal ml-1">
+                ({trade.risk_pct_of_capital.toFixed(2)}%)
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const VOTES = ['technical_vote', 'options_vote', 'news_vote', 'anomaly_vote'];
 const VOTE_LABELS = {
@@ -58,9 +107,15 @@ export function SignalCard({ signal }) {
   const {
     index_id, signal_type, confidence_level, confidence_score,
     entry_price, target_price, stop_loss, risk_reward_ratio,
+    entry, target, sl, rr_ratio,
     technical_vote, options_vote, news_vote, anomaly_vote,
-    regime, reasoning, generated_at,
+    regime, reasoning, generated_at, option_trade,
   } = signal;
+
+  const entryVal = entry_price ?? entry;
+  const targetVal = target_price ?? target;
+  const slVal = stop_loss ?? sl;
+  const rrVal = risk_reward_ratio ?? rr_ratio;
 
   const isNoTrade = signal_type === 'NO_TRADE';
 
@@ -101,12 +156,12 @@ export function SignalCard({ signal }) {
       <ConfidenceMeter score={confidence_score} />
 
       {/* Key levels */}
-      {!isNoTrade && (entry_price || target_price || stop_loss) && (
+      {!isNoTrade && (entryVal || targetVal || slVal) && (
         <div className="grid grid-cols-3 gap-2 py-3 border-y border-slate-700/50">
           <div className="text-center">
             <div className="text-slate-500 text-[11px] mb-0.5">Entry</div>
             <div className="text-slate-200 font-mono text-sm font-semibold">
-              {entry_price ? formatPrice(entry_price) : '--'}
+              {entryVal ? formatPrice(entryVal) : '--'}
             </div>
           </div>
           <div className="text-center">
@@ -114,7 +169,7 @@ export function SignalCard({ signal }) {
               <Target className="w-3 h-3" /> Target
             </div>
             <div className="text-green-400 font-mono text-sm font-semibold">
-              {target_price ? formatPrice(target_price) : '--'}
+              {targetVal ? formatPrice(targetVal) : '--'}
             </div>
           </div>
           <div className="text-center">
@@ -122,18 +177,21 @@ export function SignalCard({ signal }) {
               <Shield className="w-3 h-3" /> Stop Loss
             </div>
             <div className="text-red-400 font-mono text-sm font-semibold">
-              {stop_loss ? formatPrice(stop_loss) : '--'}
+              {slVal ? formatPrice(slVal) : '--'}
             </div>
           </div>
         </div>
       )}
 
+      {/* Trade ticket: exact option contract to buy */}
+      {!isNoTrade && <TradeTicket trade={option_trade} />}
+
       {/* R:R ratio and regime */}
-      {(risk_reward_ratio != null || regime) && (
+      {(rrVal != null || regime) && (
         <div className="flex items-center gap-3 text-xs">
-          {risk_reward_ratio != null && (
+          {rrVal != null && (
             <span className="text-slate-400">
-              R:R <span className="text-slate-200 font-semibold">{risk_reward_ratio.toFixed(2)}</span>
+              R:R <span className="text-slate-200 font-semibold">{rrVal.toFixed(2)}</span>
             </span>
           )}
           {regime && (

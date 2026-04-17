@@ -1,13 +1,12 @@
 import { ArrowUpCircle, ArrowDownCircle, MinusCircle } from 'lucide-react';
-import { usePolling } from '../../hooks/usePolling';
-import { api } from '../../api/client';
+import { useDataStore } from '../../hooks/useDataStore';
 import { Card } from '../common/Card';
 import { Badge } from '../common/Badge';
-import { Spinner } from '../common/Spinner';
 import { EmptyState } from '../common/EmptyState';
 import { RefreshIndicator } from '../common/RefreshIndicator';
+import { SignalCardSkeleton } from '../common/Skeleton';
 import { formatPrice, formatConfidence, timeAgo } from '../../utils/formatters';
-import { REFRESH_INTERVALS, SIGNAL_TYPE_LABELS } from '../../utils/constants';
+import { SIGNAL_TYPE_LABELS } from '../../utils/constants';
 import { TrendingUp } from 'lucide-react';
 
 const SIGNAL_ICONS = {
@@ -17,7 +16,7 @@ const SIGNAL_ICONS = {
 };
 
 export default function ActiveSignals() {
-  const { data, loading, error, lastUpdated } = usePolling(api.getCurrentSignals, REFRESH_INTERVALS.signals);
+  const { signals: { data, loading, error, lastUpdated } } = useDataStore();
   const signals = data?.signals ?? [];
 
   return (
@@ -27,7 +26,9 @@ export default function ActiveSignals() {
       actions={<RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />}
     >
       {loading && !data ? (
-        <div className="flex justify-center p-8"><Spinner /></div>
+        <div className="divide-y divide-slate-700/50">
+          {Array.from({ length: 4 }, (_, i) => <SignalCardSkeleton key={i} />)}
+        </div>
       ) : !signals.length ? (
         <EmptyState icon={TrendingUp} title="No signals" message="Signal engine may be offline" />
       ) : (

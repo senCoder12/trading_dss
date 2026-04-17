@@ -72,4 +72,6 @@ export const api = {
   getSystemStatus: () => get('/system/status'),
   activateKillSwitch: (reason) => post('/system/kill-switch', { reason }),
   deactivateKillSwitch: () => del('/system/kill-switch'),
+  getLiveConfig: () => get('/system/config/live'),
+  updateLiveConfig: (settings) => post('/system/config/live', settings),
 };

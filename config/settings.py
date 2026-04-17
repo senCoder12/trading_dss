@@ -62,6 +62,7 @@ class PollingSettings(BaseSettings):
     news_interval: int = Field(default=120, ge=60, description="News/RSS refresh interval (s)")
     fii_dii_interval: int = Field(default=900, ge=300, description="FII/DII data refresh interval (s)")
     vix_interval: int = Field(default=60, ge=15, description="VIX refresh interval (s)")
+    technical_interval: int = Field(default=300, ge=60, description="Technical indicator recompute interval (s)")
 
     model_config = {"env_prefix": "POLL_", "extra": "ignore"}
 

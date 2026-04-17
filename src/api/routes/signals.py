@@ -44,6 +44,16 @@ def _set_cache(key: str, value: Any) -> Any:
 
 # ── Response models ──────────────────────────────────────────────────────────
 
+class OptionTrade(BaseModel):
+    strike: Optional[float] = None
+    expiry: Optional[str] = None
+    option_type: Optional[str] = None  # "CE" or "PE"
+    premium: Optional[float] = None
+    lots: Optional[int] = None
+    max_loss_amount: Optional[float] = None
+    risk_pct_of_capital: Optional[float] = None
+
+
 class SignalSummary(BaseModel):
     index_id: str
     signal_type: str = "NO_TRADE"
@@ -56,6 +66,7 @@ class SignalSummary(BaseModel):
     regime: Optional[str] = None
     generated_at: Optional[str] = None
     reasoning_summary: Optional[str] = None
+    option_trade: Optional[OptionTrade] = None
 
 
 class CurrentSignalsResponse(BaseModel):
@@ -78,6 +89,7 @@ class SignalDetail(BaseModel):
     news_vote: Optional[str] = None
     anomaly_vote: Optional[str] = None
     reasoning: Optional[dict] = None
+    option_trade: Optional[OptionTrade] = None
     outcome: Optional[str] = None
     actual_exit_price: Optional[float] = None
     actual_pnl: Optional[float] = None
@@ -130,6 +142,18 @@ def _parse_reasoning(raw: Optional[str]) -> tuple[Optional[dict], Optional[float
         return None, None, str(raw)[:200] if raw else None
 
 
+def _extract_option_trade(reasoning_dict: Optional[dict]) -> Optional[OptionTrade]:
+    if not reasoning_dict:
+        return None
+    raw = reasoning_dict.get("option_trade")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return OptionTrade(**{k: raw.get(k) for k in OptionTrade.model_fields})
+    except (TypeError, ValueError):
+        return None
+
+
 def _row_to_detail(row: dict) -> SignalDetail:
     reasoning_dict, conf_score, _ = _parse_reasoning(row.get("reasoning"))
     return SignalDetail(
@@ -148,6 +172,7 @@ def _row_to_detail(row: dict) -> SignalDetail:
         news_vote=row.get("news_vote"),
         anomaly_vote=row.get("anomaly_vote"),
         reasoning=reasoning_dict,
+        option_trade=_extract_option_trade(reasoning_dict),
         outcome=row.get("outcome"),
         actual_exit_price=row.get("actual_exit_price"),
         actual_pnl=row.get("actual_pnl"),
@@ -176,7 +201,7 @@ async def get_current_signals(
             signals.append(SignalSummary(index_id=defn.id))
             continue
 
-        _, conf_score, summary = _parse_reasoning(row.get("reasoning"))
+        reasoning_dict, conf_score, summary = _parse_reasoning(row.get("reasoning"))
 
         signals.append(SignalSummary(
             index_id=defn.id,
@@ -190,6 +215,7 @@ async def get_current_signals(
             regime=row.get("regime"),
             generated_at=row.get("generated_at"),
             reasoning_summary=summary,
+            option_trade=_extract_option_trade(reasoning_dict),
         ))
 
     result = CurrentSignalsResponse(signals=signals)

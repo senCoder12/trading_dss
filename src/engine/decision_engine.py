@@ -64,6 +64,7 @@ from src.engine.signal_generator import SignalGenerator, TradingSignal
 from src.engine.risk_manager import RiskManager, RefinedSignal, RiskConfig
 from src.data.rate_limiter import freshness_tracker
 from src.engine.signal_tracker import SignalTracker
+from src.api.websocket import queue_event
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
@@ -265,6 +266,15 @@ class DecisionEngine:
 
         logger.critical("KILL SWITCH ACTIVATED: %s", reason)
 
+        try:
+            queue_event("system_alert", {
+                "alert_type": "KILL_SWITCH_ON",
+                "message": f"Kill switch activated: {reason}",
+                "severity": "CRITICAL",
+            })
+        except Exception:
+            pass
+
     def deactivate_kill_switch(self) -> None:
         """Deactivate emergency kill switch."""
         from src.utils.date_utils import get_ist_now
@@ -282,6 +292,15 @@ class DecisionEngine:
             logger.warning("Kill switch file removed but DB record failed")
 
         logger.info("Kill switch deactivated — signal generation resumed")
+
+        try:
+            queue_event("system_alert", {
+                "alert_type": "KILL_SWITCH_OFF",
+                "message": "Kill switch deactivated — signal generation resumed",
+                "severity": "HIGH",
+            })
+        except Exception:
+            pass
 
     def _kill_switch_no_trade(self, index_id: str) -> DecisionResult:
         """Return a safe NO_TRADE DecisionResult for kill-switch scenarios."""
@@ -556,6 +575,22 @@ class DecisionEngine:
                         "EXIT ALERT:\n%s",
                         self._format_exit_alert(pos, update, exit_reason),
                     )
+
+                    # Push position-exit event to WebSocket clients
+                    try:
+                        outcome = "WIN" if update.current_pnl >= 0 else "LOSS"
+                        queue_event("position_exit", {
+                            "index_id": pos.index_id,
+                            "trade_type": getattr(pos, "signal_type", ""),
+                            "exit_reason": exit_reason,
+                            "pnl": round(update.current_pnl, 2),
+                            "pnl_pct": round(update.current_pnl_pct * 100, 2),
+                            "outcome": outcome,
+                            "entry_price": getattr(pos, "entry_price", 0.0),
+                            "exit_price": current_price,
+                        })
+                    except Exception as e:
+                        logger.debug("WebSocket exit broadcast failed (non-fatal): %s", e)
                 else:
                     logger.debug(
                         "HOLD  %s (%s)  PnL=₹%.0f (%.2f%%)",
@@ -1058,6 +1093,26 @@ class DecisionEngine:
                 )
             except Exception:
                 logger.exception("Step 8: alert generation failed for %s", index_id)
+
+            # Push real-time event to WebSocket clients
+            try:
+                queue_event("signal", {
+                    "index_id": index_id,
+                    "signal_type": getattr(final_signal, "signal_type", ""),
+                    "confidence": getattr(final_signal, "confidence_level", "LOW"),
+                    "confidence_score": getattr(final_signal, "confidence_score", 0.0) or 0.0,
+                    "entry": getattr(final_signal, "refined_entry", None)
+                        or getattr(final_signal, "entry_price", 0.0) or 0.0,
+                    "target": getattr(final_signal, "refined_target", None)
+                        or getattr(final_signal, "target_price", 0.0) or 0.0,
+                    "stop_loss": getattr(final_signal, "refined_stop_loss", None)
+                        or getattr(final_signal, "stop_loss", 0.0) or 0.0,
+                    "reasoning_summary": (getattr(final_signal, "reasoning", "") or "")[:200],
+                    "alert_message": alert_message or "",
+                    "alert_priority": alert_priority,
+                })
+            except Exception as e:
+                logger.debug("WebSocket broadcast failed (non-fatal): %s", e)
 
         return alert_message, alert_priority
 

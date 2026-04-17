@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Menu, Clock, Activity, AlertTriangle } from 'lucide-react';
+import { Menu, Clock, Activity, AlertTriangle, Wifi, WifiOff, Settings } from 'lucide-react';
 import { usePolling } from '../../hooks/usePolling';
 import { api } from '../../api/client';
 import { formatIST, getMarketTimeInfo } from '../../utils/formatters';
 import { VIX_REGIMES } from '../../utils/constants';
 
-export default function Header({ onMenuClick }) {
+export default function Header({ onMenuClick, wsConnected = false, onSettingsClick }) {
   const [now, setNow] = useState(new Date());
   const { data: vix } = usePolling(api.getVix, 30_000);
   const { data: status } = usePolling(api.getSystemStatus, 30_000);
@@ -43,6 +43,18 @@ export default function Header({ onMenuClick }) {
           </div>
         )}
 
+        {/* WebSocket connection status */}
+        <div className="flex items-center gap-1" title={wsConnected ? 'Live connection' : 'Disconnected — reconnecting'}>
+          {wsConnected ? (
+            <Wifi className="w-3.5 h-3.5 text-green-400" />
+          ) : (
+            <WifiOff className="w-3.5 h-3.5 text-red-400 animate-pulse" />
+          )}
+          <span className={`text-[10px] font-medium hidden sm:block ${wsConnected ? 'text-green-400' : 'text-red-400'}`}>
+            {wsConnected ? 'LIVE' : 'OFFLINE'}
+          </span>
+        </div>
+
         {/* Market status */}
         <div className="flex items-center gap-2">
           <span
@@ -74,6 +86,15 @@ export default function Header({ onMenuClick }) {
             )}
           </div>
         )}
+
+        {/* Settings */}
+        <button
+          onClick={onSettingsClick}
+          className="p-1.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+          title="Quick Settings (S)"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
 
         {/* IST clock */}
         <div className="flex items-center gap-1.5 text-slate-500">

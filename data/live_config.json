@@ -1,0 +1,13 @@
+{
+  "riskPerTrade": 2.0,
+  "minConfidence": "MEDIUM",
+  "maxPositions": 3,
+  "activeIndices": [
+    "NIFTY50",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY"
+  ],
+  "soundEnabled": true,
+  "notificationThreshold": "HIGH"
+}

@@ -151,6 +151,15 @@ class OptionsChainFetcher:
         )
         if raw:
             freshness_tracker.update("options_chain")
+        else:
+            # NSE's options-chain endpoint returns HTTP 200 with an empty
+            # {} outside market hours. Surface this so "no chain" doesn't
+            # look like a bug when inspecting logs.
+            logger.debug(
+                "Options chain API returned empty for %s "
+                "(NSE likely closed or symbol not yet tradable)",
+                option_symbol,
+            )
         return raw
 
     def get_options_chain(

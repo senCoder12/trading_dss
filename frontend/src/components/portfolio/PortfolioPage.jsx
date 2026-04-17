@@ -3,6 +3,7 @@ import { usePolling } from '../../hooks/usePolling';
 import { useApi } from '../../hooks/useApi';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 import { Spinner } from '../common/Spinner';
 import { RefreshIndicator } from '../common/RefreshIndicator';
 import { EquityCurve } from './EquityCurve';
@@ -85,57 +86,64 @@ export default function PortfolioPage() {
       </Card>
 
       {/* Equity curve */}
-      <Card title="Equity Curve" padding={false}>
-        <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
-          {EQ_PERIODS.map((d) => (
-            <button
-              key={d}
-              onClick={() => setEqDays(d)}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                eqDays === d
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-              }`}
-            >
-              {d}d
-            </button>
-          ))}
-        </div>
-        <div className="px-4 py-3">
-          {histLoading ? <div className="flex justify-center p-6"><Spinner /></div>
-            : <EquityCurve history={history} />}
-        </div>
-      </Card>
+      <ErrorBoundary>
+        <Card title="Equity Curve" padding={false}>
+          <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
+            {EQ_PERIODS.map((d) => (
+              <button
+                key={d}
+                onClick={() => setEqDays(d)}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  eqDays === d
+                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
+                }`}
+              >
+                {d}d
+              </button>
+            ))}
+          </div>
+          <div className="px-4 py-3">
+            {histLoading ? <div className="flex justify-center p-6"><Spinner /></div>
+              : <EquityCurve history={history} />}
+          </div>
+        </Card>
+      </ErrorBoundary>
 
       {/* Open positions */}
-      <Card title={`Open Positions (${positions.length})`} padding={false}>
-        <PositionsList positions={positions} />
-      </Card>
+      <ErrorBoundary>
+        <Card title={`Open Positions (${positions.length})`} padding={false}>
+          <PositionsList positions={positions} />
+        </Card>
+      </ErrorBoundary>
 
       {/* Performance stats */}
-      <Card title="Performance Statistics" padding={false}>
-        <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
-          {PERIODS.map((d) => (
-            <button
-              key={d}
-              onClick={() => setPerfDays(d)}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                perfDays === d
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-              }`}
-            >
-              {d}d
-            </button>
-          ))}
-        </div>
-        <div className="p-4">
-          {perfLoading ? <div className="flex justify-center p-4"><Spinner /></div>
-            : <PerformanceStats stats={perf} />}
-        </div>
-      </Card>
+      <ErrorBoundary>
+        <Card title="Performance Statistics" padding={false}>
+          <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
+            {PERIODS.map((d) => (
+              <button
+                key={d}
+                onClick={() => setPerfDays(d)}
+                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  perfDays === d
+                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
+                }`}
+              >
+                {d}d
+              </button>
+            ))}
+          </div>
+          <div className="p-4">
+            {perfLoading ? <div className="flex justify-center p-4"><Spinner /></div>
+              : <PerformanceStats stats={perf} />}
+          </div>
+        </Card>
+      </ErrorBoundary>
 
       {/* Trade history */}
+      <ErrorBoundary>
       <Card title="Trade History" padding={false}>
         <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
           {PERIODS.map((d) => (
@@ -156,8 +164,9 @@ export default function PortfolioPage() {
           )}
         </div>
         {tradesLoading ? <div className="flex justify-center p-6"><Spinner /></div>
-          : <TradeHistory trades={trades} />}
+          : <TradeHistory trades={trades} days={tradeDays} />}
       </Card>
+      </ErrorBoundary>
     </div>
   );
 }

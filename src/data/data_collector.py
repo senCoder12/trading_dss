@@ -14,6 +14,7 @@ background process during and around Indian market hours.
 #   - vix_data
 #   - fii_dii_activity
 #   - system_health
+#   - technical_indicators    (via IndicatorStore.save_analysis)
 # Analysis components only READ from these tables.
 # ================================================================
 
@@ -135,6 +136,14 @@ class DataCollector:
             trigger=IntervalTrigger(seconds=p.vix_interval, timezone=_IST),
             id="collect_vix",
             name="Collect VIX Data",
+            max_instances=1,
+            coalesce=True,
+        )
+        self.scheduler.add_job(
+            self.collect_technical_indicators,
+            trigger=IntervalTrigger(seconds=p.technical_interval, timezone=_IST),
+            id="collect_technical_indicators",
+            name="Compute Technical Indicators",
             max_instances=1,
             coalesce=True,
         )
@@ -418,6 +427,79 @@ class DataCollector:
         except Exception as exc:
             self._handle_failure("vix", exc)
 
+    def collect_technical_indicators(self) -> None:
+        """
+        Recompute technical indicators for every F&O index and persist them
+        to ``technical_indicators``.
+
+        Reads the most recent daily bars out of ``price_data``, runs the
+        full ``TechnicalAggregator`` pipeline, and upserts via
+        ``IndicatorStore``. Runs on a fixed interval (``technical_interval``)
+        — cheap because all inputs are local DB reads, no network calls.
+        """
+        if not self._should_run():
+            return
+
+        try:
+            import pandas as pd
+            from src.analysis.indicator_store import IndicatorStore
+            from src.analysis.technical_aggregator import TechnicalAggregator
+
+            aggregator = TechnicalAggregator()
+            fo_indices = self.registry.get_indices_with_options()
+            if not fo_indices:
+                return
+
+            # Latest VIX for the aggregator's vol context — a single read.
+            vix_row = self.db.fetch_one(
+                "SELECT vix_value FROM vix_data ORDER BY timestamp DESC LIMIT 1"
+            )
+            vix_value = float(vix_row["vix_value"]) if vix_row else None
+
+            persisted = 0
+            for idx in fo_indices:
+                try:
+                    rows = self.db.fetch_all(
+                        "SELECT timestamp, open, high, low, close, volume "
+                        "FROM price_data "
+                        "WHERE index_id = ? AND timeframe = '1d' "
+                        "ORDER BY timestamp DESC LIMIT 200",
+                        (idx.id,),
+                    )
+                    # Need at least a few bars for any aggregator output. Below
+                    # this we skip — but log visibly so data gaps don't hide.
+                    if len(rows) < 5:
+                        logger.warning(
+                            "Skipping indicators for %s — only %d daily bars "
+                            "(yfinance history limited for this ticker)",
+                            idx.id, len(rows),
+                        )
+                        continue
+
+                    df = pd.DataFrame([dict(r) for r in reversed(rows)])
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                    df = df.set_index("timestamp")
+
+                    result = aggregator.analyze(
+                        index_id=idx.id,
+                        price_df=df,
+                        vix_value=vix_value,
+                        timeframe="1d",
+                    )
+                    if not self.dry_run:
+                        IndicatorStore.save_analysis(result, self.db)
+                    persisted += 1
+                except Exception:
+                    logger.exception(
+                        "Technical indicators failed for %s", idx.id,
+                    )
+
+            if persisted:
+                logger.info("Technical indicators computed for %d indices", persisted)
+
+        except Exception as exc:
+            logger.error("Technical indicators job failed: %s", exc)
+
     def collect_fii_dii(self) -> None:
         """18:00 IST — fetch today's FII/DII data after market close."""
         try:
@@ -537,6 +619,17 @@ class DataCollector:
         """Start the APScheduler background scheduler."""
         logger.info("Starting DataCollector scheduler")
         self.scheduler.start()
+
+        # When launched outside market hours with --force-start, cron-gated
+        # jobs (FII/DII at 18:00, historical update at 18:30) won't fire
+        # until the next day. Trigger them once on startup so the DB is
+        # current — matches what an operator expects from --force-start.
+        if self.force_start:
+            for job_id in ("collect_fii_dii", "update_historical", "collect_technical_indicators"):
+                try:
+                    self.force_run(job_id)
+                except Exception:
+                    logger.exception("force_start: '%s' backfill failed", job_id)
 
     def stop(self) -> None:
         """Graceful shutdown — wait for any running jobs to complete."""

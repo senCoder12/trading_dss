@@ -557,6 +557,38 @@ class SignalTracker:
         except (json.JSONDecodeError, TypeError):
             reasoning_dict = {"text": str(reasoning_raw)}
         reasoning_dict["signal_id"] = signal_id
+
+        # Stash option-trade fields (strike/expiry/premium/lots/risk) for the
+        # REST API to surface in the UI. These aren't first-class DB columns,
+        # so they ride inside the reasoning JSON blob.
+        if is_actionable:
+            strike = getattr(signal, "recommended_strike", None)
+            expiry = getattr(signal, "recommended_expiry", None)
+            if strike or expiry:
+                reasoning_dict["option_trade"] = {
+                    "strike": float(strike) if strike is not None else None,
+                    "expiry": expiry,
+                    "option_type": "CE" if signal_type == "BUY_CALL" else "PE",
+                    "premium": (
+                        float(getattr(signal, "option_premium", 0) or 0) or None
+                    ),
+                    "lots": int(
+                        getattr(signal, "lots", 0)
+                        or getattr(signal, "suggested_lot_count", 0)
+                        or 0
+                    ) or None,
+                    "max_loss_amount": (
+                        float(
+                            getattr(signal, "max_loss_amount", 0)
+                            or getattr(signal, "estimated_max_loss", 0)
+                            or 0
+                        ) or None
+                    ),
+                    "risk_pct_of_capital": (
+                        float(getattr(signal, "risk_pct_of_capital", 0) or 0) or None
+                    ),
+                }
+
         reasoning_json = json.dumps(reasoning_dict)
 
         # Structured audit trail (if present)

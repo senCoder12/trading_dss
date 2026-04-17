@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +31,7 @@ from src.api.routes import (
     signals,
     system,
 )
+from src.api.websocket import broadcaster, process_event_queue
 from src.utils.date_utils import get_ist_now
 
 # Resolved once at import time; works regardless of working directory.
@@ -49,7 +50,14 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         backup_count=settings.logging.backup_count,
     )
     logger.info("trading_dss API v1.0.0 starting (env=%s)", settings.environment)
+
+    # Start the WebSocket event-queue processor (drains sync→async queue)
+    import asyncio
+    queue_task = asyncio.create_task(process_event_queue())
+
     yield
+
+    queue_task.cancel()
     logger.info("trading_dss API shutting down")
 
 
@@ -93,6 +101,56 @@ def create_app() -> FastAPI:
             )
         return response
 
+    # ── Full request/response logging (enable via LOG_HTTP_BODIES=1) ──────
+    if os.getenv("LOG_HTTP_BODIES") == "1":
+        from starlette.responses import Response as StarletteResponse
+
+        _MAX_BODY_LOG = 4096  # bytes
+
+        def _truncate(data: bytes) -> str:
+            text = data.decode("utf-8", errors="replace")
+            if len(text) > _MAX_BODY_LOG:
+                return text[:_MAX_BODY_LOG] + f"...<truncated {len(text) - _MAX_BODY_LOG} chars>"
+            return text
+
+        @application.middleware("http")
+        async def log_http_bodies(request: Request, call_next):
+            req_body = await request.body()
+
+            async def receive():
+                return {"type": "http.request", "body": req_body, "more_body": False}
+
+            request = Request(request.scope, receive)
+
+            logger.info(
+                "→ %s %s%s  body=%s",
+                request.method,
+                request.url.path,
+                f"?{request.url.query}" if request.url.query else "",
+                _truncate(req_body) if req_body else "<empty>",
+            )
+
+            response = await call_next(request)
+
+            resp_body = b""
+            async for chunk in response.body_iterator:
+                resp_body += chunk
+
+            logger.info(
+                "← %s %s → %d  body=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                _truncate(resp_body) if resp_body else "<empty>",
+            )
+
+            return StarletteResponse(
+                content=resp_body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+
     # ── Route modules ────────────────────────────────────────────────────
     application.include_router(
         market_data.router, prefix="/api/market", tags=["Market Data"],
@@ -123,6 +181,20 @@ def create_app() -> FastAPI:
     @application.get("/api/health", tags=["Health"])
     async def health_check():
         return {"status": "ok", "timestamp": get_ist_now().isoformat()}
+
+    # ── WebSocket endpoint ────────────────────────────────────────────
+    @application.websocket("/ws")
+    async def websocket_endpoint(websocket: WebSocket):
+        await broadcaster.connect(websocket)
+        try:
+            while True:
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+        except WebSocketDisconnect:
+            await broadcaster.disconnect(websocket)
+        except Exception:
+            await broadcaster.disconnect(websocket)
 
     # ── Global error handler ─────────────────────────────────────────────
     @application.exception_handler(Exception)

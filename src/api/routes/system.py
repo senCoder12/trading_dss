@@ -6,12 +6,16 @@ GET    /api/system/status               — overall system status
 POST   /api/system/kill-switch          — activate kill switch
 DELETE /api/system/kill-switch          — deactivate kill switch
 GET    /api/system/config               — approved parameters and settings
+GET    /api/system/config/live          — live-tunable settings
+POST   /api/system/config/live          — update live settings (no restart)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -80,6 +84,37 @@ class KillSwitchResponse(BaseModel):
 
 class ConfigResponse(BaseModel):
     approved_params: dict = Field(default_factory=dict)
+
+
+class LiveConfig(BaseModel):
+    riskPerTrade: float = 2.0
+    minConfidence: str = "MEDIUM"
+    maxPositions: int = 3
+    activeIndices: list[str] = Field(
+        default_factory=lambda: ["NIFTY50", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+    )
+    soundEnabled: bool = True
+    notificationThreshold: str = "HIGH"
+
+
+# File-backed live config store (no restart required)
+_LIVE_CONFIG_PATH = Path(__file__).resolve().parents[3] / "data" / "live_config.json"
+
+_DEFAULT_LIVE: dict = LiveConfig().model_dump()
+
+
+def _read_live_config() -> dict:
+    if _LIVE_CONFIG_PATH.exists():
+        try:
+            return {**_DEFAULT_LIVE, **json.loads(_LIVE_CONFIG_PATH.read_text())}
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Corrupt live_config.json, using defaults: %s", exc)
+    return dict(_DEFAULT_LIVE)
+
+
+def _write_live_config(data: dict) -> None:
+    _LIVE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LIVE_CONFIG_PATH.write_text(json.dumps(data, indent=2))
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -217,3 +252,16 @@ async def get_config():
         params = {}
 
     return ConfigResponse(approved_params=params)
+
+
+@router.get("/config/live", response_model=LiveConfig, summary="Live-tunable settings")
+async def get_live_config():
+    return LiveConfig(**_read_live_config())
+
+
+@router.post("/config/live", response_model=LiveConfig, summary="Update live settings (no restart)")
+async def update_live_config(body: LiveConfig):
+    data = body.model_dump()
+    _write_live_config(data)
+    logger.info("Live config updated: %s", data)
+    return LiveConfig(**data)

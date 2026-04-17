@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, ChevronDown } from 'lucide-react';
-import { usePolling } from '../../hooks/usePolling';
-import { api } from '../../api/client';
+import { useDataStore } from '../../hooks/useDataStore';
 import { Card } from '../common/Card';
+import { ErrorBoundary } from '../common/ErrorBoundary';
+import { StaleDataBanner } from '../common/StaleDataBanner';
 import { RefreshIndicator } from '../common/RefreshIndicator';
 import { formatPrice, formatPercentage } from '../../utils/formatters';
-import { REFRESH_INTERVALS } from '../../utils/constants';
 import PriceChart from '../chart/PriceChart';
 import ChartControls from '../chart/ChartControls';
 import ActiveSignals from './ActiveSignals';
@@ -44,11 +44,8 @@ export default function DashboardPage() {
   const [timeframe,     setTimeframe]     = useState('1d');
   const [indicators,    setIndicators]    = useState(['ema20', 'ema50']);
 
-  // Live index price strip (used for the selector pills)
-  const { data, loading, error, lastUpdated } = usePolling(
-    api.getMarketPrices,
-    REFRESH_INTERVALS.marketPrices,
-  );
+  // Live index price strip from shared data store (no duplicate polling)
+  const { prices: { data, loading, error, lastUpdated, isStale } } = useDataStore();
   const indices = data?.indices ?? [];
 
   // Once data arrives, default selection to first available index if still on placeholder
@@ -60,6 +57,7 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 space-y-4">
+      <StaleDataBanner isStale={isStale} lastUpdated={lastUpdated} />
 
       {/* ── Primary chart section ─────────────────────────────────────────── */}
       <div className="space-y-0">
@@ -88,33 +86,35 @@ export default function DashboardPage() {
         </div>
 
         {/* Chart card */}
-        <Card title={chartTitle} padding={false}>
-          <ChartControls
-            timeframe={timeframe}
-            onTimeframeChange={setTimeframe}
-            indicators={indicators}
-            onIndicatorsChange={setIndicators}
-          />
-          <div className="p-2">
-            <PriceChart
-              indexId={selectedIndex}
-              height={420}
+        <ErrorBoundary>
+          <Card title={chartTitle} padding={false}>
+            <ChartControls
               timeframe={timeframe}
+              onTimeframeChange={setTimeframe}
               indicators={indicators}
-              showVolume
-              showSignalMarkers
+              onIndicatorsChange={setIndicators}
             />
-          </div>
-        </Card>
+            <div className="p-2">
+              <PriceChart
+                indexId={selectedIndex}
+                height={420}
+                timeframe={timeframe}
+                indicators={indicators}
+                showVolume
+                showSignalMarkers
+              />
+            </div>
+          </Card>
+        </ErrorBoundary>
       </div>
 
       {/* ── Secondary row: Signals · Portfolio · Alerts ───────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <ActiveSignals />
-        <PortfolioSummary />
+        <ErrorBoundary><ActiveSignals /></ErrorBoundary>
+        <ErrorBoundary><PortfolioSummary /></ErrorBoundary>
         <div className="space-y-4">
-          <MarketSentiment />
-          <QuickAlerts />
+          <ErrorBoundary><MarketSentiment /></ErrorBoundary>
+          <ErrorBoundary><QuickAlerts /></ErrorBoundary>
         </div>
       </div>
 

@@ -1,4 +1,5 @@
 import { usePolling } from '../../hooks/usePolling';
+import { useDataStore } from '../../hooks/useDataStore';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
 import { RefreshIndicator } from '../common/RefreshIndicator';
@@ -32,7 +33,7 @@ function VixBar({ value, regime }) {
 }
 
 export default function MarketSentiment() {
-  const { data: vix, error: vixErr, lastUpdated: vixTs } = usePolling(api.getVix, REFRESH_INTERVALS.vix);
+  const { vix: { data: vix, error: vixErr, lastUpdated: vixTs } } = useDataStore();
   const { data: news, lastUpdated: newsTs } = usePolling(api.getNewsSummary, REFRESH_INTERVALS.news);
 
   const regime = vix?.regime ?? 'UNKNOWN';

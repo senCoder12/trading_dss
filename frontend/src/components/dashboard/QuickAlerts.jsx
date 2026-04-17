@@ -1,5 +1,6 @@
 import { AlertTriangle, Newspaper } from 'lucide-react';
 import { usePolling } from '../../hooks/usePolling';
+import { useDataStore } from '../../hooks/useDataStore';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
 import { Badge } from '../common/Badge';
@@ -9,9 +10,7 @@ import { timeAgo } from '../../utils/formatters';
 import { REFRESH_INTERVALS, SEVERITY_COLORS } from '../../utils/constants';
 
 export default function QuickAlerts() {
-  const { data: anomData, error: anomErr, lastUpdated: anomTs } = usePolling(
-    api.getActiveAnomalies, REFRESH_INTERVALS.anomalies,
-  );
+  const { anomalies: { data: anomData, error: anomErr, lastUpdated: anomTs } } = useDataStore();
   const { data: newsData, error: newsErr, lastUpdated: newsTs } = usePolling(
     () => api.getNewsFeed(5, 'HIGH'), REFRESH_INTERVALS.news,
   );
