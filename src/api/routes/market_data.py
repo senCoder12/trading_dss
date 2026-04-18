@@ -126,6 +126,19 @@ class VIXResponse(BaseModel):
     updated_at: Optional[str] = None
 
 
+class PreMarketResponse(BaseModel):
+    trade_date: Optional[str] = None
+    compiled_at: Optional[str] = None
+    is_complete: bool = False
+    overall_sentiment: Optional[float] = None
+    gap_direction: Optional[str] = None
+    gap_confidence: Optional[float] = None
+    regime_expectation: Optional[str] = None
+    us_impact: Optional[str] = None
+    fii_bias: Optional[str] = None
+    payload: dict = Field(default_factory=dict)
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("/prices", response_model=PricesResponse, summary="Latest prices for all active indices")
@@ -528,3 +541,52 @@ async def get_vix(db: DatabaseManager = Depends(get_db)):
         updated_at=row.get("timestamp"),
     )
     return _set_cache("vix", result)
+
+
+@router.get(
+    "/pre-market",
+    response_model=PreMarketResponse,
+    summary="Pre-market intelligence snapshot",
+)
+async def get_pre_market(
+    date: Optional[str] = Query(
+        default=None,
+        description="ISO date (YYYY-MM-DD). Omit for most recent snapshot.",
+    ),
+    db: DatabaseManager = Depends(get_db),
+) -> PreMarketResponse:
+    """Return the overnight pre-market intelligence snapshot.
+
+    The snapshot is compiled at 08:45 IST on trading days from five
+    strategic collection windows (post-market → US close → Asian open).
+    When ``date`` is omitted the most recent available row is returned.
+    """
+    cache_key = f"pre_market_{date or 'latest'}"
+    cached = _cached(cache_key, ttl=60)
+    if cached:
+        return cached
+
+    try:
+        from src.analysis.news.overnight_engine import load_latest_overnight_data
+
+        data = load_latest_overnight_data(db, trade_date=date)
+    except Exception as exc:
+        logger.warning("pre-market snapshot load failed: %s", exc)
+        data = None
+
+    if data is None:
+        return _set_cache(cache_key, PreMarketResponse())
+
+    result = PreMarketResponse(
+        trade_date=data.get("trade_date"),
+        compiled_at=data.get("compiled_at"),
+        is_complete=bool(data.get("is_complete")),
+        overall_sentiment=data.get("overall_sentiment"),
+        gap_direction=data.get("gap_direction"),
+        gap_confidence=data.get("gap_confidence"),
+        regime_expectation=data.get("regime_expectation"),
+        us_impact=data.get("us_impact"),
+        fii_bias=data.get("fii_bias"),
+        payload=data.get("payload") or {},
+    )
+    return _set_cache(cache_key, result)

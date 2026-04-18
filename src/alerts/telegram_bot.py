@@ -314,6 +314,7 @@ class TelegramBot:
             "/portfolio \u2014 Open positions & today's P&L\n"
             "/performance \u2014 7-day performance summary\n"
             "/news \u2014 Top 5 impactful news articles\n"
+            "/premarket \u2014 Pre-market intelligence report\n"
             "/alerts \u2014 Active anomaly alerts\n"
             "/vix \u2014 Current VIX & regime\n"
             "/fii \u2014 Latest FII/DII activity\n"
@@ -669,6 +670,47 @@ class TelegramBot:
         except Exception as exc:
             logger.exception("Error in /news")
             return f"Unable to fetch news: {exc}"
+
+    def _cmd_premarket(self) -> str:
+        """Return the pre-market intelligence report from the overnight snapshot."""
+        try:
+            from src.analysis.news.overnight_engine import load_latest_overnight_data
+            from src.analysis.news.pre_market_report import PreMarketReportGenerator
+
+            data = load_latest_overnight_data(self._db)
+            if data is None:
+                return (
+                    "\U0001f305 Pre-Market Intelligence\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
+                    "No pre-market data available.\n"
+                    "System may have been offline overnight.\n"
+                    "Trade with standard live-data signals only."
+                )
+
+            report = PreMarketReportGenerator().generate_report(data)
+
+            # When the market is already open, note the report age so the user
+            # knows they're reading yesterday-evening data, not a fresh feed.
+            try:
+                from src.utils.market_hours import MarketHoursManager
+                mh = MarketHoursManager()
+                now = datetime.now(tz=__import__("zoneinfo").ZoneInfo(IST_TIMEZONE))
+                if mh.is_market_open(now):
+                    compiled_at_str = data.get("compiled_at", "")
+                    if compiled_at_str:
+                        from zoneinfo import ZoneInfo
+                        compiled_at = datetime.fromisoformat(str(compiled_at_str))
+                        if compiled_at.tzinfo is None:
+                            compiled_at = compiled_at.replace(tzinfo=ZoneInfo(IST_TIMEZONE))
+                        age_str = self._human_timedelta(now - compiled_at)
+                        report = f"\u23f0 Report from {age_str} ago \u2014 market is open\n\n" + report
+            except Exception:
+                pass
+
+            return report
+        except Exception as exc:
+            logger.exception("Error in /premarket")
+            return f"Unable to fetch pre-market data: {exc}"
 
     def _cmd_alerts(self) -> str:
         try:
@@ -1060,8 +1102,8 @@ class TelegramBot:
 
     _COMMANDS = {
         "start", "help", "status", "signal", "portfolio", "performance",
-        "news", "alerts", "vix", "fii", "levels", "params", "health",
-        "kill", "resume",
+        "news", "premarket", "alerts", "vix", "fii", "levels", "params",
+        "health", "kill", "resume",
     }
 
     def handle_command(self, command: str, args: str = "") -> str:
@@ -1085,6 +1127,8 @@ class TelegramBot:
             return self._cmd_performance()
         if cmd == "news":
             return self._cmd_news()
+        if cmd == "premarket":
+            return self._cmd_premarket()
         if cmd == "alerts":
             return self._cmd_alerts()
         if cmd == "vix":
