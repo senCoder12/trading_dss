@@ -1,23 +1,29 @@
 """
 Unified system launcher for the Trading Decision Support System.
 
-Starts all components — data collector, decision engine, Telegram bot, and
-FastAPI server — in co-ordinated daemon threads with graceful shutdown on
-SIGINT / SIGTERM.
+Starts all components — data collector, decision engine, Telegram bot, paper
+trading engine, watchdog, reporter, and FastAPI server — in co-ordinated daemon
+threads with graceful shutdown on SIGINT / SIGTERM.
 
 Usage
 -----
 ::
 
-    python scripts/run_system.py                     # everything
-    python scripts/run_system.py --no-telegram        # skip Telegram bot
-    python scripts/run_system.py --api-only           # dashboard / API only
-    python scripts/run_system.py --collector-only     # data collection only
-    python scripts/run_system.py --api-port 8080      # custom port
-    python scripts/run_system.py --debug              # verbose logging
-    python scripts/run_system.py --dry-run            # collect data, no DB writes
-    python scripts/run_system.py --force-start        # ignore market-hours gate
-    python scripts/run_system.py --skip-validation    # bypass config checks
+    python scripts/run_system.py                          # everything
+    python scripts/run_system.py --paper-trading          # with paper trading (default)
+    python scripts/run_system.py --paper-capital 50000    # custom capital
+    python scripts/run_system.py --paper-confidence HIGH  # confidence filter
+    python scripts/run_system.py --paper-indices NIFTY50  # single index
+    python scripts/run_system.py --validate-first         # run pre-launch checks
+    python scripts/run_system.py --skip-warm-up           # dev: skip warm-up period
+    python scripts/run_system.py --no-telegram            # skip Telegram bot
+    python scripts/run_system.py --api-only               # dashboard / API only
+    python scripts/run_system.py --collector-only         # data collection only
+    python scripts/run_system.py --api-port 8080          # custom port
+    python scripts/run_system.py --debug                  # verbose logging
+    python scripts/run_system.py --dry-run                # collect data, no DB writes
+    python scripts/run_system.py --force-start            # ignore market-hours gate
+    python scripts/run_system.py --skip-validation        # bypass config checks
 """
 
 from __future__ import annotations
@@ -101,6 +107,24 @@ def _run_validation() -> bool:
     return True
 
 
+def _run_pre_launch_validation() -> bool:
+    """
+    Run the comprehensive pre-launch validation.
+
+    Returns True if all critical checks pass.
+    """
+    try:
+        from src.paper_trading.pre_launch_validator import PreLaunchValidator
+        validator = PreLaunchValidator()
+        report = validator.run_full_validation()
+        print(report.format_report())
+        return report.is_ready
+    except Exception as exc:
+        logger.error("Pre-launch validation error: %s", exc)
+        print(f"  ⚠️  Pre-launch validation could not complete: {exc}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
@@ -125,15 +149,19 @@ def _print_banner(args: argparse.Namespace) -> None:
         mode_parts.append("Telegram")
     mode_str = " + ".join(mode_parts) if mode_parts else "None"
 
+    paper_status = "🟢 ACTIVE" if args.paper_trading else "⚪ OFF"
+
     # Fixed-width box: inner width = 47 chars
     print("""
     ╔═══════════════════════════════════════════════╗
     ║    Trading Decision Support System v1.0        ║
     ║    Indian Markets — Zero Cost Edition          ║
     ╠═══════════════════════════════════════════════╣""")
-    market_line = f"{status_emoji} {status_str}"
-    print(f"    ║  Market : {market_line:<37}║")
+    print(f"    ║  Market : {status_emoji} {status_str:<35}║")
     print(f"    ║  Mode   : {mode_str:<37}║")
+    print(f"    ║  Paper Trading: {paper_status:<30}║")
+    if args.paper_trading:
+        print(f"    ║  Capital: ₹{args.paper_capital:>10,.0f}                        ║")
     print(f"    ╚═══════════════════════════════════════════════╝")
 
 
@@ -148,6 +176,13 @@ def _print_status_summary(components: dict[str, Any], args: argparse.Namespace) 
             "    │  📰 News Engine      (sentiment, impact)",
             "    │  ⚠️  Anomaly Detector (volume, OI, divergence)",
         ]
+    if "paper_engine" in components:
+        indices = ", ".join(args.paper_indices or ["NIFTY50", "BANKNIFTY"])
+        lines.append(f"    │  📝 Paper Trading    ({indices})")
+    if "watchdog" in components:
+        lines.append("    │  🔍 Watchdog         (health monitoring)")
+    if "reporter" in components:
+        lines.append("    │  📊 Reporter         (daily 15:45, weekly Sat)")
     if "telegram" in components:
         lines.append("    │  🤖 Telegram Bot    (alerts, commands)")
     if "api" in components:
@@ -204,6 +239,36 @@ def main() -> None:
         "--skip-validation", action="store_true",
         help="Skip configuration validation (not recommended for production)",
     )
+    # ── Paper Trading arguments ───────────────────────────────────────────────
+    parser.add_argument(
+        "--paper-trading", action="store_true", default=True,
+        help="Enable paper trading mode (default: True)",
+    )
+    parser.add_argument(
+        "--no-paper-trading", dest="paper_trading", action="store_false",
+        help="Disable paper trading mode",
+    )
+    parser.add_argument(
+        "--paper-capital", type=float, default=100_000.0, metavar="AMOUNT",
+        help="Initial paper trading capital in INR (default: 100000)",
+    )
+    parser.add_argument(
+        "--paper-confidence", default="HIGH", metavar="LEVEL",
+        choices=["LOW", "MEDIUM", "HIGH"],
+        help="Minimum signal confidence for paper trades (default: HIGH)",
+    )
+    parser.add_argument(
+        "--paper-indices", nargs="+", metavar="INDEX",
+        help="Indices to paper trade (default: NIFTY50 BANKNIFTY)",
+    )
+    parser.add_argument(
+        "--validate-first", action="store_true",
+        help="Run comprehensive pre-launch validation before starting",
+    )
+    parser.add_argument(
+        "--skip-warm-up", action="store_true",
+        help="Skip warm-up period — for development only",
+    )
     args = parser.parse_args()
 
     # ── Logging ──────────────────────────────────────────────────────────────
@@ -211,6 +276,16 @@ def main() -> None:
 
     # ── Banner ───────────────────────────────────────────────────────────────
     _print_banner(args)
+
+    # ── Pre-launch validation (optional) ─────────────────────────────────────
+    if args.validate_first:
+        print("\n[PRE-LAUNCH] Running comprehensive system validation...")
+        if not _run_pre_launch_validation():
+            print(
+                "\n  Pre-launch validation FAILED. Fix the issues above before starting.\n"
+                "  Remove --validate-first to bypass (not recommended)."
+            )
+            sys.exit(1)
 
     # ── Step 1: Validate configuration ───────────────────────────────────────
     if not args.skip_validation:
@@ -247,6 +322,8 @@ def main() -> None:
     print("\n[3/5] Initialising components...")
     components: dict[str, Any] = {}
 
+    engine = None  # declared here so paper engine can reference it below
+
     if not args.api_only:
         # Index registry — required by DataCollector
         registry = None
@@ -282,7 +359,6 @@ def main() -> None:
             # Non-fatal — continue without collector
 
         # Decision Engine
-        engine = None
         try:
             from src.engine.decision_engine import DecisionEngine
 
@@ -317,6 +393,51 @@ def main() -> None:
                     )
             except Exception as exc:
                 logger.error("Telegram Bot initialisation failed: %s", exc)
+
+        # ── Paper Trading Engine ──────────────────────────────────────────────
+        if args.paper_trading:
+            try:
+                from src.paper_trading import PaperTradingEngine, PaperTradingConfig
+
+                paper_config = PaperTradingConfig(
+                    initial_capital=args.paper_capital,
+                    min_confidence=args.paper_confidence,
+                    active_indices=args.paper_indices or ["NIFTY50", "BANKNIFTY"],
+                )
+                paper_engine = PaperTradingEngine(db, engine, paper_config)
+                components["paper_engine"] = paper_engine
+                print(f"  ✅ Paper Trading initialised (₹{paper_config.initial_capital:,.0f})")
+
+                if args.skip_warm_up:
+                    paper_engine.skip_warm_up = True
+                    print("  ⚠️  Warm-up period skipped (--skip-warm-up)")
+            except Exception as exc:
+                logger.error("Paper Trading Engine initialisation failed: %s", exc)
+
+        # ── Watchdog ─────────────────────────────────────────────────────────
+        try:
+            from src.paper_trading.watchdog import SystemWatchdog
+
+            watchdog = SystemWatchdog(db, components)
+            components["watchdog"] = watchdog
+            print("  ✅ Watchdog initialised")
+        except Exception as exc:
+            logger.error("Watchdog initialisation failed: %s", exc)
+
+        # ── Automated Reporter ────────────────────────────────────────────────
+        if "paper_engine" in components:
+            try:
+                from src.paper_trading.daily_report import AutomatedReporter
+
+                reporter = AutomatedReporter(
+                    db,
+                    components["paper_engine"],
+                    components.get("telegram"),
+                )
+                components["reporter"] = reporter
+                print("  ✅ Automated Reporter initialised (daily 15:45, weekly Sat)")
+            except Exception as exc:
+                logger.error("Automated Reporter initialisation failed: %s", exc)
 
     if not args.collector_only:
         components["api"] = True
@@ -357,6 +478,69 @@ def main() -> None:
         threads.append(t)
         print("  🤖 Telegram Bot started")
 
+    # Watchdog — polls component health every 30 s in its own thread.
+    if "watchdog" in components:
+        components["watchdog"].start()
+        print("  🔍 Watchdog started (monitoring every 30s)")
+
+    # Automated Reporter — schedules daily (15:45 IST) and weekly (Sat 10:00) reports.
+    if "reporter" in components:
+        def _run_reporter() -> None:
+            """Simple scheduler: poll time every 30 s and fire reports at the right moment."""
+            import datetime
+            from zoneinfo import ZoneInfo
+            _IST = ZoneInfo("Asia/Kolkata")
+            fired_daily: set[datetime.date] = set()
+            fired_weekly: set[datetime.date] = set()  # keyed by Saturday date
+
+            while True:
+                try:
+                    now = datetime.datetime.now(tz=_IST)
+                    today = now.date()
+
+                    # Daily report at 15:45 IST (Mon–Fri)
+                    if (
+                        now.weekday() < 5
+                        and now.hour == 15
+                        and now.minute >= 45
+                        and today not in fired_daily
+                    ):
+                        fired_daily.add(today)
+                        logger.info("Generating daily report for %s", today)
+                        try:
+                            components["reporter"].generate_daily_report()
+                        except Exception as exc:
+                            logger.error("Daily report failed: %s", exc, exc_info=True)
+
+                    # Weekly report on Saturday at 10:00 IST
+                    if (
+                        now.weekday() == 5  # Saturday
+                        and now.hour == 10
+                        and now.minute >= 0
+                        and today not in fired_weekly
+                    ):
+                        fired_weekly.add(today)
+                        logger.info("Generating weekly report for week ending %s", today)
+                        try:
+                            components["reporter"].generate_weekly_report()
+                        except Exception as exc:
+                            logger.error("Weekly report failed: %s", exc, exc_info=True)
+
+                    # Keep the fired sets small (retain only last 7 days)
+                    cutoff = today - datetime.timedelta(days=7)
+                    fired_daily = {d for d in fired_daily if d > cutoff}
+                    fired_weekly = {d for d in fired_weekly if d > cutoff}
+
+                except Exception as exc:
+                    logger.error("Reporter scheduler error: %s", exc)
+
+                time.sleep(30)
+
+        t = threading.Thread(target=_run_reporter, name="Reporter", daemon=True)
+        t.start()
+        threads.append(t)
+        print("  📊 Automated Reporter started")
+
     # API Server — uvicorn blocks; run in a daemon thread so Ctrl+C still
     # reaches the main thread's signal handler.
     if "api" in components:
@@ -393,6 +577,20 @@ def main() -> None:
     # ── Graceful shutdown ────────────────────────────────────────────────────
     def _shutdown(signum: object, frame: object) -> None:
         print("\n\nShutting down gracefully...")
+
+        if "watchdog" in components:
+            print("  Stopping Watchdog...")
+            try:
+                components["watchdog"].stop()
+            except Exception as exc:
+                logger.warning("Error stopping Watchdog: %s", exc)
+
+        if "paper_engine" in components:
+            print("  Saving Paper Trading state...")
+            try:
+                components["paper_engine"].save_state()
+            except Exception as exc:
+                logger.warning("Error saving Paper Trading state: %s", exc)
 
         if "collector" in components:
             print("  Stopping Data Collector...")

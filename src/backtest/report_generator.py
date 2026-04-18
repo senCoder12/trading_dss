@@ -152,6 +152,31 @@ class ReportGenerator:
             f"  Worst Month: {metrics.worst_month_pct:.1f}% ({worst_month_label})",
             f"  Monthly Win Rate: {metrics.monthly_win_rate:.1f}%"
             f" ({metrics.positive_months}/{len(metrics.monthly_returns)} months profitable)",
+        ]
+
+        # Benchmark comparison section
+        if metrics.benchmark_return_pct is not None and metrics.alpha is not None:
+            alpha_icon = "\u2705" if metrics.beats_benchmark else "\u274c"
+            ir_rating = (
+                "excellent" if (metrics.information_ratio or 0) >= 1.0
+                else "decent" if (metrics.information_ratio or 0) >= 0.5
+                else "poor"
+            )
+            lines += [
+                "",
+                "BENCHMARK COMPARISON:",
+                f"  Strategy Return:          {ret_sign}{metrics.total_return_pct:.1f}%",
+                f"  {metrics.benchmark_index} Buy-and-Hold: {metrics.benchmark_return_pct:+.1f}%",
+                f"  Alpha (excess return):     {metrics.alpha:+.1f}% {alpha_icon}",
+                f"  Information Ratio:        {metrics.information_ratio:.2f} ({ir_rating})",
+                f"  {metrics.benchmark_comparison_note}",
+            ]
+            if not metrics.beats_benchmark:
+                lines.append(
+                    "  \u26a0\ufe0f  Consider whether active trading is adding value vs holding the index."
+                )
+
+        lines += [
             "",
             "TRADES:",
             f"  Total: {metrics.total_trades} | Wins: {metrics.winning_trades} | Losses: {metrics.losing_trades}",

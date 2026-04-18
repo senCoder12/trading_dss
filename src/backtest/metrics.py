@@ -117,6 +117,15 @@ class BacktestMetrics:
     # === CONFIG VERSIONING ===
     config_hash: Optional[str] = None
 
+    # === BENCHMARK COMPARISON ===
+    benchmark_return_pct: Optional[float] = None     # Buy-and-hold return for same period
+    benchmark_index: Optional[str] = None            # Which index used as benchmark
+    alpha: Optional[float] = None                    # strategy_return - benchmark_return
+    alpha_annualized: Optional[float] = None
+    information_ratio: Optional[float] = None        # alpha / tracking_error (annualised)
+    beats_benchmark: Optional[bool] = None
+    benchmark_comparison_note: Optional[str] = None  # Human-readable verdict
+
 @dataclass
 class ComparisonReport:
     headers: list[str]
@@ -130,7 +139,9 @@ class MetricsCalculator:
         trade_history: list[ClosedTrade],
         equity_curve: list[EquityPoint],
         initial_capital: float,
-        risk_free_rate: float = 0.065
+        risk_free_rate: float = 0.065,
+        benchmark_prices: Optional[Any] = None,  # pandas DataFrame with 'close' column
+        benchmark_name: str = "NIFTY50",
     ) -> BacktestMetrics:
         
         # Guard clause: No trades
@@ -512,6 +523,61 @@ class MetricsCalculator:
             strategy_grade=grade,
             assessment="",
         )
+        # === Benchmark comparison ===
+        if benchmark_prices is not None and len(benchmark_prices) > 1:
+            try:
+                bm_start = float(benchmark_prices.iloc[0]['close'])
+                bm_end = float(benchmark_prices.iloc[-1]['close'])
+                benchmark_return = (bm_end - bm_start) / bm_start * 100 if bm_start > 0 else 0.0
+
+                alpha = metrics.total_return_pct - benchmark_return
+
+                trading_days = max(len(equity_curve), 1)
+                alpha_annualized = alpha * (252 / trading_days)
+
+                information_ratio = 0.0
+                if len(equity_curve) > 1:
+                    strategy_returns = [
+                        equity_curve[i].capital / equity_curve[i - 1].capital - 1
+                        for i in range(1, len(equity_curve))
+                        if equity_curve[i - 1].capital > 0
+                    ]
+                    bm_returns = [
+                        float(benchmark_prices.iloc[i]['close']) / float(benchmark_prices.iloc[i - 1]['close']) - 1
+                        for i in range(1, len(benchmark_prices))
+                        if float(benchmark_prices.iloc[i - 1]['close']) > 0
+                    ]
+                    min_len = min(len(strategy_returns), len(bm_returns))
+                    if min_len > 1:
+                        excess = [s - b for s, b in zip(strategy_returns[:min_len], bm_returns[:min_len])]
+                        mean_ex = sum(excess) / len(excess)
+                        variance = sum((r - mean_ex) ** 2 for r in excess) / len(excess)
+                        tracking_error = math.sqrt(variance) * math.sqrt(252)
+                        if tracking_error > 0:
+                            information_ratio = (mean_ex * 252) / tracking_error
+
+                metrics.benchmark_return_pct = round(benchmark_return, 2)
+                metrics.benchmark_index = benchmark_name
+                metrics.alpha = round(alpha, 2)
+                metrics.alpha_annualized = round(alpha_annualized, 2)
+                metrics.information_ratio = round(information_ratio, 4)
+                metrics.beats_benchmark = alpha > 0
+
+                if alpha > 0:
+                    metrics.benchmark_comparison_note = (
+                        f"Strategy OUTPERFORMED {benchmark_name} buy-and-hold by {alpha:+.1f}%"
+                    )
+                elif alpha > -2:
+                    metrics.benchmark_comparison_note = (
+                        f"Strategy roughly matched {benchmark_name} ({alpha:+.1f}% vs benchmark)"
+                    )
+                else:
+                    metrics.benchmark_comparison_note = (
+                        f"Strategy UNDERPERFORMED {benchmark_name} buy-and-hold by {abs(alpha):.1f}%"
+                    )
+            except Exception:
+                pass  # Benchmark data malformed — skip silently
+
         metrics.assessment = MetricsCalculator.generate_assessment(metrics)
         return metrics
 
@@ -623,7 +689,17 @@ class MetricsCalculator:
             
         if m.best_regime:
             lines.append(f"• Best performance in {m.best_regime} regimes")
-            
+
+        if m.benchmark_comparison_note:
+            lines += [
+                "",
+                "BENCHMARK vs BUY-AND-HOLD:",
+                f"  {m.benchmark_comparison_note}",
+                f"  Alpha: {m.alpha:+.1f}% | Info Ratio: {m.information_ratio:.2f}",
+            ]
+            if not m.beats_benchmark:
+                lines.append("  ⚠️  Active trading did not add value vs simply holding the index.")
+
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         return "\n".join(lines)
 

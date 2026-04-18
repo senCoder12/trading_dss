@@ -27,6 +27,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from config.settings import STRATEGY_VERSION
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
 
@@ -88,6 +89,17 @@ class PerformanceStats:
     expected_value_per_trade: float
     is_profitable: bool
     edge_comment: str
+
+
+@dataclass
+class VersionStats:
+    """Key performance metrics for a single strategy version."""
+
+    version: str
+    total_trades: int
+    win_rate: float        # 0.0–100.0
+    profit_factor: float
+    total_return_pct: float
 
 
 @dataclass
@@ -527,6 +539,95 @@ class SignalTracker:
         return report
 
     # ------------------------------------------------------------------
+    # Public API — version-aware analytics
+    # ------------------------------------------------------------------
+
+    def get_performance_by_version(self, days: int = 90) -> dict[str, "VersionStats"]:
+        """Return performance stats grouped by strategy_version over the last *days* days."""
+        since = (datetime.now(tz=_IST) - timedelta(days=days)).isoformat()
+
+        try:
+            version_rows = self._db.fetch_all(
+                """SELECT DISTINCT strategy_version FROM trading_signals
+                   WHERE generated_at >= ? AND strategy_version IS NOT NULL""",
+                (since,),
+            )
+        except Exception:
+            return {}
+
+        result: dict[str, VersionStats] = {}
+        for vrow in version_rows:
+            version = vrow["strategy_version"]
+            if not version:
+                continue
+
+            trades = self._db.fetch_all(
+                """SELECT outcome, actual_pnl FROM trading_signals
+                   WHERE strategy_version = ? AND outcome IN ('WIN', 'LOSS')
+                     AND generated_at >= ?""",
+                (version, since),
+            )
+
+            total = len(trades)
+            if total == 0:
+                result[version] = VersionStats(
+                    version=version, total_trades=0,
+                    win_rate=0.0, profit_factor=0.0, total_return_pct=0.0,
+                )
+                continue
+
+            wins = [t for t in trades if t["outcome"] == "WIN"]
+            losses = [t for t in trades if t["outcome"] == "LOSS"]
+            win_rate = len(wins) / total * 100
+
+            win_pnls = [t["actual_pnl"] for t in wins if t["actual_pnl"] is not None]
+            loss_pnls = [t["actual_pnl"] for t in losses if t["actual_pnl"] is not None]
+
+            gross_wins = sum(win_pnls)
+            gross_losses = abs(sum(loss_pnls))
+            profit_factor = gross_wins / gross_losses if gross_losses > 0 else 0.0
+
+            total_pnl = sum(win_pnls) + sum(loss_pnls)
+            total_return_pct = total_pnl / self._capital * 100 if self._capital > 0 else 0.0
+
+            result[version] = VersionStats(
+                version=version,
+                total_trades=total,
+                win_rate=round(win_rate, 1),
+                profit_factor=round(profit_factor, 2),
+                total_return_pct=round(total_return_pct, 2),
+            )
+
+        return result
+
+    def get_version_comparison(self, days: int = 90) -> str:
+        """Return a formatted comparison table across all strategy versions in the last *days* days."""
+        by_version = self.get_performance_by_version(days=days)
+
+        if not by_version:
+            return "No version data available — strategy_version column may need migration."
+
+        if len(by_version) < 2:
+            version = next(iter(by_version))
+            return f"Only one strategy version in history ({version!r}). No comparison available."
+
+        lines = [
+            f"Strategy Version Comparison (last {days} days):",
+            "",
+            f"{'Version':<12} {'Trades':<8} {'Win%':<8} {'PF':<8} {'Return':<12}",
+            "-" * 50,
+        ]
+        for version, stats in sorted(by_version.items()):
+            active_marker = " ← Active" if version == STRATEGY_VERSION else ""
+            lines.append(
+                f"{version:<12} {stats.total_trades:<8} "
+                f"{stats.win_rate:<8.1f} {stats.profit_factor:<8.2f} "
+                f"{stats.total_return_pct:<+12.2f}%{active_marker}"
+            )
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -623,20 +724,30 @@ class SignalTracker:
                 ),
             )
 
-            # Persist audit trail if the column exists
-            if audit_json_str:
-                try:
-                    row = self._db.fetch_one(
-                        "SELECT id FROM trading_signals WHERE index_id = ? AND generated_at = ? ORDER BY id DESC LIMIT 1",
-                        (getattr(signal, "index_id", ""), now_ist),
-                    )
-                    if row:
+            # Persist audit trail and strategy version (columns added by migrations)
+            try:
+                row = self._db.fetch_one(
+                    "SELECT id FROM trading_signals WHERE index_id = ? AND generated_at = ? ORDER BY id DESC LIMIT 1",
+                    (getattr(signal, "index_id", ""), now_ist),
+                )
+                if row:
+                    if audit_json_str:
+                        try:
+                            self._db.execute(
+                                "UPDATE trading_signals SET audit_json = ? WHERE id = ?",
+                                (audit_json_str, row["id"]),
+                            )
+                        except Exception:
+                            logger.debug("SignalTracker: audit_json column not yet available — skipping")
+                    try:
                         self._db.execute(
-                            "UPDATE trading_signals SET audit_json = ? WHERE id = ?",
-                            (audit_json_str, row["id"]),
+                            "UPDATE trading_signals SET strategy_version = ? WHERE id = ?",
+                            (STRATEGY_VERSION, row["id"]),
                         )
-                except Exception:
-                    logger.debug("SignalTracker: audit_json column not yet available — skipping")
+                    except Exception:
+                        logger.debug("SignalTracker: strategy_version column not yet available — skipping")
+            except Exception:
+                pass
 
             logger.debug(
                 "SignalTracker: recorded %s %s conf=%s",
@@ -787,3 +898,23 @@ class SignalTracker:
             level = row.get("confidence_level", "LOW")
             scores.append(_LEVEL_MAP.get(level, 0.35))
         return sum(scores) / len(scores) if scores else 0.0
+
+
+# ---------------------------------------------------------------------------
+# DB Migration
+# ---------------------------------------------------------------------------
+
+
+def v_next_add_strategy_version(db: DatabaseManager) -> None:
+    """Add strategy_version column to trading_signals (idempotent)."""
+    cols = {row["name"] for row in db.fetch_all("PRAGMA table_info(trading_signals)", ())}
+    if "strategy_version" not in cols:
+        db.execute(
+            "ALTER TABLE trading_signals ADD COLUMN strategy_version TEXT DEFAULT '1.0.0'",
+            (),
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signals_version ON trading_signals(strategy_version)",
+            (),
+        )
+        logger.info("Migration: added strategy_version column to trading_signals")

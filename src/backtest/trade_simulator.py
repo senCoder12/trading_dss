@@ -28,6 +28,7 @@ from typing import Optional, Union
 from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
+from src.analysis.options_pricing import OptionPnLEstimator
 from src.data.index_registry import get_registry
 from src.engine.signal_generator import TradingSignal
 
@@ -179,6 +180,10 @@ class SimulatorConfig:
     # (mirrors RiskConfig.transaction_cost_per_lot)
     transaction_cost_per_lot: float = 120.0
 
+    # Greeks-based P&L (delta-adjusted instead of naive index movement)
+    use_greeks_pnl: bool = True
+    default_iv: Optional[float] = None    # Override per-index default IV
+
 
 # ---------------------------------------------------------------------------
 # Output dataclasses
@@ -217,6 +222,8 @@ class TradeExecution:
     strike_price: Optional[float] = None
     option_premium: Optional[float] = None
     expiry: Optional[str] = None
+    iv_at_entry: Optional[float] = None
+    days_to_expiry_at_entry: Optional[float] = None
 
     # Cost
     entry_cost: float = 0.0
@@ -292,6 +299,13 @@ class ClosedTrade:
     # Spread cost tracking
     spread_cost_entry: float = 0.0
     spread_cost_exit: float = 0.0
+
+    # Greeks P&L decomposition (per unit × quantity, populated when use_greeks_pnl=True)
+    delta_pnl: Optional[float] = None
+    theta_pnl: Optional[float] = None
+    vega_pnl: Optional[float] = None
+    naive_pnl: Optional[float] = None
+    overestimation_pct: Optional[float] = None
 
 
 @dataclass
@@ -513,6 +527,9 @@ class TradeSimulator:
         # STT is 0 on buy side for options
 
         # --- Build execution ---
+        dte_at_entry = getattr(signal, "days_to_expiry", None)
+        iv_at_entry = getattr(signal, "entry_iv", None) or getattr(signal, "iv_at_entry", None)
+
         execution = TradeExecution(
             trade_id=str(uuid.uuid4()),
             index_id=index_id,
@@ -532,6 +549,8 @@ class TradeSimulator:
             strike_price=strike_price,
             option_premium=option_premium,
             expiry=expiry,
+            iv_at_entry=iv_at_entry,
+            days_to_expiry_at_entry=float(dte_at_entry) if dte_at_entry is not None else None,
             entry_cost=round(entry_cost, 2),
             risk_amount=round(risk_amount, 2),
             confidence_level=confidence_level,
@@ -708,12 +727,57 @@ class TradeSimulator:
         exit_cost = exit_brokerage + exit_stt + exit_exchange + exit_gst + exit_sebi
 
         # --- P&L ---
-        if is_call:
-            gross_pnl_points = actual_exit - position.actual_entry_price
-        else:
-            gross_pnl_points = position.actual_entry_price - actual_exit
+        delta_pnl: Optional[float] = None
+        theta_pnl: Optional[float] = None
+        vega_pnl: Optional[float] = None
+        naive_pnl: Optional[float] = None
+        overestimation_pct: Optional[float] = None
 
-        gross_pnl = gross_pnl_points * position.quantity
+        if self.config.use_greeks_pnl and position.strike_price and position.days_to_expiry_at_entry:
+            try:
+                estimator = OptionPnLEstimator()
+                iv = (
+                    position.iv_at_entry
+                    or self.config.default_iv
+                    or estimator.get_default_iv(position.index_id)
+                )
+                duration_days = position._bars_held * (1.0 / 78.0)  # 75-min bars → days (6.25h/day)
+                dte_at_exit = max(position.days_to_expiry_at_entry - duration_days, 0.01)
+
+                option_pnl = estimator.estimate_option_pnl(
+                    trade_type=position.trade_type,
+                    spot_at_entry=position.actual_entry_price,
+                    spot_at_exit=actual_exit,
+                    strike=position.strike_price,
+                    entry_iv=iv,
+                    exit_iv=None,
+                    days_to_expiry_at_entry=position.days_to_expiry_at_entry,
+                    days_to_expiry_at_exit=dte_at_exit,
+                    lot_size=position.lot_size,
+                    lots=position.lots,
+                )
+                gross_pnl = option_pnl.gross_pnl
+                gross_pnl_points = gross_pnl / position.quantity if position.quantity else 0.0
+
+                delta_pnl = option_pnl.delta_pnl * position.quantity
+                theta_pnl = option_pnl.theta_pnl * position.quantity
+                vega_pnl = option_pnl.vega_pnl * position.quantity
+                naive_pnl = option_pnl.naive_pnl
+                overestimation_pct = option_pnl.overestimation_pct
+            except Exception as exc:
+                logger.warning("Greeks P&L failed (%s) — falling back to naive", exc)
+                if is_call:
+                    gross_pnl_points = actual_exit - position.actual_entry_price
+                else:
+                    gross_pnl_points = position.actual_entry_price - actual_exit
+                gross_pnl = gross_pnl_points * position.quantity
+        else:
+            if is_call:
+                gross_pnl_points = actual_exit - position.actual_entry_price
+            else:
+                gross_pnl_points = position.actual_entry_price - actual_exit
+            gross_pnl = gross_pnl_points * position.quantity
+
         total_costs = position.entry_cost + exit_cost
         net_pnl = gross_pnl - total_costs
         net_pnl_pct = net_pnl / self.current_capital * 100 if self.current_capital > 0 else 0.0
@@ -762,6 +826,11 @@ class TradeSimulator:
             expiry=position.expiry,
             spread_cost_entry=position.spread_cost_entry,
             spread_cost_exit=round(exit_spread_cost, 2),
+            delta_pnl=round(delta_pnl, 2) if delta_pnl is not None else None,
+            theta_pnl=round(theta_pnl, 2) if theta_pnl is not None else None,
+            vega_pnl=round(vega_pnl, 2) if vega_pnl is not None else None,
+            naive_pnl=round(naive_pnl, 2) if naive_pnl is not None else None,
+            overestimation_pct=round(overestimation_pct, 2) if overestimation_pct is not None else None,
         )
 
         # --- Update state ---

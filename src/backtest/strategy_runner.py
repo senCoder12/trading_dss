@@ -360,6 +360,7 @@ def _build_result(
     wall_seconds: float,
     warnings: list[str],
     config_snapshot: Optional[dict] = None,
+    benchmark_prices=None,
 ) -> BacktestResult:
     """Assemble the final BacktestResult from a completed run."""
     state = simulator.get_portfolio_state()
@@ -373,6 +374,8 @@ def _build_result(
         trade_history=trade_history,
         equity_curve=equity_curve,
         initial_capital=initial,
+        benchmark_prices=benchmark_prices,
+        benchmark_name=config.benchmark_id,
     )
 
     result = BacktestResult(
@@ -485,6 +488,7 @@ class StrategyRunner:
                 config, session, TradeSimulator(config.simulator_config),
                 [], time.monotonic() - t0, warnings,
                 config_snapshot=snapshot,
+                benchmark_prices=None,
             )
 
         if session.total_bars == 1:
@@ -734,9 +738,12 @@ class StrategyRunner:
                 f"{'='*60}\n"
             )
 
+        benchmark_prices = getattr(iterator._session, 'full_benchmark_data', None)
+
         return _build_result(
             config, session, simulator, signals_generated, wall_seconds, warnings,
             config_snapshot=snapshot,
+            benchmark_prices=benchmark_prices,
         )
 
     # ------------------------------------------------------------------

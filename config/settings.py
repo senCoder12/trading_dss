@@ -308,3 +308,15 @@ settings = Settings()
 # To activate:   touch data/KILL_SWITCH
 # To deactivate: rm data/KILL_SWITCH
 KILL_SWITCH_FILE = str(PROJECT_ROOT / "data" / "KILL_SWITCH")
+
+# ---------------------------------------------------------------------------
+# Strategy Version Tracking
+# ---------------------------------------------------------------------------
+# Increment whenever strategy parameters change (SL multiplier, target multiplier,
+# confidence thresholds, indicator weights, etc.).
+# All signals are tagged with this version; performance is tracked separately per version.
+STRATEGY_VERSION = "1.0.0"
+STRATEGY_VERSION_NOTES = "Initial parameters from optimization"
+
+# Version history — add an entry here whenever you change params:
+# 1.0.0 — Initial optimization (2026-04-18): baseline parameters

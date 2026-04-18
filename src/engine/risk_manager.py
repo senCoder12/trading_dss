@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
 from config.settings import settings
+from src.analysis.options_pricing import OptionPnLEstimator
 from src.data.index_registry import get_registry
 from src.data.options_chain import OptionsChainData
 from src.database.db_manager import DatabaseManager
@@ -1040,7 +1041,33 @@ class RiskManager:
         risk_amount = max(risk_amount, 0.0)
 
         sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
-        loss_per_lot = sl_dist * lot_size + cfg.transaction_cost_per_lot
+
+        # Delta-adjusted SL: option moves less than the index (delta < 1).
+        # Use entry delta from option_greeks if available; otherwise attempt a
+        # quick BS estimate; fall back to delta=1 (conservative) if unavailable.
+        entry_delta = 1.0
+        if refined.option_greeks and "delta" in refined.option_greeks:
+            entry_delta = abs(float(refined.option_greeks["delta"]))
+        elif refined.recommended_strike:
+            try:
+                estimator = OptionPnLEstimator()
+                days_to_expiry = getattr(refined, "days_to_expiry", None) or 7.0
+                iv = estimator.get_default_iv(refined.index_id)
+                entry_delta = estimator.get_entry_delta(
+                    trade_type=refined.signal_type,
+                    spot=refined.refined_entry,
+                    strike=refined.recommended_strike,
+                    days_to_expiry=float(days_to_expiry),
+                    iv=iv,
+                )
+            except Exception:
+                entry_delta = 1.0
+
+        # Clamp delta to a sensible range (deep OTM ≥ 0.1, deep ITM ≤ 0.95)
+        entry_delta = max(0.1, min(entry_delta, 0.95))
+
+        effective_sl_distance = sl_dist * entry_delta
+        loss_per_lot = effective_sl_distance * lot_size + cfg.transaction_cost_per_lot
 
         if loss_per_lot <= 0:
             return 1, risk_amount
@@ -1048,6 +1075,12 @@ class RiskManager:
         lots = math.floor(risk_amount / loss_per_lot)
         lots = max(lots, 1)           # at least 1 lot
         lots = min(lots, cfg.max_lots_per_trade)  # safety cap
+
+        if entry_delta < 0.99:
+            refined.adjustments_made.append(
+                f"Delta-adjusted sizing: delta={entry_delta:.2f}, "
+                f"effective SL={effective_sl_distance:.1f} pts (raw {sl_dist:.1f})"
+            )
 
         # Verify we can actually afford 1 lot
         one_lot_cost = loss_per_lot
