@@ -343,6 +343,36 @@ def _v10_audit_json_and_kill_switch(db: DatabaseManager) -> None:
         logger.info("Migration v10: %s", ", ".join(changes))
 
 
+@migration(version=11, description="Add overnight_data table for pre-market intelligence snapshots")
+def _v11_overnight_data(db: DatabaseManager) -> None:
+    """Create the overnight_data table.
+
+    Stores one compiled snapshot per trading day from the overnight news /
+    pre-market pipeline. The Decision Engine loads the latest row at market
+    open to seed its news vote and regime expectation.
+    """
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS overnight_data (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date           TEXT    NOT NULL UNIQUE,
+            compiled_at          TEXT    NOT NULL,
+            is_complete          INTEGER NOT NULL DEFAULT 0,
+            overall_sentiment    REAL,
+            gap_direction        TEXT,
+            gap_confidence       REAL,
+            regime_expectation   TEXT,
+            us_impact            TEXT,
+            fii_bias             TEXT,
+            payload_json         TEXT    NOT NULL
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_overnight_date ON overnight_data (trade_date)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

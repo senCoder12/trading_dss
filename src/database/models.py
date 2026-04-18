@@ -638,4 +638,11 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
         "id": "INTEGER", "timestamp": "TEXT", "component": "TEXT",
         "status": "TEXT", "message": "TEXT", "response_time_ms": "INTEGER",
     },
+    "overnight_data": {
+        "id": "INTEGER", "trade_date": "TEXT", "compiled_at": "TEXT",
+        "is_complete": "INTEGER", "overall_sentiment": "REAL",
+        "gap_direction": "TEXT", "gap_confidence": "REAL",
+        "regime_expectation": "TEXT", "us_impact": "TEXT",
+        "fii_bias": "TEXT", "payload_json": "TEXT",
+    },
 }

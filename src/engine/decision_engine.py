@@ -214,6 +214,11 @@ class DecisionEngine:
         self._result_cache: dict[str, DecisionResult] = {}
         self._CACHE_TTL_SECONDS: int = 60
 
+        # ── Overnight data cache (loaded once per cycle batch) ────────
+        # Keyed by trade date so we avoid hitting the DB for every index.
+        self._overnight_cache: Optional[dict] = None
+        self._overnight_cache_date: Optional[str] = None
+
         logger.info("DecisionEngine initialised — all sub-components ready")
 
     # ------------------------------------------------------------------
@@ -398,6 +403,14 @@ class DecisionEngine:
         news_vote, event_modifier = self._step_news(index_id)
         step_timings["3_news"] = int((time.monotonic() - t0) * 1000)
 
+        # ── Step 3b: Overnight data overlay ────────────────────────────
+        overnight = self._load_overnight_snapshot()
+        overnight_weight = self._overnight_decay_weight(now)
+        if overnight and overnight_weight > 0:
+            news_vote = self._apply_overnight_to_news_vote(
+                news_vote, overnight, overnight_weight, index_id,
+            )
+
         # ── Step 4: Anomaly Detection ──────────────────────────────────
         t0 = time.monotonic()
         anomaly_result = self._step_anomaly(
@@ -444,6 +457,24 @@ class DecisionEngine:
                 index_id, original, penalized,
             )
 
+        # Surface the overnight gap prediction as a warning during the
+        # first hour so traders are aware of the pre-market bias.
+        overnight_warnings: list[str] = []
+        if overnight and overnight_weight > 0:
+            gap = (overnight.get("payload", {}) or {}).get("gap_prediction") or {}
+            gap_conf = gap.get("confidence") or 0
+            gap_dir = gap.get("direction")
+            if gap_dir and gap_dir != "FLAT_OPEN" and gap_conf > 0.5:
+                overnight_warnings.append(
+                    f"Overnight gap: {gap_dir} ({gap_conf:.0%}) — "
+                    f"weight {overnight_weight:.0%}"
+                )
+            regime_hint = overnight.get("regime_expectation")
+            if regime_hint and regime_hint not in ("NORMAL", None):
+                overnight_warnings.append(
+                    f"Overnight regime hint: {regime_hint}"
+                )
+
         result = DecisionResult(
             index_id=index_id,
             timestamp=now,
@@ -457,7 +488,7 @@ class DecisionEngine:
             total_duration_ms=total_ms,
             alert_message=alert_message,
             alert_priority=alert_priority,
-            warnings=stale_warnings,
+            warnings=stale_warnings + overnight_warnings,
         )
         result.dashboard_summary = self._build_dashboard_summary(result, current_price)
 
@@ -1433,6 +1464,94 @@ class DecisionEngine:
         if vix < 25:
             return "ELEVATED"
         return "HIGH_VOL"
+
+    # ------------------------------------------------------------------
+    # Overnight data overlay
+    # ------------------------------------------------------------------
+
+    def _load_overnight_snapshot(self) -> Optional[dict]:
+        """Load today's overnight snapshot (cached per trade date)."""
+        today_iso = datetime.now(tz=_IST).date().isoformat()
+        with self._lock:
+            if self._overnight_cache_date == today_iso:
+                return self._overnight_cache
+
+        try:
+            from src.analysis.news.overnight_engine import load_latest_overnight_data
+
+            data = load_latest_overnight_data(self._db, trade_date=today_iso)
+            with self._lock:
+                self._overnight_cache = data
+                self._overnight_cache_date = today_iso
+            return data
+        except Exception:
+            logger.debug("Overnight snapshot load failed (non-fatal)", exc_info=True)
+            return None
+
+    @staticmethod
+    def _overnight_decay_weight(now: datetime) -> float:
+        """Time-decay weight for overnight data importance.
+
+        9:15 AM = 100%, 10:00 AM = 50%, 11:00 AM = 20%, >=12:00 PM = 0%.
+        Outside the 9:15-12:00 window returns 0.
+        """
+        minutes_since_open = (now.hour - 9) * 60 + (now.minute - 15)
+        if minutes_since_open < 0 or minutes_since_open >= 165:
+            return 0.0
+        if minutes_since_open <= 45:
+            return 1.0 - (minutes_since_open / 45.0) * 0.5   # 1.0 → 0.5
+        if minutes_since_open <= 105:
+            return 0.5 - ((minutes_since_open - 45) / 60.0) * 0.3  # 0.5 → 0.2
+        return max(0.0, 0.2 - ((minutes_since_open - 105) / 60.0) * 0.2)  # 0.2 → 0.0
+
+    def _apply_overnight_to_news_vote(
+        self,
+        news_vote: Optional[NewsVote],
+        overnight: dict,
+        weight: float,
+        index_id: str,
+    ) -> Optional[NewsVote]:
+        """Blend overnight sentiment into the news vote when intraday news is thin.
+
+        Only takes effect when the current vote is NEUTRAL or missing — we
+        never override a strong live signal with yesterday-evening sentiment.
+        """
+        if news_vote is not None and news_vote.vote not in ("NEUTRAL", ""):
+            return news_vote
+
+        sentiment = overnight.get("overall_sentiment")
+        if sentiment is None:
+            return news_vote
+
+        if sentiment > 0.5:
+            vote = "STRONG_BULLISH"
+        elif sentiment > 0.2:
+            vote = "BULLISH"
+        elif sentiment < -0.5:
+            vote = "STRONG_BEARISH"
+        elif sentiment < -0.2:
+            vote = "BEARISH"
+        else:
+            vote = "NEUTRAL"
+
+        confidence = min(0.6, abs(sentiment) * weight)
+        reasoning = (
+            f"Overnight sentiment ({sentiment:+.2f}, weight {weight:.0%}) | "
+            f"US impact: {overnight.get('us_impact', 'N/A')}, "
+            f"FII: {overnight.get('fii_bias', 'N/A')}"
+        )
+
+        return NewsVote(
+            index_id=index_id,
+            timestamp=datetime.now(tz=_IST),
+            vote=vote,
+            confidence=round(confidence, 2),
+            active_article_count=0,
+            weighted_sentiment=float(sentiment),
+            top_headline=None,
+            event_regime="NORMAL",
+            reasoning=reasoning,
+        )
 
     @staticmethod
     def _aggregate_sentiment(votes: list[str]) -> str:

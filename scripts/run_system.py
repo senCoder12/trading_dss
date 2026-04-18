@@ -377,6 +377,19 @@ def main() -> None:
             except Exception as exc:
                 logger.warning("Could not wire Decision Engine into API: %s", exc)
 
+        # Overnight news pipeline — runs scheduled off-market jobs and
+        # generates the 08:50 IST pre-market intelligence report.
+        if "collector" in components and engine is not None:
+            try:
+                from src.analysis.news.overnight_engine import OvernightNewsEngine
+
+                overnight = OvernightNewsEngine(db, engine.news_engine)
+                components["collector"].set_overnight_engine(overnight)
+                components["overnight"] = overnight
+                print("  ✅ Overnight News Engine initialised")
+            except Exception as exc:
+                logger.error("Overnight News Engine initialisation failed: %s", exc)
+
         # Telegram Bot
         if not args.no_telegram:
             try:
@@ -386,6 +399,13 @@ def main() -> None:
                 if bot._configured:  # noqa: SLF001  (private but intentional)
                     components["telegram"] = bot
                     print("  ✅ Telegram Bot initialised")
+                    # Wire bot into DataCollector so the 08:50 pre-market
+                    # report can be dispatched from the collector thread.
+                    if "collector" in components:
+                        try:
+                            components["collector"].set_telegram_bot(bot)
+                        except Exception as exc:
+                            logger.warning("Could not wire Telegram bot into collector: %s", exc)
                 else:
                     print(
                         "  ⚠️  Telegram not configured "
@@ -404,7 +424,7 @@ def main() -> None:
                     min_confidence=args.paper_confidence,
                     active_indices=args.paper_indices or ["NIFTY50", "BANKNIFTY"],
                 )
-                paper_engine = PaperTradingEngine(db, engine, paper_config)
+                paper_engine = PaperTradingEngine(db, paper_config, telegram_bot=components.get("telegram"))
                 components["paper_engine"] = paper_engine
                 print(f"  ✅ Paper Trading initialised (₹{paper_config.initial_capital:,.0f})")
 

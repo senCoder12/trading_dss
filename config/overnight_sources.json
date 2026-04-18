@@ -1,0 +1,55 @@
+{
+  "description": "Overnight / off-market data sources for the pre-market intelligence pipeline.",
+  "windows": {
+    "post_market":       { "hour": 16, "minute": 0,  "description": "4:00 PM IST  - closing commentary + intraday recap" },
+    "evening_data":      { "hour": 18, "minute": 30, "description": "6:30 PM IST  - FII/DII, post-market corporate filings" },
+    "evening_retry":     { "hour": 19, "minute": 30, "description": "7:30 PM IST  - retry FII/DII if primary fetch missed" },
+    "us_market_close":   { "hour": 1,  "minute": 45, "description": "1:45 AM IST  - US close: SP500, NDX, Dow, VIX, Crude, DXY" },
+    "asian_open":        { "hour": 6,  "minute": 45, "description": "6:45 AM IST  - Nikkei, HSI, SGX Nifty, STI opens" },
+    "pre_market_final":  { "hour": 8,  "minute": 45, "description": "8:45 AM IST  - compile overnight data and generate report" },
+    "pre_market_report": { "hour": 8,  "minute": 50, "description": "8:50 AM IST  - dispatch Telegram pre-market report" }
+  },
+  "us_indices": {
+    "S&P 500":     "^GSPC",
+    "NASDAQ":      "^IXIC",
+    "Dow Jones":   "^DJI",
+    "VIX":         "^VIX"
+  },
+  "global_macro": {
+    "Crude Oil":     "CL=F",
+    "Brent Crude":   "BZ=F",
+    "Gold":          "GC=F",
+    "Dollar Index":  "DX-Y.NYB"
+  },
+  "asian_indices": {
+    "Nikkei 225":    "^N225",
+    "Hang Seng":     "^HSI",
+    "Straits Times": "^STI",
+    "KOSPI":         "^KS11",
+    "SGX Nifty":     "^NSEI"
+  },
+  "impact_scoring": {
+    "sp500_strong_threshold_pct":  1.0,
+    "sp500_mild_threshold_pct":    0.3,
+    "vix_elevated_threshold":      25,
+    "vix_complacent_threshold":    13,
+    "crude_strong_threshold_pct":  3.0,
+    "asian_strong_threshold_pct":  0.3
+  },
+  "gap_prediction_weights": {
+    "us_market":      0.35,
+    "asian_markets":  0.25,
+    "fii":            0.20,
+    "news_sentiment": 0.20
+  },
+  "fii_bias_thresholds": {
+    "strong_buying_cr":   2000,
+    "buying_cr":           500,
+    "selling_cr":         -500,
+    "strong_selling_cr": -2000
+  },
+  "yfinance_retry": {
+    "max_attempts":    3,
+    "backoff_seconds": 5
+  }
+}

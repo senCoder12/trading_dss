@@ -93,6 +93,11 @@ class DataCollector:
         self.fii_dii_fetcher = FIIDIIFetcher(scraper=self.nse_scraper)
         self.vix_tracker = VIXTracker(scraper=self.nse_scraper)
 
+        # Overnight news engine — wired lazily via set_overnight_engine().
+        # The pre-market Telegram dispatch is wired via set_telegram_bot().
+        self.overnight_engine: Any = None
+        self.telegram_bot: Any = None
+
         self.scheduler = BackgroundScheduler(timezone=_IST)
         self._setup_jobs()
 
@@ -181,6 +186,163 @@ class DataCollector:
             id="cleanup",
             name="Daily Database Cleanup",
         )
+
+        # ── Overnight news pipeline (all times IST) ────────────────────────
+        # These jobs run only when set_overnight_engine() has wired in an
+        # OvernightNewsEngine instance. Until then, they are no-ops.
+        self.scheduler.add_job(
+            self._overnight_post_market,
+            trigger=CronTrigger(hour=16, minute=0, day_of_week="mon-fri", timezone=_IST),
+            id="overnight_post_market",
+            name="Overnight: Post-Market Collection",
+        )
+        self.scheduler.add_job(
+            self._overnight_evening_data,
+            trigger=CronTrigger(hour=18, minute=30, day_of_week="mon-fri", timezone=_IST),
+            id="overnight_evening_data",
+            name="Overnight: Evening Data Collection",
+        )
+        self.scheduler.add_job(
+            self._overnight_evening_retry,
+            trigger=CronTrigger(hour=19, minute=30, day_of_week="mon-fri", timezone=_IST),
+            id="overnight_evening_retry",
+            name="Overnight: FII/DII Retry",
+        )
+        self.scheduler.add_job(
+            self._overnight_us_market_close,
+            trigger=CronTrigger(hour=1, minute=45, day_of_week="tue-sat", timezone=_IST),
+            id="overnight_us_market_close",
+            name="Overnight: US Market Close",
+        )
+        self.scheduler.add_job(
+            self._overnight_asian_open,
+            trigger=CronTrigger(hour=6, minute=45, day_of_week="mon-fri", timezone=_IST),
+            id="overnight_asian_open",
+            name="Overnight: Asian Market Open",
+        )
+        self.scheduler.add_job(
+            self._overnight_pre_market_final,
+            trigger=CronTrigger(hour=8, minute=45, day_of_week="mon-fri", timezone=_IST),
+            id="overnight_pre_market_final",
+            name="Overnight: Pre-Market Compile",
+        )
+        self.scheduler.add_job(
+            self._overnight_send_report,
+            trigger=CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone=_IST),
+            id="overnight_send_report",
+            name="Overnight: Pre-Market Report Dispatch",
+        )
+
+    # ── Overnight engine hooks ─────────────────────────────────────────────
+
+    def set_overnight_engine(self, engine: Any) -> None:
+        """Wire in an :class:`OvernightNewsEngine` instance.
+
+        The scheduled overnight jobs become active as soon as this is set.
+        """
+        self.overnight_engine = engine
+        logger.info("DataCollector: overnight engine wired in")
+
+    def set_telegram_bot(self, bot: Any) -> None:
+        """Wire in the Telegram bot used for pre-market report dispatch."""
+        self.telegram_bot = bot
+
+    def _overnight_post_market(self) -> None:
+        if self.overnight_engine is None:
+            return
+        status = self.market_hours.get_market_status()
+        if status.get("is_holiday"):
+            logger.info("Skipping post-market overnight job (market holiday)")
+            return
+        try:
+            self.overnight_engine.collect_post_market()
+        except Exception:
+            logger.exception("Overnight: post_market job failed")
+
+    def _overnight_evening_data(self) -> None:
+        if self.overnight_engine is None:
+            return
+        status = self.market_hours.get_market_status()
+        if status.get("is_holiday"):
+            logger.info("Skipping evening data overnight job (market holiday)")
+            return
+        try:
+            self.overnight_engine.collect_evening_data()
+        except Exception:
+            logger.exception("Overnight: evening_data job failed")
+
+    def _overnight_evening_retry(self) -> None:
+        if self.overnight_engine is None:
+            return
+        try:
+            self.overnight_engine.collect_evening_retry()
+        except Exception:
+            logger.exception("Overnight: evening_retry job failed")
+
+    def _overnight_us_market_close(self) -> None:
+        if self.overnight_engine is None:
+            return
+        try:
+            self.overnight_engine.collect_us_market_close()
+        except Exception:
+            logger.exception("Overnight: us_market_close job failed")
+
+    def _overnight_asian_open(self) -> None:
+        if self.overnight_engine is None:
+            return
+        try:
+            self.overnight_engine.collect_asian_open()
+        except Exception:
+            logger.exception("Overnight: asian_open job failed")
+
+    def _overnight_pre_market_final(self) -> None:
+        if self.overnight_engine is None:
+            return
+        # Skip compile on holidays — no market tomorrow means no report needed.
+        today = self.market_hours.now_ist().date() if hasattr(
+            self.market_hours, "now_ist"
+        ) else datetime.now(tz=_IST).date()
+        try:
+            from src.utils.market_hours import is_trading_day
+            if not is_trading_day(today):
+                logger.info("Skipping pre-market compile (non-trading day: %s)", today)
+                return
+        except Exception:
+            pass
+        try:
+            self.overnight_engine.collect_pre_market_final()
+        except Exception:
+            logger.exception("Overnight: pre_market_final job failed")
+
+    def _overnight_send_report(self) -> None:
+        """Dispatch the pre-market intelligence report via Telegram (08:50 IST)."""
+        if self.overnight_engine is None:
+            return
+        try:
+            from src.utils.market_hours import is_trading_day
+            today = datetime.now(tz=_IST).date()
+            if not is_trading_day(today):
+                return
+        except Exception:
+            pass
+
+        try:
+            from src.analysis.news.pre_market_report import PreMarketReportGenerator
+            from src.analysis.news.overnight_engine import load_latest_overnight_data
+
+            data = load_latest_overnight_data(self.db)
+            report = PreMarketReportGenerator().generate_report(data)
+            logger.info("Pre-market report generated (%d chars)", len(report))
+
+            if self.telegram_bot is not None:
+                try:
+                    self.telegram_bot.send_alert(report, priority="HIGH")
+                except Exception:
+                    logger.exception("Pre-market report: Telegram dispatch failed")
+            else:
+                logger.info("Pre-market report (Telegram not wired):\n%s", report)
+        except Exception:
+            logger.exception("Overnight: send_report job failed")
 
     # ── Failure / recovery helpers ─────────────────────────────────────────
 
