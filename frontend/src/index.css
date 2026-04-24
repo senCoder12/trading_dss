@@ -17,6 +17,16 @@
 /* Table hover */
 .table-row-hover:hover { background-color: rgba(51, 65, 85, 0.4); }
 
+/* Price tick flash — broker-style green/red highlight on every update */
+@keyframes flash-up {
+  0%   { color: #86efac; background-color: rgba(74, 222, 128, 0.18); }
+  100% { color: inherit; background-color: transparent; }
+}
+@keyframes flash-down {
+  0%   { color: #fca5a5; background-color: rgba(248, 113, 113, 0.18); }
+  100% { color: inherit; background-color: transparent; }
+}
+
 /* Notification toast slide-in */
 @keyframes slide-in {
   from { transform: translateX(100%); opacity: 0; }

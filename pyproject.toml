@@ -7,7 +7,7 @@ name = "trading_dss"
 version = "0.1.0"
 description = "Trading Decision Support System for Indian Stock Markets"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "trading_dss contributors" }]
 
@@ -62,6 +62,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.9"
 strict = true
 ignore_missing_imports = true

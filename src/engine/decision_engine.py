@@ -76,7 +76,7 @@ _IST = ZoneInfo(IST_TIMEZONE)
 # Delay between consecutive index analyses in run_all_indices (seconds)
 _INTER_INDEX_DELAY: float = 2.0
 # Trigger a new news cycle if the last one is older than this
-_NEWS_STALE_SECONDS: int = 300   # 5 minutes
+_NEWS_STALE_SECONDS: int = 180   # 3 minutes
 # Minimum daily bars needed before analysis is meaningful
 _MIN_DAILY_BARS: int = 50
 _MIN_BARS_FALLBACK: int = 5     # absolute floor — below this, return NO_TRADE
@@ -328,7 +328,7 @@ class DecisionEngine:
     # Public API
     # ------------------------------------------------------------------
 
-    def run_full_cycle(self, index_id: str) -> DecisionResult:
+    def run_full_cycle(self, index_id: str, as_of: Optional[datetime] = None) -> DecisionResult:
         """
         Execute the complete 8-step analysis pipeline for *index_id*.
 
@@ -373,10 +373,10 @@ class DecisionEngine:
             oi_summary,
             vix_value,
             benchmark_rows,
-        ) = self._step_gather_data(index_id)
+        ) = self._step_gather_data(index_id, as_of=as_of)
         step_timings["1_gather_data"] = int((time.monotonic() - t0) * 1000)
 
-        price_df = self._build_price_df(daily_rows, intraday_rows)
+        price_df, timeframe_label = self._build_price_df(daily_rows, intraday_rows)
         current_price = float(current_bar["close"]) if current_bar else 0.0
 
         # ── Stale-data check (non-blocking — adds warnings) ──────────
@@ -394,7 +394,7 @@ class DecisionEngine:
         # ── Step 2: Technical Analysis ─────────────────────────────────
         t0 = time.monotonic()
         technical_result = self._step_technical(
-            index_id, price_df, options_chain, vix_value, benchmark_rows,
+            index_id, price_df, options_chain, vix_value, benchmark_rows, timeframe_label
         )
         step_timings["2_technical"] = int((time.monotonic() - t0) * 1000)
 
@@ -429,7 +429,7 @@ class DecisionEngine:
         t0 = time.monotonic()
         anomaly_vote = self._anomaly_result_to_vote(anomaly_result, index_id)
         raw_signal = self._step_signal(
-            index_id, technical_result, news_vote, anomaly_vote, regime, current_price,
+            index_id, technical_result, news_vote, anomaly_vote, regime, current_price, as_of=as_of
         )
         step_timings["6_signal"] = int((time.monotonic() - t0) * 1000)
 
@@ -839,8 +839,10 @@ class DecisionEngine:
     # Step implementations
     # ------------------------------------------------------------------
 
-    def _step_gather_data(self, index_id: str) -> tuple:
+    def _step_gather_data(self, index_id: str, as_of: Optional[datetime] = None) -> tuple:
         """Step 1 — Load data from DB. Each sub-fetch is isolated."""
+        as_of_ts = as_of.isoformat() if as_of else "9999-12-31T23:59:59"
+        
         current_bar: Optional[dict] = None
         daily_rows: list[dict] = []
         intraday_rows: list[dict] = []
@@ -851,22 +853,22 @@ class DecisionEngine:
 
         try:
             current_bar = (
-                self._db.fetch_one(Q.GET_LATEST_PRICE, (index_id, "5m"))
-                or self._db.fetch_one(Q.GET_LATEST_PRICE, (index_id, "1d"))
+                self._db.fetch_one(Q.GET_LATEST_PRICE, (index_id, "5m", as_of_ts))
+                or self._db.fetch_one(Q.GET_LATEST_PRICE, (index_id, "1d", as_of_ts))
             )
         except Exception:
             logger.warning("Step 1: latest bar unavailable for %s", index_id)
 
         try:
             daily_rows = self._db.fetch_all(
-                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "1d", 250)
+                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "1d", as_of_ts, 250)
             )
         except Exception:
             logger.warning("Step 1: daily history unavailable for %s", index_id)
 
         try:
             intraday_rows = self._db.fetch_all(
-                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "5m", 100)
+                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "5m", as_of_ts, 100)
             )
         except Exception:
             logger.debug("Step 1: intraday unavailable for %s", index_id)
@@ -874,11 +876,11 @@ class DecisionEngine:
         index_def = self.registry.get_index(index_id)
         if index_def and index_def.has_options:
             try:
-                options_chain = self._load_options_chain(index_id)
+                options_chain = self._load_options_chain(index_id, as_of=as_of)
             except Exception:
                 logger.warning("Step 1: options chain unavailable for %s", index_id)
             try:
-                oi_summary = self._load_oi_summary(index_id)
+                oi_summary = self._load_oi_summary(index_id, as_of=as_of)
             except Exception:
                 logger.warning("Step 1: OI summary unavailable for %s", index_id)
 
@@ -894,7 +896,7 @@ class DecisionEngine:
         try:
             if index_id != "NIFTY50":
                 benchmark_rows = self._db.fetch_all(
-                    Q.LIST_PRICE_HISTORY_LIMIT, ("NIFTY50", "1d", 250)
+                    Q.LIST_PRICE_HISTORY_LIMIT, ("NIFTY50", "1d", as_of_ts, 250)
                 )
         except Exception:
             logger.debug("Step 1: benchmark data unavailable")
@@ -911,6 +913,7 @@ class DecisionEngine:
         options_chain,
         vix_value: Optional[float],
         benchmark_rows: list[dict],
+        timeframe: str = "1d",
     ) -> Optional[TechnicalAnalysisResult]:
         """Step 2 — TechnicalAggregator."""
         try:
@@ -930,7 +933,7 @@ class DecisionEngine:
                 oi_history=None,
                 vix_value=vix_value,
                 benchmark_df=bm_df,
-                timeframe="1d",
+                timeframe=timeframe,
             )
         except Exception:
             logger.exception("Step 2: TechnicalAggregator failed for %s", index_id)
@@ -1030,6 +1033,7 @@ class DecisionEngine:
         anomaly_vote: Optional[AnomalyVote],
         regime: MarketRegime,
         current_price: float,
+        as_of: Optional[datetime] = None,
     ) -> TradingSignal:
         """Step 6 — Signal generation."""
         try:
@@ -1046,6 +1050,7 @@ class DecisionEngine:
                 anomaly=anomaly_vote,
                 regime=regime,
                 current_spot_price=current_price,
+                timestamp=as_of,
             )
         except Exception:
             logger.exception("Step 6: signal generation failed for %s", index_id)
@@ -1157,11 +1162,13 @@ class DecisionEngine:
         except Exception:
             return None
 
-    def _load_options_chain(self, index_id: str):
+    def _load_options_chain(self, index_id: str, as_of: Optional[datetime] = None) -> Optional[OptionsChainData]:
         """Reconstruct OptionsChainData from the latest DB snapshot."""
         try:
             from src.data.options_chain import OptionsChainData, OptionStrike
             from datetime import date as date_
+            
+            as_of_ts = as_of.isoformat() if as_of else "9999-12-31T23:59:59"
 
             expiry_rows = self._db.fetch_all(Q.LIST_EXPIRY_DATES, (index_id,))
             if not expiry_rows:
@@ -1170,7 +1177,7 @@ class DecisionEngine:
             expiry_str = expiry_rows[0]["expiry_date"]
             rows = self._db.fetch_all(
                 Q.LIST_OPTIONS_CHAIN_FOR_EXPIRY,
-                (index_id, expiry_str, index_id, expiry_str),
+                (index_id, expiry_str, as_of_ts, index_id, expiry_str, as_of_ts),
             )
             if not rows:
                 return None
@@ -1190,19 +1197,34 @@ class DecisionEngine:
                     strike_price=sp,
                     ce_oi=int(ce.get("open_interest", 0)),
                     ce_oi_change=int(ce.get("oi_change", 0)),
+                    ce_oi_change_pct=float(ce.get("oi_change_pct", 0.0)),
                     ce_volume=int(ce.get("volume", 0)),
-                    ce_ltp=float(ce.get("ltp", 0)),
-                    ce_iv=float(ce.get("iv") or 0),
-                    pe_oi=int(pe.get("open_interest", 0) if pe else 0),
-                    pe_oi_change=int(pe.get("oi_change", 0) if pe else 0),
-                    pe_volume=int(pe.get("volume", 0) if pe else 0),
-                    pe_ltp=float(pe.get("ltp", 0) if pe else 0),
-                    pe_iv=float(pe.get("iv") or 0 if pe else 0),
+                    ce_ltp=float(ce.get("ltp", 0.0)),
+                    ce_ltp_change=float(ce.get("ltp_change", 0.0)),
+                    ce_ltp_change_pct=float(ce.get("ltp_change_pct", 0.0)),
+                    ce_iv=float(ce.get("iv") or 0.0),
+                    ce_bid_price=float(ce.get("bid_price", 0.0)),
+                    ce_bid_qty=int(ce.get("bid_qty", 0)),
+                    ce_ask_price=float(ce.get("ask_price", 0.0)),
+                    ce_ask_qty=int(ce.get("ask_qty", 0)),
+                    
+                    pe_oi=int(pe.get("open_interest", 0)),
+                    pe_oi_change=int(pe.get("oi_change", 0)),
+                    pe_oi_change_pct=float(pe.get("oi_change_pct", 0.0)),
+                    pe_volume=int(pe.get("volume", 0)),
+                    pe_ltp=float(pe.get("ltp", 0.0)),
+                    pe_ltp_change=float(pe.get("ltp_change", 0.0)),
+                    pe_ltp_change_pct=float(pe.get("ltp_change_pct", 0.0)),
+                    pe_iv=float(pe.get("iv") or 0.0),
+                    pe_bid_price=float(pe.get("bid_price", 0.0)),
+                    pe_bid_qty=int(pe.get("bid_qty", 0)),
+                    pe_ask_price=float(pe.get("ask_price", 0.0)),
+                    pe_ask_qty=int(pe.get("ask_qty", 0)),
                 ))
 
             latest_price_row = self._db.fetch_one(
-                "SELECT close FROM price_data WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
-                (index_id,),
+                "SELECT close FROM price_data WHERE index_id = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+                (index_id, as_of_ts),
             )
             spot = float(latest_price_row["close"]) if latest_price_row else 0.0
 
@@ -1226,13 +1248,35 @@ class DecisionEngine:
             logger.exception("_load_options_chain failed for %s", index_id)
             return None
 
-    def _load_oi_summary(self, index_id: str) -> Optional[dict]:
+    def _load_oi_summary(self, index_id: str, as_of: Optional[datetime] = None) -> Optional[OISummary]:
         try:
+            from src.data.options_chain import OISummary
+            
+            as_of_ts = as_of.isoformat() if as_of else "9999-12-31T23:59:59"
+            
             rows = self._db.fetch_all(Q.LIST_EXPIRY_DATES, (index_id,))
             if not rows:
                 return None
-            return self._db.fetch_one(
-                Q.GET_LATEST_OI_AGGREGATED, (index_id, rows[0]["expiry_date"])
+            
+            expiry = rows[0]["expiry_date"]
+            row = self._db.fetch_one(Q.GET_LATEST_OI_AGGREGATED, (index_id, expiry, as_of_ts))
+            if not row:
+                return None
+            
+            return OISummary(
+                total_ce_oi=int(row["total_ce_oi"]),
+                total_pe_oi=int(row["total_pe_oi"]),
+                total_ce_oi_change=int(row["total_ce_oi_change"]),
+                total_pe_oi_change=int(row["total_pe_oi_change"]),
+                total_ce_volume=0,  # Not in DB
+                total_pe_volume=0,  # Not in DB
+                pcr=float(row["pcr"]),
+                pcr_change=0.0,     # Not in DB
+                max_pain_strike=float(row["max_pain_strike"]),
+                highest_ce_oi_strike=float(row["highest_ce_oi_strike"]),
+                highest_pe_oi_strike=float(row["highest_pe_oi_strike"]),
+                top_5_ce_oi_strikes=(), # Not in DB
+                top_5_pe_oi_strikes=(), # Not in DB
             )
         except Exception:
             return None
@@ -1254,12 +1298,13 @@ class DecisionEngine:
         self,
         daily_rows: list[dict],
         intraday_rows: list[dict],
-    ) -> pd.DataFrame:
-        """Prefer daily bars; fall back to combining both if daily is thin."""
-        if daily_rows and len(daily_rows) >= _MIN_DAILY_BARS:
-            return self._rows_to_df(daily_rows)
-        all_rows = list(daily_rows or []) + list(intraday_rows or [])
-        return self._rows_to_df(all_rows) if all_rows else pd.DataFrame()
+    ) -> tuple[pd.DataFrame, str]:
+        """Prioritize 5m for intraday; fall back to 1d."""
+        if intraday_rows and len(intraday_rows) >= _MIN_BARS_FALLBACK:
+            return self._rows_to_df(intraday_rows), "5m"
+        if daily_rows:
+            return self._rows_to_df(daily_rows), "1d"
+        return pd.DataFrame(), "1d"
 
     @staticmethod
     def _anomaly_result_to_vote(

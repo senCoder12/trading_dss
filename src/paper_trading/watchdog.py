@@ -440,8 +440,8 @@ class SystemWatchdog:
         try:
             req = urllib.request.Request(
                 _NSE_URL,
-                headers={"User-Agent": "Mozilla/5.0"},
-                method="HEAD",
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+                method="GET",
             )
             with urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT_SECS):
                 pass

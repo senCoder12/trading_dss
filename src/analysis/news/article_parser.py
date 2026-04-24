@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
 from config.settings import settings
+from src.analysis.news.language_handler import LanguageHandler
 from src.analysis.news.rss_fetcher import RawArticle
 from src.data.index_registry import IndexRegistry, get_registry
 
@@ -107,8 +108,13 @@ class ParsedArticle:
     mentioned_indices: list[str] = field(default_factory=list)
     event_type: str | None = None
     is_market_hours_relevant: bool = False
-    language: str = "en"
     word_count: int = 0
+
+    # Language metadata (populated by LanguageHandler)
+    original_language: str = "en"
+    was_translated: bool = False
+    translation_confidence: float = 1.0
+    is_hinglish: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +145,7 @@ class ArticleParser:
         )
         self._companies: list[dict] = self._load_json(companies_path)
         self._registry = registry
+        self.language_handler = LanguageHandler()
 
         # Pre-build index lookup: {lowercase_token: display_name}
         self._index_lookup: dict[str, str] = {}
@@ -206,15 +213,24 @@ class ArticleParser:
 
         Returns ``None`` if the article has no usable text.
         """
-        title = self._clean_text(raw.title or "")
-        summary = self._clean_text(raw.summary or "")
+        # Language detection + translation on raw text (before HTML stripping
+        # so Devanagari / other non-ASCII characters are preserved for detection).
+        raw_combined = (raw.title or "") + " " + (raw.summary or "")
+        processed = self.language_handler.process(raw_combined)
+
+        # Clean the (possibly translated) English text for downstream analysis
+        clean_english = self._clean_text(processed.english_text)
         content = self._clean_text(raw.raw_content or "")
 
-        # Combine title + summary (+ content snippet if available)
-        parts = [p for p in (title, summary, content) if p]
+        parts = [p for p in (clean_english, content) if p]
         if not parts:
             return None
         clean = " ".join(parts)[:_MAX_TEXT_LENGTH]
+
+        # Preserve original (untranslated) title for display purposes
+        title = self._clean_text(raw.title or "")
+
+        event_type = self._classify_event_type(clean)
 
         return ParsedArticle(
             title=title,
@@ -228,12 +244,15 @@ class ArticleParser:
             mentioned_companies=self._extract_companies(clean),
             mentioned_sectors=self._extract_sectors(clean),
             mentioned_indices=self._extract_indices(clean),
-            event_type=self._classify_event_type(clean),
+            event_type=event_type,
             is_market_hours_relevant=self._is_market_hours_relevant(
-                raw.published_at, self._classify_event_type(clean)
+                raw.published_at, event_type
             ),
-            language="en",
             word_count=len(clean.split()),
+            original_language=processed.original_lang,
+            was_translated=processed.was_translated,
+            translation_confidence=processed.translation_confidence,
+            is_hinglish=processed.is_hinglish,
         )
 
     # ── Text cleaning ────────────────────────────────────────────────────────

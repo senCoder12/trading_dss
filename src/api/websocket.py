@@ -53,11 +53,16 @@ class EventBroadcaster:
 
     async def broadcast(self, event_type: str, data: dict) -> None:
         """Send *event_type* with *data* to all connected clients."""
+        def _serializer(obj):
+            if hasattr(obj, "isoformat"):
+                return obj.isoformat()
+            raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
         message = json.dumps({
             "type": event_type,
             "data": data,
             "timestamp": get_ist_now().isoformat(),
-        })
+        }, default=_serializer)
 
         dead: set[WebSocket] = set()
         async with self._lock:
@@ -115,4 +120,4 @@ async def process_event_queue() -> None:
             except Exception:
                 logger.exception("Failed to broadcast queued event: %s", event_type)
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)

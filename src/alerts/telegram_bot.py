@@ -87,6 +87,7 @@ class TelegramBot:
         self._app: Any = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Digest queues
         self._normal_queue: queue.Queue[str] = queue.Queue()
@@ -1217,11 +1218,6 @@ class TelegramBot:
             logger.warning("Telegram bot is already running")
             return
 
-        app = self._build_app()
-        if app is None:
-            return
-
-        self._app = app
         self._running = True
         self._start_time = datetime.now(
             tz=__import__("zoneinfo").ZoneInfo(IST_TIMEZONE)
@@ -1232,6 +1228,14 @@ class TelegramBot:
                 # Create a new event loop for this thread
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                self._loop = loop
+                
+                # Build app inside the thread to bind it to this event loop
+                app = self._build_app()
+                if app is None:
+                    return
+                self._app = app
+                
                 loop.run_until_complete(self._app.initialize())
                 loop.run_until_complete(self._app.start())
                 loop.run_until_complete(
@@ -1252,17 +1256,21 @@ class TelegramBot:
 
     def stop_bot(self) -> None:
         """Gracefully shut down the bot."""
-        if not self._running or not self._app:
+        if not self._running or not getattr(self, "_loop", None) or not getattr(self, "_app", None):
             return
 
         self._running = False
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._app.updater.stop())
-            loop.run_until_complete(self._app.stop())
-            loop.run_until_complete(self._app.shutdown())
-            loop.close()
+            async def _shutdown() -> None:
+                if self._app and getattr(self._app, "updater", None):
+                    await self._app.updater.stop()
+                if self._app:
+                    await self._app.stop()
+                    await self._app.shutdown()
+
+            future = asyncio.run_coroutine_threadsafe(_shutdown(), self._loop)
+            future.result(timeout=10)  # Wait for shutdown to complete
+            self._loop.call_soon_threadsafe(self._loop.stop)
         except Exception:
             logger.exception("Error during Telegram bot shutdown")
 

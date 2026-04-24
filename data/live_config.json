@@ -1,5 +1,5 @@
 {
-  "riskPerTrade": 2.0,
+  "riskPerTrade": 5.0,
   "minConfidence": "MEDIUM",
   "maxPositions": 3,
   "activeIndices": [
@@ -9,5 +9,5 @@
     "MIDCPNIFTY"
   ],
   "soundEnabled": true,
-  "notificationThreshold": "HIGH"
+  "notificationThreshold": "ALL"
 }

@@ -6,6 +6,7 @@ import { ErrorBoundary } from '../common/ErrorBoundary';
 import { StaleDataBanner } from '../common/StaleDataBanner';
 import { RefreshIndicator } from '../common/RefreshIndicator';
 import { formatPrice, formatPercentage } from '../../utils/formatters';
+import { FlashPrice } from '../common/FlashPrice';
 import PriceChart from '../chart/PriceChart';
 import ChartControls from '../chart/ChartControls';
 import ActiveSignals from './ActiveSignals';
@@ -29,10 +30,10 @@ function IndexPill({ item, selected, onClick }) {
       }`}
     >
       <span className="font-medium">{item.index_id}</span>
-      <span className="font-mono text-[11px]">{formatPrice(item.ltp)}</span>
+      <FlashPrice value={item.ltp} formatter={formatPrice} className="font-mono text-[11px]" />
       <span className={`flex items-center gap-0.5 ${pos ? 'text-green-400' : neg ? 'text-red-400' : 'text-slate-500'}`}>
         {pos ? <TrendingUp className="w-3 h-3" /> : neg ? <TrendingDown className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
-        {formatPercentage(chg)}
+        <FlashPrice value={chg} formatter={formatPercentage} />
       </span>
     </button>
   );

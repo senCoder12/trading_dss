@@ -31,6 +31,9 @@ export const api = {
   getIndicatorValues: (id, timeframe = '1d', indicators = []) =>
     get(`/market/prices/${id}/indicators?timeframe=${timeframe}&indicators=${indicators.join(',')}`),
   getOptionsChain: (id) => get(`/market/options/${id}`),
+  getOptionsChainFull: (id, expiry) =>
+    get(`/market/options/${id}/chain${expiry ? `?expiry=${expiry}` : ''}`),
+
   getVix: () => get('/market/vix'),
 
   // Signals

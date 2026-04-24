@@ -65,7 +65,9 @@ _MAX_RESPONSE_TIMES: int = 100      # Rolling window for avg-response-time calc
 _ENDPOINTS = {
     "all_indices": "/api/allIndices",
     "market_status": "/api/marketStatus",
-    "option_chain": "/api/option-chain-indices",
+    "option_chain_old": "/api/option-chain-indices",
+    "option_chain_v3": "/api/option-chain-v3",
+    "option_chain_meta": "/api/option-chain-contract-info",
     "equity_quote": "/api/quote-equity",
     "fii_dii": "/api/fiidiiTradeReact",
 }
@@ -179,7 +181,13 @@ class NSEScraper:
         """
         headers = self._build_headers(for_api=False)
         try:
+            # 1. Main homepage
             resp = self._session.get(NSE_BASE_URL, headers=headers, timeout=15)
+            resp.raise_for_status()
+            
+            # 2. Option chain landing page (sets required cookies for v3 API)
+            oc_url = f"{NSE_BASE_URL}/option-chain"
+            resp = self._session.get(oc_url, headers=headers, timeout=15)
             resp.raise_for_status()
         except Exception as exc:
             raise NSEScraperError(f"NSE warm-up failed: {exc}") from exc
@@ -281,11 +289,11 @@ class NSEScraper:
         label = endpoint.split("?")[0].rsplit("/", 1)[-1]
         logger.debug("NSE %s → HTTP %d (%.0f ms)", label, resp.status_code, elapsed_ms)
 
-        # Session-expiry signals — do not retry this request
+        # Session-expiry signals — trigger a hard refresh and retry
         if resp.status_code in (401, 403):
-            self._warmed_up = False
-            raise NSEScraperError(
-                f"NSE returned {resp.status_code} (session expired) — refreshed on next call"
+            self._refresh_session()
+            raise _NSETransientError(
+                f"NSE returned {resp.status_code} (session expired) — session refreshed, retrying..."
             )
 
         # Rate-limit — transient, let tenacity retry
@@ -516,9 +524,52 @@ class NSEScraper:
         dict or None:
             Raw NSE option chain response, or ``None`` on failure.
         """
+        # Legacy fallback - usually returns {} now
         return self._call(
-            _ENDPOINTS["option_chain"],
+            _ENDPOINTS["option_chain_old"],
             params={"symbol": symbol},
+        )
+
+    def get_option_chain_v3(
+        self,
+        symbol: str,
+        type: str = "Indices",
+        expiry: Optional[str] = None,
+        cache_key: Optional[str] = None,
+        cache_ttl: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        """
+        Fetch the options chain using the v3 API.
+
+        Requires an 'expiry' date (format: dd-MMM-yyyy) to return full data.
+        If expiry is None, this might return empty or metadata depending on NSE state.
+        """
+        params = {"symbol": symbol, "type": type}
+        if expiry:
+            params["expiry"] = expiry
+
+        return self._call(
+            _ENDPOINTS["option_chain_v3"],
+            params=params,
+            cache_key=cache_key,
+            cache_ttl=cache_ttl,
+        )
+
+    def get_option_chain_meta(
+        self,
+        symbol: str,
+        cache_key: Optional[str] = None,
+        cache_ttl: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        """
+        Fetch available expiry dates and strike prices for *symbol*.
+        Useful for identifying the current/active expiry to use with v3 API.
+        """
+        return self._call(
+            _ENDPOINTS["option_chain_meta"],
+            params={"symbol": symbol},
+            cache_key=cache_key,
+            cache_ttl=cache_ttl,
         )
 
     def get_fii_dii_activity(self) -> Optional[list[dict[str, Any]]]:

@@ -207,5 +207,38 @@
     "refresh_interval_seconds": 600,
     "is_active": true,
     "description": "Official SEBI circulars and press releases"
+  },
+  {
+    "id": "moneycontrol_hindi",
+    "source_name": "Moneycontrol Hindi",
+    "url": "https://hindi.moneycontrol.com/rss/marketsnews.xml",
+    "credibility_score": 0.80,
+    "category": "market",
+    "language": "hi",
+    "refresh_interval_seconds": 180,
+    "is_active": true,
+    "description": "Moneycontrol Hindi markets news — per-article language detection applied"
+  },
+  {
+    "id": "et_hindi_markets",
+    "source_name": "Economic Times Hindi",
+    "url": "https://economictimes.indiatimes.com/hindi/markets/rssfeeds/",
+    "credibility_score": 0.78,
+    "category": "market",
+    "language": "hi",
+    "refresh_interval_seconds": 180,
+    "is_active": true,
+    "description": "Economic Times Hindi markets — per-article language detection applied"
+  },
+  {
+    "id": "ndtv_profit_hindi",
+    "source_name": "NDTV Profit Hindi",
+    "url": "https://khabar.ndtv.com/topic/share-market/feed",
+    "credibility_score": 0.75,
+    "category": "market",
+    "language": "hi",
+    "refresh_interval_seconds": 300,
+    "is_active": true,
+    "description": "NDTV Khabar share market — per-article language detection applied"
   }
 ]

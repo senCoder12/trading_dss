@@ -204,10 +204,10 @@ def check_system(reporter: Reporter) -> None:
     # Python limits
     v = sys.version_info
     py_ver = f"{v.major}.{v.minor}.{v.micro}"
-    if v >= (3, 11):
+    if v >= (3, 9):
         reporter.log_pass(f"Python {py_ver}", "OK")
     else:
-        reporter.log_fail(f"Python {py_ver}", "Unsupported version", "Upgrade to Python >= 3.11 for optimal compatibility.")
+        reporter.log_fail(f"Python {py_ver}", "Unsupported version", "Upgrade to Python >= 3.9 for optimal compatibility.")
         
     modules = ["pandas", "sqlalchemy", "requests", "yfinance", "apscheduler", "fastapi"]
     for mod in modules:

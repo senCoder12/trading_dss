@@ -15,10 +15,10 @@ import MarketPage from './components/market/MarketPage';
 import NewsPage from './components/news/NewsPage';
 import AnomalyPage from './components/anomalies/AnomalyPage';
 import SystemPage from './components/system/SystemPage';
+import OptionsChainPage from './components/options/OptionsChainPage';
 
-import { useWebSocket } from './hooks/useWebSocket';
 import { useNotification } from './hooks/useNotification';
-import { DataStoreProvider } from './hooks/useDataStore';
+import { DataStoreProvider, useDataStore } from './hooks/useDataStore';
 
 const SHORTCUTS = [
   { key: '1', label: 'Dashboard' },
@@ -28,6 +28,7 @@ const SHORTCUTS = [
   { key: '5', label: 'News' },
   { key: '6', label: 'Anomalies' },
   { key: '7', label: 'System' },
+  { key: '8', label: 'Options Chain' },
   { key: 'S', label: 'Settings' },
   { key: 'Esc', label: 'Close panel' },
   { key: '?', label: 'This help' },
@@ -51,6 +52,7 @@ function KeyboardShortcuts({ setSettingsOpen }) {
         case '5': navigate('/news'); break;
         case '6': navigate('/anomalies'); break;
         case '7': navigate('/system'); break;
+        case '8': navigate('/options'); break;
         case 's': setSettingsOpen(true); break;
         case 'Escape':
           setSettingsOpen(false);
@@ -68,6 +70,49 @@ function KeyboardShortcuts({ setSettingsOpen }) {
   return <KeyboardHelp shortcuts={SHORTCUTS} isOpen={showHelp} onClose={() => setShowHelp(false)} />;
 }
 
+// Inner layout — inside DataStoreProvider, so it can read `connected` from context
+function AppLayout({ sidebarOpen, setSidebarOpen, settingsOpen, setSettingsOpen, toasts, onDismissToast }) {
+  const { connected } = useDataStore();
+
+  return (
+    <div className="flex h-screen bg-slate-900 text-slate-100 overflow-hidden">
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+        <Header
+          onMenuClick={() => setSidebarOpen(true)}
+          wsConnected={connected}
+          onSettingsClick={() => setSettingsOpen(true)}
+        />
+
+        <main className="flex-1 overflow-y-auto">
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/signals" element={<SignalsPage />} />
+            <Route path="/portfolio" element={<PortfolioPage />} />
+            <Route path="/market" element={<MarketPage />} />
+            <Route path="/news" element={<NewsPage />} />
+            <Route path="/anomalies" element={<AnomalyPage />} />
+            <Route path="/system" element={<SystemPage />} />
+            <Route path="/options" element={<OptionsChainPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+
+        <StatusBar />
+      </div>
+
+      <NotificationBanner
+        notifications={toasts}
+        onDismiss={onDismissToast}
+      />
+
+      <QuickSettings isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <KeyboardShortcuts setSettingsOpen={setSettingsOpen} />
+    </div>
+  );
+}
+
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -77,17 +122,19 @@ export default function App() {
   const addToast = useCallback((toast) => {
     const id = Date.now() + Math.random();
     setToasts((prev) => [...prev, { ...toast, id }]);
-    // Auto-dismiss after 30 seconds
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 30_000);
   }, []);
 
-  const handleWsMessage = useCallback((message) => {
+  const onDismissToast = useCallback((id) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
+
+  // Handles non-price WS events forwarded from DataStoreProvider
+  const handleExternalEvent = useCallback((message) => {
     if (message.type === 'signal') {
       const { index_id, signal_type, confidence, entry } = message.data;
       const emoji = signal_type === 'BUY_CALL' ? '\u{1F7E2}' : '\u{1F534}';
-      const title = `${emoji} ${signal_type} \u2014 ${index_id}`;
+      const title = `${emoji} ${signal_type} — ${index_id}`;
       const body = `Confidence: ${confidence} | Entry: ${Number(entry).toLocaleString('en-IN')}`;
 
       notify({ title, body, priority: 'CRITICAL', sound: true });
@@ -101,9 +148,9 @@ export default function App() {
 
     if (message.type === 'position_exit') {
       const { index_id, outcome, pnl } = message.data;
-      const emoji = outcome === 'WIN' ? '\u2705' : '\u274C';
-      const title = `${emoji} Position Closed \u2014 ${index_id}`;
-      const body = `P&L: \u20B9${Number(pnl).toLocaleString('en-IN')}`;
+      const emoji = outcome === 'WIN' ? '✅' : '❌';
+      const title = `${emoji} Position Closed — ${index_id}`;
+      const body = `P&L: ₹${Number(pnl).toLocaleString('en-IN')}`;
 
       notify({ title, body, priority: 'HIGH', sound: true });
       addToast({
@@ -127,46 +174,18 @@ export default function App() {
     }
   }, [notify, addToast]);
 
-  const { connected } = useWebSocket(handleWsMessage);
-
   return (
     <BrowserRouter>
-      <div className="flex h-screen bg-slate-900 text-slate-100 overflow-hidden">
-        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-
-        <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-          <Header
-            onMenuClick={() => setSidebarOpen(true)}
-            wsConnected={connected}
-            onSettingsClick={() => setSettingsOpen(true)}
-          />
-
-          <main className="flex-1 overflow-y-auto">
-            <DataStoreProvider>
-              <Routes>
-                <Route path="/" element={<DashboardPage />} />
-                <Route path="/signals" element={<SignalsPage />} />
-                <Route path="/portfolio" element={<PortfolioPage />} />
-                <Route path="/market" element={<MarketPage />} />
-                <Route path="/news" element={<NewsPage />} />
-                <Route path="/anomalies" element={<AnomalyPage />} />
-                <Route path="/system" element={<SystemPage />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
-            </DataStoreProvider>
-          </main>
-
-          <StatusBar />
-        </div>
-
-        <NotificationBanner
-          notifications={toasts}
-          onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
+      <DataStoreProvider onExternalEvent={handleExternalEvent}>
+        <AppLayout
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          settingsOpen={settingsOpen}
+          setSettingsOpen={setSettingsOpen}
+          toasts={toasts}
+          onDismissToast={onDismissToast}
         />
-
-        <QuickSettings isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
-        <KeyboardShortcuts setSettingsOpen={setSettingsOpen} />
-      </div>
+      </DataStoreProvider>
     </BrowserRouter>
   );
 }

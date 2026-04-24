@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -99,6 +100,19 @@ def main() -> None:
     logger = logging.getLogger("dss.main")
     logger.info("Trading DSS Data Collector starting (v%s)", _VERSION)
 
+    # ── PID Lock ─────────────────────────────────────────────────────────────
+    pid_path = Path("data/trading_dss.pid")
+    if pid_path.exists():
+        try:
+            old_pid = int(pid_path.read_text().strip())
+            os.kill(old_pid, 0)
+            print(f"\n  ❌ ERROR: Another instance is already running (PID {old_pid})")
+            sys.exit(1)
+        except (OSError, ValueError):
+            pass
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(os.getpid()))
+
     # ── Database ───────────────────────────────────────────────────────────
     try:
         db = get_db_manager()
@@ -138,6 +152,8 @@ def main() -> None:
         logger.info("Shutdown signal received — waiting for running jobs to finish…")
         collector.stop()
         db.close()
+        if pid_path.exists():
+            pid_path.unlink()
         logger.info("Goodbye.")
         sys.exit(0)
 

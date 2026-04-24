@@ -1,18 +1,21 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, TrendingUp, Briefcase, BarChart2,
-  Newspaper, AlertTriangle, Activity, X,
+  Newspaper, AlertTriangle, Activity, X, LineChart,
 } from 'lucide-react';
 
+
 const NAV = [
-  { to: '/',          icon: LayoutDashboard, label: 'Dashboard',  end: true },
+  { to: '/',          icon: LayoutDashboard, label: 'Dashboard',      end: true },
   { to: '/signals',   icon: TrendingUp,      label: 'Signals' },
   { to: '/portfolio', icon: Briefcase,        label: 'Portfolio' },
   { to: '/market',    icon: BarChart2,        label: 'Market' },
+  { to: '/options',   icon: LineChart,        label: 'Options Chain' },
   { to: '/news',      icon: Newspaper,        label: 'News' },
   { to: '/anomalies', icon: AlertTriangle,    label: 'Anomalies' },
   { to: '/system',    icon: Activity,         label: 'System' },
 ];
+
 
 export default function Sidebar({ open, onClose }) {
   return (

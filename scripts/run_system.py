@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -208,6 +209,10 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument(
+        "--pid-file", default="data/trading_dss.pid",
+        help="Path to PID file to prevent multiple instances (default: data/trading_dss.pid)",
+    )
+    parser.add_argument(
         "--no-telegram", action="store_true",
         help="Skip Telegram bot even if configured",
     )
@@ -273,6 +278,23 @@ def main() -> None:
 
     # ── Logging ──────────────────────────────────────────────────────────────
     _setup_logging(debug=args.debug)
+
+    # ── PID Lock ─────────────────────────────────────────────────────────────
+    pid_path = Path(args.pid_file)
+    if pid_path.exists():
+        try:
+            old_pid = int(pid_path.read_text().strip())
+            # Check if process is actually running
+            os.kill(old_pid, 0)
+            print(f"\n  ❌ ERROR: Another instance is already running (PID {old_pid})")
+            print(f"  If you are sure it's not running, delete {args.pid_file} and retry.")
+            sys.exit(1)
+        except (OSError, ValueError):
+            # Process not running or invalid PID file — safe to overwrite
+            pass
+
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(os.getpid()))
 
     # ── Banner ───────────────────────────────────────────────────────────────
     _print_banner(args)
@@ -376,6 +398,14 @@ def main() -> None:
                 set_decision_engine(engine)
             except Exception as exc:
                 logger.warning("Could not wire Decision Engine into API: %s", exc)
+
+        # Wire Decision Engine into DataCollector
+        if "collector" in components and engine is not None:
+            try:
+                components["collector"].set_decision_engine(engine)
+                print("  ✅ Decision Engine wired into Collector")
+            except Exception as exc:
+                logger.error("Could not wire Decision Engine into Collector: %s", exc)
 
         # Overnight news pipeline — runs scheduled off-market jobs and
         # generates the 08:50 IST pre-market intelligence report.
@@ -484,19 +514,16 @@ def main() -> None:
         threads.append(t)
         print("  📡 Data Collector started")
 
-    # Telegram Bot — runs its own polling event loop in a thread.
+    # Telegram Bot — runs its own polling event loop in a thread internally.
     if "telegram" in components:
-        def _run_telegram() -> None:
-            try:
-                components["telegram"].start_bot()
-                logger.info("Telegram Bot polling started")
-            except Exception as exc:
-                logger.error("Telegram Bot crashed: %s", exc, exc_info=True)
-
-        t = threading.Thread(target=_run_telegram, name="TelegramBot", daemon=True)
-        t.start()
-        threads.append(t)
-        print("  🤖 Telegram Bot started")
+        try:
+            components["telegram"].start_bot()
+            if components["telegram"]._thread:
+                # Append the bot's internal thread so the health checker monitors the correct thread
+                threads.append(components["telegram"]._thread)
+            print("  🤖 Telegram Bot started")
+        except Exception as exc:
+            logger.error("Telegram Bot crashed on start: %s", exc, exc_info=True)
 
     # Watchdog — polls component health every 30 s in its own thread.
     if "watchdog" in components:
@@ -592,6 +619,30 @@ def main() -> None:
     # ── Step 5: Running ───────────────────────────────────────────────────────
     print("\n[5/5] System running!")
     _print_status_summary(components, args)
+
+    if "telegram" in components:
+        mode_str = "PAPER TRADING" if not args.collector_only else "DATA COLLECTION ONLY"
+        indices_val = getattr(args, "paper_indices", None)
+        if isinstance(indices_val, (list, tuple)):
+            indices_str = ", ".join(indices_val)
+        else:
+            indices_str = str(indices_val) if indices_val else "ALL"
+        
+        capital_val = getattr(args, "paper_capital", 0)
+        capital_str = f"₹{capital_val:,}" if capital_val else "N/A"
+        
+        msg = (
+            f"🚀 *Trading DSS Online*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Mode: `{mode_str}`\n"
+            f"Indices: `{indices_str}`\n"
+            f"Capital: `{capital_str}`\n"
+            f"Environment: `Production`\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"All sub-systems booted & ready."
+        )
+        components["telegram"].send_message(msg, parse_mode="Markdown")
+
     print("\n  Press Ctrl+C to stop all services.\n")
 
     # ── Graceful shutdown ────────────────────────────────────────────────────
@@ -632,6 +683,12 @@ def main() -> None:
             except Exception:
                 pass
 
+        if pid_path.exists():
+            try:
+                pid_path.unlink()
+            except Exception:
+                pass
+
         print("  ✅ All services stopped gracefully")
         sys.exit(0)
 
@@ -639,19 +696,33 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
 
     # Keep the main thread alive; daemon threads die automatically when this
-    # returns.  Periodically log a warning if any thread died unexpectedly.
+    # returns. Periodically check health and log warnings if any thread died.
     try:
+        last_status_log = 0.0
         while True:
             time.sleep(10)
+            now_time = time.monotonic()
+            
+            # Log full status every 60 seconds
+            if now_time - last_status_log >= 60.0:
+                alive = [t.name for t in threads if t.is_alive()]
+                dead = [t.name for t in threads if not t.is_alive()]
+                logger.info("System Health: %d services active | Dead: %s", len(alive), ", ".join(dead) if dead else "None")
+                last_status_log = now_time
+            
+            # Check for newly dead threads
             for t in threads:
                 if not t.is_alive():
-                    logger.warning(
-                        "Thread '%s' has stopped unexpectedly — "
-                        "check logs for the root cause",
-                        t.name,
-                    )
+                    # Only log warning once per death event (simple implementation)
+                    if not hasattr(t, "_logged_death"):
+                        logger.critical("SERVICE CRITICAL: Thread '%s' has stopped unexpectedly!", t.name)
+                        t._logged_death = True
+
     except KeyboardInterrupt:
         _shutdown(None, None)
+    finally:
+        if pid_path.exists():
+            pid_path.unlink()
 
 
 if __name__ == "__main__":

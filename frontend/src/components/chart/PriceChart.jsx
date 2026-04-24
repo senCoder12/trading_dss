@@ -9,7 +9,7 @@ import { Spinner } from '../common/Spinner';
 const ALL_INDICATOR_IDS = ['ema9', 'ema20', 'ema50', 'ema200', 'bb', 'vwap'];
 
 // Days of history per timeframe
-const DAYS_FOR_TF = { '5m': 3, '15m': 7, '1h': 14, '1d': 120 };
+const DAYS_FOR_TF = { '5m': 7, '15m': 14, '1h': 30, '1d': 120 };
 
 // Polling interval for intraday live update (ms)
 const LIVE_UPDATE_MS = 10_000;

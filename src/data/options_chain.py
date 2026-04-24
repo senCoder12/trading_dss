@@ -35,14 +35,29 @@ class OptionStrike:
     strike_price: float
     ce_oi: int
     ce_oi_change: int
+    ce_oi_change_pct: float
     ce_volume: int
     ce_ltp: float
+    ce_ltp_change: float
+    ce_ltp_change_pct: float
     ce_iv: float
+    ce_bid_price: float
+    ce_bid_qty: int
+    ce_ask_price: float
+    ce_ask_qty: int
+    
     pe_oi: int
     pe_oi_change: int
+    pe_oi_change_pct: float
     pe_volume: int
     pe_ltp: float
+    pe_ltp_change: float
+    pe_ltp_change_pct: float
     pe_iv: float
+    pe_bid_price: float
+    pe_bid_qty: int
+    pe_ask_price: float
+    pe_ask_qty: int
 
 
 @dataclass(frozen=True)
@@ -53,6 +68,8 @@ class OptionsChainData:
     expiry_date: date
     strikes: tuple[OptionStrike, ...]
     available_expiries: tuple[date, ...]
+    total_market_buy_qty: int = 0
+    total_market_sell_qty: int = 0
 
 
 @dataclass(frozen=True)
@@ -113,53 +130,61 @@ class OptionsChainFetcher:
         self._previous_chains: dict[str, list[OptionsChainData]] = {}
 
     def _parse_date(self, date_str: str) -> date:
-        """Parse NSE date format 'dd-MMM-yyyy'."""
+        """Parse NSE date format supporting both 'dd-MMM-yyyy' and 'dd-mm-yyyy'."""
+        if not date_str:
+            return date.today()
+        # Try 'dd-MMM-yyyy' (e.g. 23-Apr-2026)
         try:
             return datetime.strptime(date_str, "%d-%b-%Y").date()
         except ValueError:
-            logger.warning(f"Failed to parse date string: {date_str}")
+            pass
+        # Try 'dd-mm-yyyy' (e.g. 23-04-2026)
+        try:
+            return datetime.strptime(date_str, "%d-%m-%Y").date()
+        except ValueError:
+            logger.warning(f"Failed to parse date string with known formats: {date_str}")
             return date.today()
 
-    def fetch_raw_chain(self, option_symbol: str) -> Optional[dict]:
+    def fetch_raw_chain(self, option_symbol: str, expiry: Optional[str] = None) -> Optional[dict]:
         """
         Hit NSE option chain API and return the raw parsed JSON response.
-
-        Validates that *option_symbol* belongs to an F&O-enabled index before
-        making a network call.  Caches the raw response for 60 seconds.
         """
         registry = get_registry()
-        # Check by option_symbol field across all F&O indices
         fo_symbols = {
             idx.option_symbol.upper()
             for idx in registry.get_indices_with_options()
             if idx.option_symbol
         }
         if option_symbol.upper() not in fo_symbols:
-            logger.warning(
-                "fetch_raw_chain: %r is not an F&O-enabled index (known: %s)",
-                option_symbol,
-                sorted(fo_symbols),
-            )
             return None
 
-        cache_key = f"nse:option_chain:{option_symbol.upper()}"
-        raw = self._scraper._call(
-            "/api/option-chain-indices",
-            params={"symbol": option_symbol},
-            cache_key=cache_key,
-            cache_ttl=60,
-        )
+        # 1. Get Expiry metadata if not provided
+        meta = self._scraper.get_option_chain_meta(option_symbol)
+        expiry_candidates = meta.get("expiryDates", []) if meta else []
+        
+        target_expiry = expiry
+        if not target_expiry and expiry_candidates:
+            target_expiry = expiry_candidates[0]
+
+        # 2. Fetch using v3 with target expiry
+        def fetch_v3(exp):
+            cache_key = f"nse:option_chain_v3:{option_symbol.upper()}:{exp}"
+            return self._scraper.get_option_chain_v3(
+                symbol=option_symbol, expiry=exp, cache_key=cache_key, cache_ttl=60
+            )
+
+        raw = None
+        if target_expiry:
+            raw = fetch_v3(target_expiry)
+        
+        # 3. If first attempt returns 0 data, try the next candidate
+        if (not raw or not raw.get("records", {}).get("data")) and len(expiry_candidates) > 1:
+            next_exp = expiry_candidates[1]
+            logger.info("First expiry (%s) returned 0 data for %s, trying %s...", target_expiry, option_symbol, next_exp)
+            raw = fetch_v3(next_exp)
+
         if raw:
             freshness_tracker.update("options_chain")
-        else:
-            # NSE's options-chain endpoint returns HTTP 200 with an empty
-            # {} outside market hours. Surface this so "no chain" doesn't
-            # look like a bug when inspecting logs.
-            logger.debug(
-                "Options chain API returned empty for %s "
-                "(NSE likely closed or symbol not yet tradable)",
-                option_symbol,
-            )
         return raw
 
     def get_options_chain(
@@ -169,9 +194,22 @@ class OptionsChainFetcher:
         Parse raw options chain into structured OptionsChainData.
         Defaults to nearest expiry if expiry_date is None.
         """
-        raw = self.fetch_raw_chain(option_symbol)
+        target_expiry_str = None
+        if expiry_date:
+             # Normalize to NSE format for the API call
+             target_expiry_str = expiry_date.strftime("%d-%b-%Y").lstrip("0")
+
+        raw = self.fetch_raw_chain(option_symbol, expiry=target_expiry_str)
         if not raw:
             return None
+
+        # Resolve canonical index_id for DB foreign keys (e.g. NIFTY -> NIFTY50)
+        from src.data.index_registry import get_registry
+        registry = get_registry()
+        canonical_id = option_symbol
+        idx_info = registry.get_index_by_option_symbol(option_symbol)
+        if idx_info:
+            canonical_id = idx_info.id
 
         result = validate_options_chain(raw, symbol=option_symbol)
         if not result.is_valid:
@@ -195,29 +233,54 @@ class OptionsChainFetcher:
         target_expiry_str_alt = target_expiry.strftime("%d-%b-%Y")
         
         raw_data = records.get("data", [])
+        total_market_buy_qty = 0
+        total_market_sell_qty = 0
         
         strikes: list[OptionStrike] = []
         for item in raw_data:
-            expiry_val = item.get("expiryDate")
-            if expiry_val not in (target_expiry_str, target_expiry_str_alt):
+            expiry_val_str = item.get("expiryDate") or item.get("CE", {}).get("expiryDate") or item.get("PE", {}).get("expiryDate")
+            if not expiry_val_str:
+                continue
+            
+            expiry_val = self._parse_date(expiry_val_str)
+            if expiry_val != target_expiry:
                 continue
 
             strike_price = float(item.get("strikePrice", 0.0))
             ce = item.get("CE", {})
             pe = item.get("PE", {})
 
+            # Aggregate market quantities (v3 structure has these per strike usually, but we sum them)
+            total_market_buy_qty += int(ce.get("totalBuyQuantity", 0)) + int(pe.get("totalBuyQuantity", 0))
+            total_market_sell_qty += int(ce.get("totalSellQuantity", 0)) + int(pe.get("totalSellQuantity", 0))
+
             strikes.append(OptionStrike(
                 strike_price=strike_price,
                 ce_oi=int(ce.get("openInterest", 0)),
                 ce_oi_change=int(ce.get("changeinOpenInterest", 0)),
+                ce_oi_change_pct=float(ce.get("pchangeinOpenInterest", 0.0)),
                 ce_volume=int(ce.get("totalTradedVolume", 0)),
                 ce_ltp=float(ce.get("lastPrice", 0.0)),
+                ce_ltp_change=float(ce.get("change", 0.0)),
+                ce_ltp_change_pct=float(ce.get("pChange", 0.0)),
                 ce_iv=float(ce.get("impliedVolatility", 0.0)),
+                ce_bid_price=float(ce.get("bidprice", 0.0)),
+                ce_bid_qty=int(ce.get("bidQty", 0)),
+                ce_ask_price=float(ce.get("askPrice", 0.0)),
+                ce_ask_qty=int(ce.get("askQty", 0)),
+                
                 pe_oi=int(pe.get("openInterest", 0)),
                 pe_oi_change=int(pe.get("changeinOpenInterest", 0)),
+                pe_oi_change_pct=float(pe.get("pchangeinOpenInterest", 0.0)),
                 pe_volume=int(pe.get("totalTradedVolume", 0)),
                 pe_ltp=float(pe.get("lastPrice", 0.0)),
+                pe_ltp_change=float(pe.get("change", 0.0)),
+                pe_ltp_change_pct=float(pe.get("pChange", 0.0)),
                 pe_iv=float(pe.get("impliedVolatility", 0.0)),
+                pe_bid_price=float(pe.get("bidprice", 0.0)),
+                pe_bid_qty=int(pe.get("bidQty", 0)),
+                pe_ask_price=float(pe.get("askPrice", 0.0)),
+                pe_ask_qty=int(pe.get("askQty", 0)),
             ))
 
         strikes.sort(key=lambda s: s.strike_price)
@@ -226,12 +289,14 @@ class OptionsChainFetcher:
         fetch_ts = datetime.now(tz=_IST)
 
         chain_data = OptionsChainData(
-            index_id=option_symbol,
+            index_id=canonical_id,
             spot_price=spot_price,
             timestamp=fetch_ts,
             expiry_date=target_expiry,
             strikes=tuple(strikes),
             available_expiries=tuple(available_expiries),
+            total_market_buy_qty=total_market_buy_qty,
+            total_market_sell_qty=total_market_sell_qty,
         )
 
         # Retain last 2 snapshots in memory for diff calculations
@@ -443,18 +508,20 @@ class OptionsChainFetcher:
 
         # 1. Insert options_chain_snapshot
         snapshot_records = []
-        for strike in chain_data.strikes:
+        for s in chain_data.strikes:
             # CE
             snapshot_records.append((
-                chain_data.index_id, ts, exp_str, strike.strike_price, "CE",
-                strike.ce_oi, strike.ce_oi_change, strike.ce_volume,
-                strike.ce_ltp, strike.ce_iv, 0.0, 0.0  # bid/ask not captured yet
+                chain_data.index_id, ts, exp_str, s.strike_price, "CE",
+                s.ce_oi, s.ce_oi_change, s.ce_oi_change_pct, s.ce_volume,
+                s.ce_ltp, s.ce_ltp_change, s.ce_ltp_change_pct, s.ce_iv,
+                s.ce_bid_price, s.ce_bid_qty, s.ce_ask_price, s.ce_ask_qty
             ))
             # PE
             snapshot_records.append((
-                chain_data.index_id, ts, exp_str, strike.strike_price, "PE",
-                strike.pe_oi, strike.pe_oi_change, strike.pe_volume,
-                strike.pe_ltp, strike.pe_iv, 0.0, 0.0
+                chain_data.index_id, ts, exp_str, s.strike_price, "PE",
+                s.pe_oi, s.pe_oi_change, s.pe_oi_change_pct, s.pe_volume,
+                s.pe_ltp, s.pe_ltp_change, s.pe_ltp_change_pct, s.pe_iv,
+                s.pe_bid_price, s.pe_bid_qty, s.pe_ask_price, s.pe_ask_qty
             ))
 
         if snapshot_records:

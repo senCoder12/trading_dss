@@ -365,6 +365,14 @@ class IndexRegistry:
         """Return active indices that have options (weekly or monthly)."""
         return [i for i in self.get_active_indices() if i.has_options]
 
+    def get_index_by_option_symbol(self, option_symbol: str) -> Optional[Index]:
+        """Return the Index matching the given option_symbol (e.g. 'NIFTY')."""
+        sym = option_symbol.upper()
+        for idx in self.get_active_indices():
+            if idx.option_symbol and idx.option_symbol.upper() == sym:
+                return idx
+        return None
+
     def get_indices_by_sector(self, sector_category: str) -> list[Index]:
         """
         Return active indices matching *sector_category*.

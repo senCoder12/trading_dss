@@ -13,9 +13,13 @@ from typing import Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
 
 # Project root — two levels up from this file (config/settings.py)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Load .env file explicitly so that nested pydantic-settings models can read them
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class MarketHoursSettings(BaseSettings):
@@ -57,12 +61,13 @@ class RateLimitSettings(BaseSettings):
 class PollingSettings(BaseSettings):
     """Data refresh intervals in seconds."""
 
-    price_interval: int = Field(default=60, ge=15, description="Spot price refresh interval (s)")
+    price_interval: int = Field(default=45, ge=15, description="Spot price refresh interval (s)")
     options_interval: int = Field(default=180, ge=60, description="Options chain refresh interval (s)")
-    news_interval: int = Field(default=120, ge=60, description="News/RSS refresh interval (s)")
+    news_interval: int = Field(default=180, ge=60, description="News/RSS refresh interval (s)")
     fii_dii_interval: int = Field(default=900, ge=300, description="FII/DII data refresh interval (s)")
     vix_interval: int = Field(default=60, ge=15, description="VIX refresh interval (s)")
-    technical_interval: int = Field(default=300, ge=60, description="Technical indicator recompute interval (s)")
+    technical_interval: int = Field(default=180, ge=60, description="Technical indicator recompute interval (s)")
+    decision_interval: int = Field(default=180, ge=60, description="Decision engine cycle interval (s)")
 
     model_config = {"env_prefix": "POLL_", "extra": "ignore"}
 
@@ -246,6 +251,26 @@ class LoggingSettings(BaseSettings):
     model_config = {"env_prefix": "LOG_", "extra": "ignore"}
 
 
+class BrokerSettings(BaseSettings):
+    """Broker API configuration. Credentials loaded from .env without any prefix."""
+
+    use_broker_api: bool = Field(default=False, description="Master switch — False = use NSE scraper")
+    broker_provider: str = Field(default="angel_one", description="angel_one | zerodha | upstox")
+
+    # Angel One SmartAPI credentials
+    angel_one_api_key: str = Field(default="", description="SmartAPI key from smartapi.angelbroking.com")
+    angel_one_client_id: str = Field(default="", description="Angel One client/login ID")
+    angel_one_password: str = Field(default="", description="Angel One login password")
+    angel_one_totp_secret: str = Field(default="", description="TOTP secret for 2FA (from Profile → Settings)")
+
+    # WebSocket behaviour
+    websocket_subscribe_depth: int = Field(default=10, ge=1, le=50, description="Strikes above/below ATM to stream")
+    websocket_reconnect_delay: int = Field(default=5, ge=1, le=60, description="Seconds between reconnect attempts")
+    websocket_heartbeat_interval: int = Field(default=30, ge=10, le=120, description="Heartbeat interval (s)")
+
+    model_config = {"env_prefix": "", "extra": "ignore", "env_file": str(PROJECT_ROOT / ".env")}
+
+
 class Settings(BaseSettings):
     """
     Root application settings.
@@ -289,6 +314,7 @@ class Settings(BaseSettings):
     thresholds: SignalThresholds = Field(default_factory=SignalThresholds)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    broker: BrokerSettings = Field(default_factory=BrokerSettings)
 
     model_config = {
         "env_file": str(PROJECT_ROOT / ".env"),

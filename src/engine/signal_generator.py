@@ -174,15 +174,15 @@ class SignalDeduplicator:
     the duplicate is suppressed.
     """
 
-    def __init__(self, window_seconds: int = 300) -> None:
+    def __init__(self, window_seconds: int = 180) -> None:
         self.window_seconds = window_seconds
         self._recent_signals: dict[str, datetime] = {}
         self._lock = threading.Lock()
 
     def _make_key(self, index_id: str, signal_type: str, timestamp: datetime) -> str:
-        """Create dedup key. Buckets time into 5-minute windows."""
+        """Create dedup key. Buckets time into 3-minute windows."""
         bucket = timestamp.replace(
-            minute=(timestamp.minute // 5) * 5,
+            minute=(timestamp.minute // 3) * 3,
             second=0, microsecond=0,
         )
         return f"{index_id}_{signal_type}_{bucket.isoformat()}"
@@ -306,6 +306,7 @@ class SignalGenerator:
             index_id, current_spot_price, technical, news, anomaly, regime, now, warnings,
         )
         if no_trade is not None:
+            print(f"DEBUG: {index_id} safety check failed: {no_trade.reasoning}")
             return no_trade
 
         # ── Step 2: Collect All Votes ──────────────────────────────────
@@ -326,6 +327,23 @@ class SignalGenerator:
 
         # ── Step 4: Direction ──────────────────────────────────────────
         direction = self._determine_direction(weighted_score)
+
+        # ── HERO_ZERO Detection ────────────────────────────────────────
+        is_expiry_day = (technical.options and technical.options.days_to_expiry == 0)
+        is_afternoon = now.hour >= 13 and (now.hour > 13 or now.minute >= 30)
+        is_hero_zero_candidate = is_expiry_day and is_afternoon
+        
+        print(f"DEBUG: {index_id} at {now.strftime('%H:%M')} | score={weighted_score:.2f} | dir={direction} | HZ_cand={is_hero_zero_candidate}")
+
+        if is_hero_zero_candidate and direction == "NO_TRADE":
+            # For Hero Zero, we use more aggressive thresholds (from 0.40 down to 0.25)
+            # as these are momentum-chasing trades.
+            if weighted_score > 0.25:
+                direction = "BUY_CALL"
+                warnings.append("HERO_ZERO_CANDIDATE: Bullish momentum on expiry afternoon")
+            elif weighted_score < -0.25:
+                direction = "BUY_PUT"
+                warnings.append("HERO_ZERO_CANDIDATE: Bearish momentum on expiry afternoon")
 
         # Apply gap-fill only when the primary signal is indeterminate or weak
         if direction == "NO_TRADE" or abs(weighted_score) < 1.0:
@@ -438,8 +456,7 @@ class SignalGenerator:
             technical, news, anomaly, regime, signal, votes,
         )
 
-        # Persist & cache
-        self._save_signal(signal, technical, news, anomaly)
+        # Cache only — persistence is handled by DecisionEngine via SignalTracker
         self._today_signals.setdefault(index_id, []).append(signal)
 
         logger.info(
@@ -511,9 +528,14 @@ class SignalGenerator:
             )
 
         # Near market close (< 30 minutes until 15:30 IST)
-        if self._is_near_market_close(now, minutes=30):
+        # RELAXED for Hero Zero candidates until 15:20 (10 mins before close)
+        is_hero_zero = any("HERO_ZERO" in w for w in warnings)
+        limit_mins = 10 if is_hero_zero else 30
+        
+        if self._is_near_market_close(now, minutes=limit_mins):
+            msg = f"Too close to market close (< {limit_mins} min) — no new entries"
             return self._make_no_trade(
-                index_id, now, "Too close to market close (< 30 min) — no new entries",
+                index_id, now, msg,
                 regime, technical, news, anomaly, warnings,
             )
 

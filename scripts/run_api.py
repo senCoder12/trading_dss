@@ -31,13 +31,31 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    uvicorn.run(
-        "src.api.app:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level=settings.logging.level.lower(),
-    )
+    # ── PID Lock ─────────────────────────────────────────────────────────────
+    import os
+    pid_path = Path("data/trading_dss.pid")
+    if pid_path.exists():
+        try:
+            old_pid = int(pid_path.read_text().strip())
+            os.kill(old_pid, 0)
+            print(f"\n  ❌ ERROR: Another instance is already running (PID {old_pid})")
+            sys.exit(1)
+        except (OSError, ValueError):
+            pass
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(os.getpid()))
+
+    try:
+        uvicorn.run(
+            "src.api.app:app",
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level=settings.logging.level.lower(),
+        )
+    finally:
+        if pid_path.exists():
+            pid_path.unlink()
 
 
 if __name__ == "__main__":

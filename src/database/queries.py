@@ -94,7 +94,7 @@ ON CONFLICT(index_id, timestamp, timeframe) DO UPDATE SET
 
 GET_LATEST_PRICE = """
 SELECT * FROM price_data
-WHERE index_id = ? AND timeframe = ?
+WHERE index_id = ? AND timeframe = ? AND timestamp <= ?
 ORDER BY timestamp DESC
 LIMIT 1
 """
@@ -116,7 +116,7 @@ ORDER BY timestamp ASC
 
 LIST_PRICE_HISTORY_LIMIT = """
 SELECT * FROM price_data
-WHERE index_id = ? AND timeframe = ?
+WHERE index_id = ? AND timeframe = ? AND timestamp <= ?
 ORDER BY timestamp DESC
 LIMIT ?
 """
@@ -156,27 +156,35 @@ WHERE timestamp < ? AND timeframe != '1d'
 INSERT_OPTIONS_CHAIN = """
 INSERT INTO options_chain_snapshot
     (index_id, timestamp, expiry_date, strike_price, option_type,
-     open_interest, oi_change, volume, ltp, iv, bid_price, ask_price)
+     open_interest, oi_change, oi_change_pct, volume, 
+     ltp, ltp_change, ltp_change_pct, iv, 
+     bid_price, bid_qty, ask_price, ask_qty)
 VALUES
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(index_id, timestamp, expiry_date, strike_price, option_type)
 DO UPDATE SET
-    open_interest = excluded.open_interest,
-    oi_change     = excluded.oi_change,
-    volume        = excluded.volume,
-    ltp           = excluded.ltp,
-    iv            = excluded.iv,
-    bid_price     = excluded.bid_price,
-    ask_price     = excluded.ask_price
+    open_interest  = excluded.open_interest,
+    oi_change      = excluded.oi_change,
+    oi_change_pct  = excluded.oi_change_pct,
+    volume         = excluded.volume,
+    ltp            = excluded.ltp,
+    ltp_change     = excluded.ltp_change,
+    ltp_change_pct = excluded.ltp_change_pct,
+    iv             = excluded.iv,
+    bid_price      = excluded.bid_price,
+    bid_qty        = excluded.bid_qty,
+    ask_price      = excluded.ask_price,
+    ask_qty        = excluded.ask_qty
 """
 
 LIST_OPTIONS_CHAIN_FOR_EXPIRY = """
 SELECT * FROM options_chain_snapshot
 WHERE index_id = ?
   AND expiry_date = ?
+  AND timestamp <= ?
   AND timestamp = (
       SELECT MAX(timestamp) FROM options_chain_snapshot
-      WHERE index_id = ? AND expiry_date = ?
+      WHERE index_id = ? AND expiry_date = ? AND timestamp <= ?
   )
 ORDER BY strike_price ASC, option_type ASC
 """
@@ -221,7 +229,7 @@ VALUES
 
 GET_LATEST_OI_AGGREGATED = """
 SELECT * FROM oi_aggregated
-WHERE index_id = ? AND expiry_date = ?
+WHERE index_id = ? AND expiry_date = ? AND timestamp <= ?
 ORDER BY timestamp DESC
 LIMIT 1
 """

@@ -33,6 +33,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config.constants import IST_TIMEZONE
 from config.settings import settings
 from src.data.bse_scraper import BSEScraper
+from src.data.data_router import DataRouter
 from src.data.data_validator import validate_price_data
 from src.data.fii_dii_data import FIIDIIFetcher
 from src.data.historical_data import HistoricalDataManager
@@ -88,14 +89,20 @@ class DataCollector:
         self._nse_limiter = GlobalRateLimiter.get("nseindia.com", max_requests=25, window_seconds=60)
         self.nse_scraper = NSEScraper(rate_limiter=self._nse_limiter)
         self.bse_scraper = BSEScraper()
+
+        # DataRouter: uses Angel One WebSocket when configured, otherwise wraps nse_scraper
+        self.data_router = DataRouter(db=self.db, registry=self.registry, dry_run=self.dry_run)
+        logger.info("DataRouter source: %s", self.data_router.get_data_source())
         self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper)
         self.historical_manager = HistoricalDataManager(registry=self.registry, db=self.db)
         self.fii_dii_fetcher = FIIDIIFetcher(scraper=self.nse_scraper)
         self.vix_tracker = VIXTracker(scraper=self.nse_scraper)
+        from src.analysis.news.news_engine import NewsEngine
+        self.news_engine = NewsEngine(self.db)
 
-        # Overnight news engine — wired lazily via set_overnight_engine().
-        # The pre-market Telegram dispatch is wired via set_telegram_bot().
+        # Wired lazily via set_overnight_engine() and set_decision_engine()
         self.overnight_engine: Any = None
+        self.decision_engine: Any = None
         self.telegram_bot: Any = None
 
         self.scheduler = BackgroundScheduler(timezone=_IST)
@@ -123,18 +130,20 @@ class DataCollector:
         self.scheduler.add_job(
             self.collect_index_prices,
             trigger=IntervalTrigger(seconds=p.price_interval, timezone=_IST),
-            id="collect_index_prices",
-            name="Collect Index Prices",
+            id="collect_prices",
+            name="NSE Index Prices",
             max_instances=1,
             coalesce=True,
+            next_run_time=datetime.now(),
         )
         self.scheduler.add_job(
             self.collect_options_chain,
             trigger=IntervalTrigger(seconds=p.options_interval, timezone=_IST),
-            id="collect_options_chain",
-            name="Collect Options Chain",
+            id="collect_options",
+            name="NSE Options Chain",
             max_instances=1,
             coalesce=True,
+            next_run_time=datetime.now(),
         )
         self.scheduler.add_job(
             self.collect_vix,
@@ -143,6 +152,15 @@ class DataCollector:
             name="Collect VIX Data",
             max_instances=1,
             coalesce=True,
+        )
+        self.scheduler.add_job(
+            self._collect_news,
+            trigger=IntervalTrigger(seconds=p.news_interval, timezone=_IST),
+            id="collect_news",
+            name="Collect and Analyze News",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(),
         )
         self.scheduler.add_job(
             self.collect_technical_indicators,
@@ -157,6 +175,22 @@ class DataCollector:
             trigger=IntervalTrigger(seconds=300, timezone=_IST),
             id="health_check",
             name="System Health Check",
+            max_instances=1,
+            coalesce=True,
+        )
+        self.scheduler.add_job(
+            self._run_decision_cycle,
+            trigger=IntervalTrigger(seconds=p.decision_interval if hasattr(p, "decision_interval") else 300, timezone=_IST),
+            id="decision_cycle",
+            name="Run Decision Engine Cycle",
+            max_instances=1,
+            coalesce=True,
+        )
+        self.scheduler.add_job(
+            self._monitor_positions,
+            trigger=IntervalTrigger(seconds=60, timezone=_IST),
+            id="monitor_positions",
+            name="Monitor Open Positions",
             max_instances=1,
             coalesce=True,
         )
@@ -242,6 +276,14 @@ class DataCollector:
         """
         self.overnight_engine = engine
         logger.info("DataCollector: overnight engine wired in")
+
+    def set_decision_engine(self, engine: Any) -> None:
+        """Wire in a :class:`DecisionEngine` instance.
+
+        The decision cycle jobs become active as soon as this is set.
+        """
+        self.decision_engine = engine
+        logger.info("DataCollector: decision engine wired in")
 
     def set_telegram_bot(self, bot: Any) -> None:
         """Wire in the Telegram bot used for pre-market report dispatch."""
@@ -344,6 +386,51 @@ class DataCollector:
         except Exception:
             logger.exception("Overnight: send_report job failed")
 
+    def _collect_news(self) -> None:
+        """Fetch, parse, and analyze news articles from all active RSS feeds."""
+        logger.info("Starting news collection cycle...")
+        if not self._should_run():
+            return
+        try:
+            result = self.news_engine.run_news_cycle()
+            logger.info(
+                "News cycle: %d new articles, %d alerts",
+                result.articles_new, len(result.alerts),
+            )
+            # Dispatch critical alerts to Telegram
+            if self.telegram_bot is not None:
+                for alert in result.alerts:
+                    if alert.severity in ("CRITICAL", "HIGH"):
+                        self.telegram_bot.send_alert(alert.message)
+        except Exception as exc:
+            logger.error("News collection failed: %s", exc)
+
+    def _run_decision_cycle(self) -> None:
+        """Scheduled task: Run full decision cycle for all indices."""
+        if self.decision_engine is None or not self._should_run():
+            return
+
+        logger.info("Starting scheduled decision cycle...")
+        try:
+            results = self.decision_engine.run_all_indices()
+            actionable = [r for r in results if r.is_actionable]
+            if actionable and self.telegram_bot:
+                for res in actionable:
+                    self.telegram_bot.send_alert(res.alert_message, priority="HIGH")
+            logger.info("Decision cycle complete: %d signals, %d actionable", len(results), len(actionable))
+        except Exception as exc:
+            logger.error("Decision cycle failed: %s", exc, exc_info=True)
+
+    def _monitor_positions(self) -> None:
+        """Scheduled task: Monitor open positions for SL/Targets."""
+        if self.decision_engine is None or not self._should_run():
+            return
+
+        try:
+            self.decision_engine.monitor_open_positions()
+        except Exception as exc:
+            logger.error("Position monitoring failed: %s", exc)
+
     # ── Failure / recovery helpers ─────────────────────────────────────────
 
     def _handle_failure(self, component: str, exc: Exception) -> None:
@@ -381,7 +468,7 @@ class DataCollector:
         if self.force_start:
             return True
         status = self.market_hours.get_market_status()
-        return bool(status.get("status") == "open")
+        return bool(status.get("status") in ("open", "pre_market"))
 
     # ── Job definitions ────────────────────────────────────────────────────
 
@@ -406,11 +493,33 @@ class DataCollector:
         Every ``price_interval`` seconds — fetch all NSE indices in one call,
         validate, and batch-upsert into ``price_data``.
 
-        Falls back to BSE if NSE returns nothing.
+        When the broker WebSocket is active, ticks are written to DB in real time
+        by DataRouter._handle_tick().  This job then becomes a lightweight health
+        probe that verifies the feed is flowing.
+
+        Falls back to BSE scraper if NSE returns nothing in polling mode.
         """
         if not self._should_run():
             return
 
+        # ── WebSocket / broker mode ────────────────────────────────────────
+        if self.data_router.is_using_broker_api():
+            try:
+                now = datetime.now(tz=_IST)
+                live = self.data_router.get_all_prices()
+                logger.debug(
+                    "WebSocket feed active: %d instruments live (%s)",
+                    len(live),
+                    self.data_router.get_data_source(),
+                )
+                if live:
+                    self.health_status["last_successful_price_fetch"] = now
+                    self._reset_failure("nse")
+            except Exception as exc:
+                self._handle_failure("nse", exc)
+            return
+
+        # ── Scraper / polling mode (original logic) ────────────────────────
         try:
             now = datetime.now(tz=_IST)
             try:
@@ -515,6 +624,14 @@ class DataCollector:
 
                     if not self.dry_run:
                         self.options_fetcher.save_to_db(chain, self.db)
+                        # ── WebSocket broadcast ────────────────────────────
+                        from src.api.websocket import queue_event
+                        queue_event("options_update", {
+                            "index_id": idx.id,
+                            "expiry_date": chain.expiry_date,
+                            "timestamp": chain.timestamp,
+                        })
+
 
                     # ── OI buildup / spike detection ──────────────────────
                     # NOTE: Spike detection runs here but persistence is
@@ -787,7 +904,7 @@ class DataCollector:
         # until the next day. Trigger them once on startup so the DB is
         # current — matches what an operator expects from --force-start.
         if self.force_start:
-            for job_id in ("collect_fii_dii", "update_historical", "collect_technical_indicators"):
+            for job_id in ("collect_fii_dii", "update_historical", "collect_technical_indicators", "decision_cycle"):
                 try:
                     self.force_run(job_id)
                 except Exception:
@@ -797,6 +914,7 @@ class DataCollector:
         """Graceful shutdown — wait for any running jobs to complete."""
         logger.info("Shutting down DataCollector…")
         self.scheduler.shutdown(wait=True)
+        self.data_router.stop()
         logger.info("Data collector shut down gracefully")
 
     def pause(self) -> None:

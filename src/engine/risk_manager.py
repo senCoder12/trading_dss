@@ -436,11 +436,14 @@ class RiskManager:
 
         # --- Step 0: time gate -------------------------------------------
         now = _now if _now is not None else datetime.now(tz=_IST)
-        if self._is_near_close(now, self.config.no_entry_after_minutes_before_close):
+        
+        is_hero_zero = any("HERO_ZERO" in w for w in refined.warnings)
+        minutes_limit = 10 if is_hero_zero else self.config.no_entry_after_minutes_before_close
+        
+        if self._is_near_close(now, minutes_limit):
             refined.is_valid = False
             refined.rejection_reasons.append(
-                f"No new entries within {self.config.no_entry_after_minutes_before_close} "
-                "minutes of market close"
+                f"No new entries within {minutes_limit} minutes of market close"
             )
             return refined
 
@@ -1173,13 +1176,14 @@ class RiskManager:
         today = date.today()
         expiry = chain.expiry_date
         days_to_expiry = (expiry - today).days
+        is_hero_zero = any("HERO_ZERO" in w for w in refined.warnings)
 
-        if days_to_expiry < 1 and len(chain.available_expiries) > 1:
+        if days_to_expiry < 1 and not is_hero_zero and len(chain.available_expiries) > 1:
             expiry = chain.available_expiries[1]
             refined.adjustments_made.append(
-                f"Expiry day — using next expiry {expiry} instead"
+                f"Expiry day — using next expiry {expiry} instead (non-Hero Zero)"
             )
-        elif refined.confidence_level == "HIGH" and days_to_expiry < 3:
+        elif refined.confidence_level == "HIGH" and days_to_expiry < 3 and not is_hero_zero:
             if len(chain.available_expiries) > 1:
                 expiry = chain.available_expiries[1]
 
@@ -1197,7 +1201,14 @@ class RiskManager:
         atm_strike = min(strike_prices, key=lambda k: abs(k - spot))
         atm_idx = strike_prices.index(atm_strike)
 
-        if refined.confidence_level == "HIGH":
+        if is_hero_zero:
+            # For Hero Zero, we want 2 strikes OTM to catch the gamma burst
+            if is_call:
+                chosen_idx = min(atm_idx + 2, len(strike_prices) - 1)
+            else:
+                chosen_idx = max(atm_idx - 2, 0)
+            refined.adjustments_made.append("HERO_ZERO: Selected 2-strike OTM for gamma potential")
+        elif refined.confidence_level == "HIGH":
             chosen_idx = atm_idx  # ATM for HIGH
         else:
             # 1 OTM for MEDIUM/LOW

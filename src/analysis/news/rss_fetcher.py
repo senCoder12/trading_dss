@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import feedparser
+from curl_cffi import requests
 from tenacity import retry, stop_after_attempt, wait_fixed
 from zoneinfo import ZoneInfo
 
@@ -85,6 +86,8 @@ class RSSFetcher:
             self._feeds_path.read_text(encoding="utf-8")
         )
 
+        self._session = requests.Session(impersonate="chrome131")
+
         # Rate limiter state
         self._rate_limit = rate_limit
         self._request_times: list[float] = []
@@ -133,17 +136,25 @@ class RSSFetcher:
 
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(5), reraise=True)
     def _parse_feed(self, url: str) -> feedparser.FeedParserDict:
-        """Parse an RSS URL with retry.  feedparser handles HTTP internally."""
-        feedparser.USER_AGENT = _USER_AGENT
-        result = feedparser.parse(
-            url,
-            request_headers={"User-Agent": _USER_AGENT},
-        )
-        if result.bozo and not result.entries:
-            raise RuntimeError(
-                f"Feed error: {result.bozo_exception}"
-            )
-        return result
+        """Parse an RSS URL with retry. Uses curl_cffi for fetching."""
+        try:
+            resp = self._session.get(url, timeout=15)
+            resp.raise_for_status()
+            
+            # If the response is HTML, it's likely a redirect or block page
+            if resp.text.strip().startswith("<!DOCTYPE html") or "<html" in resp.text[:200].lower():
+                 raise RuntimeError("Received HTML instead of XML (likely a block or landing page)")
+
+            result = feedparser.parse(resp.content)
+            
+            if result.bozo and not result.entries:
+                raise RuntimeError(
+                    f"Feed parsing error: {result.bozo_exception}"
+                )
+            return result
+        except Exception as exc:
+             # curl_cffi errors are usually curl_cffi.CurlError or subclassed under requests.errors
+             raise RuntimeError(f"HTTP fetch failed: {exc}") from exc
 
     def fetch_feed(self, feed_config: dict) -> list[RawArticle]:
         """

@@ -28,6 +28,63 @@ from src.utils.date_utils import get_ist_now
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+def _fetch_bars(db: DatabaseManager, index_id: str, timeframe: str, since_iso: str, until_iso: str) -> list[dict]:
+    rows = db.fetch_all(Q.LIST_PRICE_HISTORY, (index_id, timeframe, since_iso, until_iso))
+    if rows or timeframe in ("1d", "1m", "5m"):
+        return [dict(r) for r in rows]
+    
+    source_tf = "5m" if timeframe in ("15m", "1h") else "1m"
+    source_rows = db.fetch_all(Q.LIST_PRICE_HISTORY, (index_id, source_tf, since_iso, until_iso))
+    if not source_rows:
+        return []
+        
+    try:
+        import pandas as pd
+        df = pd.DataFrame([dict(r) for r in source_rows])
+        df["dt"] = pd.to_datetime(df["timestamp"])
+        df.set_index("dt", inplace=True)
+
+        has_volume = "volume" in df.columns and df["volume"].notna().any()
+        has_vwap = "vwap" in df.columns and df["vwap"].notna().any()
+
+        agg_dict: dict[str, Any] = {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+        }
+        if has_volume:
+            agg_dict["volume"] = "sum"
+        if has_vwap and has_volume:
+            # Precompute numerator for volume-weighted average price
+            df["_vwap_num"] = df["vwap"] * df["volume"]
+            df["_vwap_vol"] = df["volume"]
+            agg_dict["_vwap_num"] = "sum"
+            agg_dict["_vwap_vol"] = "sum"
+
+        rule = "15min" if timeframe == "15m" else "1h"
+        res = df.resample(rule, label="left", closed="left").agg(agg_dict).dropna(subset=["open"])
+
+        if has_vwap and has_volume and "_vwap_vol" in res.columns:
+            res["vwap"] = (res["_vwap_num"] / res["_vwap_vol"]).where(res["_vwap_vol"] > 0)
+            res.drop(columns=["_vwap_num", "_vwap_vol"], inplace=True)
+        elif has_vwap:
+            # No volume data — fall back to close price as best approximation
+            res["vwap"] = res["close"]
+        
+        out = []
+        for ts, r in res.iterrows():
+            d = r.to_dict()
+            for k, v in d.items():
+                if pd.isna(v):
+                    d[k] = None
+            d["timestamp"] = ts.isoformat()
+            out.append(d)
+        return out
+    except Exception as exc:
+        logger.warning("Failed to resample to %s: %s", timeframe, exc)
+        return []
+
 # ── Simple TTL cache ─────────────────────────────────────────────────────────
 _cache: dict[str, tuple[float, Any]] = {}
 
@@ -56,6 +113,7 @@ class IndexPrice(BaseModel):
     high: Optional[float] = None
     low: Optional[float] = None
     volume: Optional[int] = None
+    prev_close: Optional[float] = None
     updated_at: Optional[str] = None
 
 
@@ -115,6 +173,41 @@ class OptionsResponse(BaseModel):
     top_ce_strikes: list[StrikeOI] = Field(default_factory=list)
     top_pe_strikes: list[StrikeOI] = Field(default_factory=list)
     iv_atm: Optional[float] = None
+    updated_at: Optional[str] = None
+
+
+class OptionStrikeRow(BaseModel):
+    strike: float
+    ce_oi: Optional[int] = None
+    ce_oi_change: Optional[int] = None
+    ce_oi_p_change: Optional[float] = None
+    ce_volume: Optional[int] = None
+    ce_ltp: Optional[float] = None
+    ce_ltp_p_change: Optional[float] = None
+    ce_iv: Optional[float] = None
+    ce_delta: Optional[float] = None
+    pe_oi: Optional[int] = None
+    pe_oi_change: Optional[int] = None
+    pe_oi_p_change: Optional[float] = None
+    pe_volume: Optional[int] = None
+    pe_ltp: Optional[float] = None
+    pe_ltp_p_change: Optional[float] = None
+    pe_iv: Optional[float] = None
+    pe_delta: Optional[float] = None
+    is_atm: bool = False
+
+
+class OptionsChainResponse(BaseModel):
+    index_id: str
+    spot: Optional[float] = None
+    expiry: Optional[str] = None
+    expiries: list[str] = Field(default_factory=list)
+    pcr: Optional[float] = None
+    max_pain: Optional[float] = None
+    total_ce_oi: Optional[int] = None
+    total_pe_oi: Optional[int] = None
+    iv_atm: Optional[float] = None
+    strikes: list[OptionStrikeRow] = Field(default_factory=list)
     updated_at: Optional[str] = None
 
 
@@ -179,6 +272,7 @@ async def get_prices(
             high=row.get("high"),
             low=row.get("low"),
             volume=int(row["volume"]) if row.get("volume") else None,
+            prev_close=prev_close,
             updated_at=row.get("timestamp"),
         ))
 
@@ -248,10 +342,7 @@ async def get_price_history(
     now = get_ist_now()
     since = (now - timedelta(days=days)).isoformat()
 
-    rows = db.fetch_all(
-        Q.LIST_PRICE_HISTORY,
-        (index_id, timeframe, since, now.isoformat()),
-    )
+    rows = _fetch_bars(db, index_id, timeframe, since, now.isoformat())
 
     # Apply offset and limit
     rows = rows[offset: offset + limit]
@@ -315,7 +406,7 @@ async def get_indicators(
     now = get_ist_now()
     since = (now - timedelta(days=days)).isoformat()
 
-    rows = db.fetch_all(Q.LIST_PRICE_HISTORY, (index_id, timeframe, since, now.isoformat()))
+    rows = _fetch_bars(db, index_id, timeframe, since, now.isoformat())
 
     result: dict[str, Any] = {"max_pain": None, "signals": []}
 
@@ -503,6 +594,134 @@ async def get_options_summary(
         top_pe_strikes=[StrikeOI(strike=r["strike"], oi=int(r["oi"])) for r in top_pe if r.get("oi")],
         iv_atm=iv_atm,
         updated_at=oi_row.get("timestamp") if oi_row else None,
+    )
+    return _set_cache(cache_key, result)
+
+
+
+
+@router.get(
+    "/options/{index_id}/chain",
+    response_model=OptionsChainResponse,
+    summary="Full strike-by-strike options chain table",
+)
+async def get_options_chain(
+    index_id: str,
+    expiry: Optional[str] = Query(default=None, description="Expiry date YYYY-MM-DD. Omit for nearest."),
+    db: DatabaseManager = Depends(get_db),
+    registry: IndexRegistry = Depends(get_index_registry),
+):
+    """Return the full options chain table (all strikes, CE + PE) for a given expiry."""
+    index_id = index_id.upper()
+    defn = registry.get_or_none(index_id)
+    if defn is None:
+        raise HTTPException(status_code=404, detail=f"Index not found: {index_id}")
+    if not defn.has_options:
+        raise HTTPException(status_code=400, detail=f"{index_id} does not have options")
+
+    cache_key = f"chain_{index_id}_{expiry or 'nearest'}"
+    cached = _cached(cache_key, ttl=60)
+    if cached:
+        return cached
+
+    expiry_rows = db.fetch_all(Q.LIST_EXPIRY_DATES, (index_id,))
+    today_str = get_ist_now().strftime("%Y-%m-%d")
+    all_expiries = [e["expiry_date"] for e in expiry_rows]
+    future_expiries = [e for e in all_expiries if e >= today_str]
+
+    if not all_expiries:
+        return _set_cache(cache_key, OptionsChainResponse(index_id=index_id, expiries=[]))
+
+    target_expiry = expiry or (future_expiries[0] if future_expiries else all_expiries[-1])
+
+    ts_row = db.fetch_one(
+        "SELECT MAX(timestamp) AS ts FROM options_chain_snapshot WHERE index_id = ? AND expiry_date = ?",
+        (index_id, target_expiry),
+    )
+    latest_ts = ts_row["ts"] if ts_row and ts_row.get("ts") else None
+    if not latest_ts:
+        return _set_cache(cache_key, OptionsChainResponse(
+            index_id=index_id, expiries=future_expiries or all_expiries,
+        ))
+
+    # REMOVED delta from SELECT
+    chain_rows = db.fetch_all(
+        """
+        SELECT strike_price, option_type, open_interest, oi_change, oi_change_pct,
+               volume, ltp, ltp_change_pct, iv, timestamp
+        FROM options_chain_snapshot
+        WHERE index_id = ? AND expiry_date = ? AND timestamp = ?
+        ORDER BY strike_price ASC
+        """,
+        (index_id, target_expiry, latest_ts),
+    )
+
+    price_row = db.fetch_one(Q.GET_LATEST_PRICE_ANY_TF, (index_id,))
+    spot = price_row["close"] if price_row else None
+    
+    oi_row = db.fetch_one(Q.GET_LATEST_OI_AGGREGATED, (index_id, target_expiry, latest_ts))
+
+    strike_map: dict[float, dict] = {}
+    for row in chain_rows:
+        s = float(row["strike_price"])
+        if s not in strike_map:
+            strike_map[s] = {}
+        p = "ce" if row["option_type"] == "CE" else "pe"
+        strike_map[s][f"{p}_oi"]          = int(row["open_interest"]) if row.get("open_interest") else None
+        strike_map[s][f"{p}_oi_change"]   = int(row["oi_change"])     if row.get("oi_change")     else None
+        strike_map[s][f"{p}_oi_p_change"] = round(float(row["oi_change_pct"]), 2) if row.get("oi_change_pct") else None
+        strike_map[s][f"{p}_volume"]      = int(row["volume"])         if row.get("volume")         else None
+        strike_map[s][f"{p}_ltp"]         = round(float(row["ltp"]), 2) if row.get("ltp")          else None
+        strike_map[s][f"{p}_ltp_p_change"]= round(float(row["ltp_change_pct"]), 2) if row.get("ltp_change_pct") else None
+        strike_map[s][f"{p}_iv"]          = round(float(row["iv"]), 2) if row.get("iv")           else None
+
+    atm_strike = min(strike_map.keys(), key=lambda s: abs(s - spot)) if spot and strike_map else None
+
+    strikes_out = []
+    for s in sorted(strike_map.keys()):
+        d = strike_map[s]
+        strikes_out.append(OptionStrikeRow(
+            strike=s,
+            is_atm=(s == atm_strike),
+            ce_oi=d.get("ce_oi"),
+            ce_oi_change=d.get("ce_oi_change"),
+            ce_oi_p_change=d.get("ce_oi_p_change"),
+            ce_volume=d.get("ce_volume"),
+            ce_ltp=d.get("ce_ltp"),
+            ce_ltp_p_change=d.get("ce_ltp_p_change"),
+            ce_iv=d.get("ce_iv"),
+            ce_delta=None,
+            pe_oi=d.get("pe_oi"),
+            pe_oi_change=d.get("pe_oi_change"),
+            pe_oi_p_change=d.get("pe_oi_p_change"),
+            pe_volume=d.get("pe_volume"),
+            pe_ltp=d.get("pe_ltp"),
+            pe_ltp_p_change=d.get("pe_ltp_p_change"),
+            pe_iv=d.get("pe_iv"),
+            pe_delta=None,
+        ))
+
+    total_ce = sum(r.ce_oi for r in strikes_out if r.ce_oi) or 0
+    total_pe = sum(r.pe_oi for r in strikes_out if r.pe_oi) or 0
+    
+    pcr_val = round(total_pe / total_ce, 2) if total_ce > 0 else (
+        round(oi_row["pcr"], 2) if oi_row and oi_row.get("pcr") else None
+    )
+    
+    iv_atm = strike_map.get(atm_strike, {}).get("ce_iv") if atm_strike else None
+
+    result = OptionsChainResponse(
+        index_id=index_id,
+        spot=spot,
+        expiry=target_expiry,
+        expiries=future_expiries or all_expiries,
+        pcr=pcr_val,
+        max_pain=oi_row.get("max_pain_strike") if oi_row else None,
+        total_ce_oi=total_ce if total_ce > 0 else None,
+        total_pe_oi=total_pe if total_pe > 0 else None,
+        iv_atm=iv_atm,
+        strikes=strikes_out,
+        updated_at=latest_ts,
     )
     return _set_cache(cache_key, result)
 

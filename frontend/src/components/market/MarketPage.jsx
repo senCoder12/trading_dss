@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import { usePolling } from '../../hooks/usePolling';
+import { useDataStore } from '../../hooks/useDataStore';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
 import { Spinner } from '../common/Spinner';
 import { RefreshIndicator } from '../common/RefreshIndicator';
+import { FlashPrice } from '../common/FlashPrice';
 import { IndexDetail } from './IndexDetail';
 import { OptionsHeatmap } from './OptionsHeatmap';
 import { TechnicalView } from './TechnicalView';
 import { formatPrice, formatPercentage } from '../../utils/formatters';
-import { REFRESH_INTERVALS } from '../../utils/constants';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 
 const TF_OPTIONS = ['1m', '5m', '15m', '1h', '1d'];
@@ -18,13 +19,12 @@ export default function MarketPage() {
   const [selectedIndex, setSelectedIndex] = useState(null);
   const [tf, setTf] = useState('1d');
 
-  const { data, loading, error, lastUpdated } = usePolling(
-    api.getMarketPrices, REFRESH_INTERVALS.marketPrices,
-  );
-
+  // Live prices from shared store (fed by WS ticks + 30s polling fallback)
+  const { prices: { data, loading, error, lastUpdated } } = useDataStore();
   const indices = data?.indices ?? [];
   const active = selectedIndex ?? indices[0]?.index_id;
 
+  // Options chain polling is per-index so it stays local
   const { data: optData, loading: optLoading } = usePolling(
     () => active ? api.getOptionsChain(active) : Promise.resolve(null),
     60_000,
@@ -57,11 +57,11 @@ export default function MarketPage() {
                 >
                   <div className="text-slate-400 text-xs font-medium">{item.index_id}</div>
                   <div className="font-mono font-semibold text-slate-100 text-sm">
-                    {formatPrice(item.ltp)}
+                    <FlashPrice value={item.ltp} formatter={formatPrice} />
                   </div>
                   <div className={`flex items-center gap-1 text-xs ${pos ? 'text-green-400' : neg ? 'text-red-400' : 'text-slate-500'}`}>
                     {pos ? <TrendingUp className="w-3 h-3" /> : neg ? <TrendingDown className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
-                    {formatPercentage(chg)}
+                    <FlashPrice value={chg} formatter={formatPercentage} />
                   </div>
                 </button>
               );
@@ -72,12 +72,10 @@ export default function MarketPage() {
 
       {active && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Index detail */}
           <Card title={`${active} · Detail`}>
             <IndexDetail key={active} indexId={active} />
           </Card>
 
-          {/* Price chart with timeframe selector */}
           <Card title={`${active} · Price Chart`} padding={false}>
             <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
               {TF_OPTIONS.map((t) => (
@@ -101,7 +99,6 @@ export default function MarketPage() {
         </div>
       )}
 
-      {/* Options heatmap */}
       {active && (
         <Card title={`${active} · Options OI Heatmap`} padding={false}>
           <div className="p-4">

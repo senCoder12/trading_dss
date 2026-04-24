@@ -19,6 +19,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 from config.settings import settings
 from src.analysis.news.article_parser import ParsedArticle
+from src.analysis.news.hinglish_processor import HinglishProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class SentimentResult:
     bearish_keywords_found: list[str] = field(default_factory=list)
     uncertainty_keywords_found: list[str] = field(default_factory=list)
     keyword_count: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -197,6 +199,7 @@ class SentimentAnalyzer:
     ) -> None:
         self._vader = SentimentIntensityAnalyzer()
         self._calibrator = calibrator
+        self.hinglish_processor = HinglishProcessor()
 
         kw_path = keywords_path or settings.sentiment_keywords_path
         self._bullish, self._bearish, self._uncertainty = self._load_keywords(
@@ -243,8 +246,9 @@ class SentimentAnalyzer:
                 confidence=0.0,
             )
 
-        # Edge case: likely non-English
-        if _is_likely_non_english(text):
+        # Edge case: likely non-English (safety net — article_parser should have
+        # translated already, but guard against articles that bypassed the parser)
+        if _is_likely_non_english(text) and not getattr(article, "was_translated", False):
             logger.warning(
                 "Non-English text detected for '%s'; returning NEUTRAL",
                 article.title[:60],
@@ -258,11 +262,25 @@ class SentimentAnalyzer:
                 confidence=0.05,
             )
 
+        # Translation confidence modifier — slightly reduces confidence for
+        # translated articles to reflect potential translation errors
+        if getattr(article, "was_translated", False):
+            confidence_modifier = getattr(article, "translation_confidence", 1.0) * 0.9
+        else:
+            confidence_modifier = 1.0
+
         # Normalise all-caps text for VADER
         normalized = text.lower() if text.isupper() else text
 
         # Step 1: base VADER score
         base_score = self._vader.polarity_scores(normalized)["compound"]
+
+        # Apply Hinglish-specific keyword boosts using the original (pre-translation)
+        # title, which retains Hinglish terms that may have been normalised away
+        if getattr(article, "is_hinglish", False):
+            base_score = self.hinglish_processor.boost_hinglish_sentiment(
+                article.title, base_score
+            )
 
         # Step 2: keyword boosting
         lower_text = text.lower()
@@ -299,7 +317,21 @@ class SentimentAnalyzer:
         if len(text.split()) < 10:
             confidence = max(0.0, confidence - 0.3)
 
+        # Apply translation confidence modifier
+        confidence = round(confidence * confidence_modifier, 4)
+
         label = _score_to_label(adjusted)
+
+        # Attach a warning if translation quality is low
+        result_warnings: list[str] = []
+        if (
+            getattr(article, "was_translated", False)
+            and getattr(article, "translation_confidence", 1.0) < 0.70
+        ):
+            result_warnings.append(
+                f"Translated from {getattr(article, 'original_language', 'unknown')}"
+                " — accuracy may vary"
+            )
 
         return SentimentResult(
             raw_vader_score=base_score,
@@ -307,11 +339,12 @@ class SentimentAnalyzer:
             source_weight=source_weight,
             adjusted_score=round(adjusted, 6),
             sentiment_label=label,
-            confidence=round(confidence, 4),
+            confidence=confidence,
             bullish_keywords_found=bullish_found,
             bearish_keywords_found=bearish_found,
             uncertainty_keywords_found=uncertainty_found,
             keyword_count=keyword_count,
+            warnings=result_warnings,
         )
 
     # ── batch analysis ───────────────────────────────────────────────────
