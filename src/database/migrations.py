@@ -388,6 +388,27 @@ def _v12_options_chain_columns(db: DatabaseManager) -> None:
             db.execute(f"ALTER TABLE options_chain_snapshot ADD COLUMN {col} {col_def}")
 
 
+@migration(version=13, description="Add fo_universe and fo_universe_history tables")
+def _v13_fo_universe_tables(db: DatabaseManager) -> None:
+    from src.database.models import TABLE_DDL
+
+    conn = db._conn()
+    with conn:
+        for table_name in ["fo_universe", "fo_universe_history"]:
+            for stmt in TABLE_DDL[table_name]:
+                conn.execute(stmt)
+
+
+@migration(version=14, description="Add fo_avg_volumes table for cached 20-day volumes")
+def _v14_fo_avg_volumes_table(db: DatabaseManager) -> None:
+    from src.database.models import TABLE_DDL
+
+    conn = db._conn()
+    with conn:
+        for stmt in TABLE_DDL["fo_avg_volumes"]:
+            conn.execute(stmt)
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

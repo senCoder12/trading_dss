@@ -756,3 +756,65 @@ AGG_VIX_DATA_EXISTS = """
 SELECT COUNT(*) AS cnt FROM vix_data
 WHERE timestamp BETWEEN ? AND ?
 """
+
+# ============================================================================
+# fo_universe
+# ============================================================================
+
+UPSERT_FO_UNIVERSE = """
+INSERT INTO fo_universe
+    (symbol, company_name, series, isin, lot_size, underlying_value, sector,
+     is_active, last_updated)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(symbol) DO UPDATE SET
+    company_name     = excluded.company_name,
+    series           = excluded.series,
+    isin             = excluded.isin,
+    lot_size         = excluded.lot_size,
+    underlying_value = excluded.underlying_value,
+    sector           = excluded.sector,
+    is_active        = excluded.is_active,
+    last_updated     = excluded.last_updated
+"""
+
+LIST_FO_UNIVERSE_ACTIVE = """
+SELECT * FROM fo_universe WHERE is_active = 1 ORDER BY symbol
+"""
+
+GET_FO_UNIVERSE_STOCK = """
+SELECT * FROM fo_universe WHERE symbol = ?
+"""
+
+INSERT_FO_UNIVERSE_HISTORY = """
+INSERT INTO fo_universe_history (symbol, event, event_date, lot_size)
+VALUES (?, ?, ?, ?)
+"""
+
+LIST_FO_UNIVERSE_HISTORY = """
+SELECT * FROM fo_universe_history WHERE symbol = ? ORDER BY event_date DESC
+"""
+
+# ============================================================================
+# fo_avg_volumes
+# ============================================================================
+
+UPSERT_FO_AVG_VOLUME = """
+INSERT INTO fo_avg_volumes (symbol, avg_volume_20d, last_updated)
+VALUES (?, ?, ?)
+ON CONFLICT(symbol) DO UPDATE SET
+    avg_volume_20d = excluded.avg_volume_20d,
+    last_updated   = excluded.last_updated
+"""
+
+GET_FO_AVG_VOLUME = """
+SELECT avg_volume_20d FROM fo_avg_volumes WHERE symbol = ?
+"""
+
+LIST_FO_AVG_VOLUMES = """
+SELECT * FROM fo_avg_volumes ORDER BY symbol
+"""
+
+DELETE_FO_AVG_VOLUMES = """
+DELETE FROM fo_avg_volumes
+"""

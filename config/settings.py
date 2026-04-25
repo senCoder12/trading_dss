@@ -68,6 +68,7 @@ class PollingSettings(BaseSettings):
     vix_interval: int = Field(default=60, ge=15, description="VIX refresh interval (s)")
     technical_interval: int = Field(default=180, ge=60, description="Technical indicator recompute interval (s)")
     decision_interval: int = Field(default=180, ge=60, description="Decision engine cycle interval (s)")
+    fo_universe_refresh_hours: int = Field(default=24, ge=1, description="F&O universe refresh interval (hours)")
 
     model_config = {"env_prefix": "POLL_", "extra": "ignore"}
 
@@ -262,6 +263,11 @@ class BrokerSettings(BaseSettings):
     angel_one_client_id: str = Field(default="", description="Angel One client/login ID")
     angel_one_password: str = Field(default="", description="Angel One login password")
     angel_one_totp_secret: str = Field(default="", description="TOTP secret for 2FA (from Profile → Settings)")
+
+    # Bulk fetcher tuning
+    bulk_fetch_batch_size: int = Field(default=50, ge=1, le=100, description="Symbols per bulk quote call")
+    bulk_fetch_delay_seconds: float = Field(default=0.4, ge=0.1, le=2.0, description="Delay between batch calls (s)")
+    oi_fetch_top_n: int = Field(default=60, ge=10, le=200, description="Top N candidates for OI fetch")
 
     # WebSocket behaviour
     websocket_subscribe_depth: int = Field(default=10, ge=1, le=50, description="Strikes above/below ATM to stream")

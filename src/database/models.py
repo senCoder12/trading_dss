@@ -267,6 +267,54 @@ class SystemHealth:
 
 
 @dataclass
+class FOUniverseStock:
+    """
+    NSE F&O eligible stock metadata.
+
+    Reference dataset (180–220 stocks) of which stocks can be traded in
+    the F&O segment. Refreshed daily.
+    """
+
+    symbol: str                      # NSE trading symbol (e.g., "RELIANCE")
+    company_name: str
+    series: str                      # "EQ", "BE", etc.
+    isin: str
+    lot_size: int                    # F&O lot size (fallback: 0)
+    underlying_value: float          # Current underlying price (if available)
+    sector: str                      # NSE sector classification
+    is_active: bool                  # True = in current F&O list
+    last_updated: str                # ISO-8601 IST
+
+
+@dataclass
+class FOUniverseHistory:
+    """
+    Track when stocks enter/leave the F&O universe.
+
+    Useful for identifying new listings or delistings.
+    """
+
+    id: Optional[int]
+    symbol: str
+    event: str                       # "ADDED" | "REMOVED"
+    event_date: str                  # "YYYY-MM-DD"
+    lot_size: int
+
+
+@dataclass
+class FOAvgVolume:
+    """
+    Cached 20-day average volume for F&O stocks.
+
+    Refreshed daily at 8:45 AM. Used to filter stocks in bulk fetcher.
+    """
+
+    symbol: str                       # PK
+    avg_volume_20d: float
+    last_updated: str                 # ISO-8601 IST
+
+
+@dataclass
 class SchemaVersion:
     """Migration version tracking."""
 
@@ -549,6 +597,49 @@ TABLE_DDL: dict[str, list[str]] = {
         )
         """,
     ],
+
+    # ── F&O universe ──────────────────────────────────────────────────────
+    "fo_universe": [
+        """
+        CREATE TABLE IF NOT EXISTS fo_universe (
+            symbol           TEXT    PRIMARY KEY,
+            company_name     TEXT    NOT NULL,
+            series           TEXT    NOT NULL DEFAULT 'EQ',
+            isin             TEXT    NOT NULL,
+            lot_size         INTEGER NOT NULL DEFAULT 0,
+            underlying_value REAL    DEFAULT 0.0,
+            sector           TEXT    NOT NULL DEFAULT 'unknown',
+            is_active        INTEGER NOT NULL DEFAULT 1,
+            last_updated     TEXT    NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_fo_sector_active ON fo_universe (sector, is_active)",
+    ],
+
+    # ── F&O universe history ──────────────────────────────────────────────
+    "fo_universe_history": [
+        """
+        CREATE TABLE IF NOT EXISTS fo_universe_history (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol    TEXT    NOT NULL,
+            event     TEXT    NOT NULL CHECK (event IN ('ADDED','REMOVED')),
+            event_date TEXT   NOT NULL,
+            lot_size  INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_foh_symbol_date ON fo_universe_history (symbol, event_date)",
+    ],
+
+    # ── F&O average volumes (cached daily) ─────────────────────────────
+    "fo_avg_volumes": [
+        """
+        CREATE TABLE IF NOT EXISTS fo_avg_volumes (
+            symbol           TEXT    PRIMARY KEY,
+            avg_volume_20d   REAL    NOT NULL,
+            last_updated     TEXT    NOT NULL
+        )
+        """,
+    ],
 }
 
 # Ordered list of table names to ensure FK-safe creation order
@@ -566,6 +657,9 @@ TABLE_CREATION_ORDER: list[str] = [
     "fii_dii_activity",
     "vix_data",
     "system_health",
+    "fo_universe",
+    "fo_universe_history",
+    "fo_avg_volumes",
 ]
 
 
@@ -656,5 +750,17 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
         "gap_direction": "TEXT", "gap_confidence": "REAL",
         "regime_expectation": "TEXT", "us_impact": "TEXT",
         "fii_bias": "TEXT", "payload_json": "TEXT",
+    },
+    "fo_universe": {
+        "symbol": "TEXT", "company_name": "TEXT", "series": "TEXT",
+        "isin": "TEXT", "lot_size": "INTEGER", "underlying_value": "REAL",
+        "sector": "TEXT", "is_active": "INTEGER", "last_updated": "TEXT",
+    },
+    "fo_universe_history": {
+        "id": "INTEGER", "symbol": "TEXT", "event": "TEXT",
+        "event_date": "TEXT", "lot_size": "INTEGER",
+    },
+    "fo_avg_volumes": {
+        "symbol": "TEXT", "avg_volume_20d": "REAL", "last_updated": "TEXT",
     },
 }
