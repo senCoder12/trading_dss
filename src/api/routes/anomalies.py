@@ -109,7 +109,12 @@ async def get_active_anomalies(
     category: Optional[str] = Query(default=None, description="VOLUME, PRICE, OI, FII_DII, DIVERGENCE"),
     db: DatabaseManager = Depends(get_db),
 ):
-    rows = db.fetch_all(Q.LIST_ACTIVE_ANOMALIES_FILTERED)
+    cached = _cached("active_anomalies", ttl=15)
+    if cached is None:
+        rows = await db.async_fetch_all(Q.LIST_ACTIVE_ANOMALIES_FILTERED)
+        _set_cache("active_anomalies", rows)
+    else:
+        rows = cached
 
     # Apply filters in Python (the query already orders by severity)
     if index_id:
@@ -149,13 +154,13 @@ async def get_anomaly_history(
 
     where = " AND ".join(clauses)
 
-    count_row = db.fetch_one(
+    count_row = await db.async_fetch_one(
         f"SELECT COUNT(*) AS cnt FROM anomaly_events WHERE {where}",
         tuple(params),
     )
     total = count_row["cnt"] if count_row else 0
 
-    rows = db.fetch_all(
+    rows = await db.async_fetch_all(
         f"SELECT * FROM anomaly_events WHERE {where} "
         f"ORDER BY timestamp DESC LIMIT ? OFFSET ?",
         (*params, limit, offset),
@@ -175,7 +180,7 @@ async def get_anomaly_dashboard(db: DatabaseManager = Depends(get_db)):
     since_24h = (now - timedelta(hours=24)).isoformat()
 
     # All active anomalies
-    active = db.fetch_all(Q.LIST_ACTIVE_ANOMALIES)
+    active = await db.async_fetch_all(Q.LIST_ACTIVE_ANOMALIES)
 
     total_active = len(active)
     high = sum(1 for r in active if r.get("severity") == "HIGH")
@@ -195,7 +200,7 @@ async def get_anomaly_dashboard(db: DatabaseManager = Depends(get_db)):
         by_index[idx] = by_index.get(idx, 0) + 1
 
     # Recent alerts (last 24h, up to 10)
-    recent_rows = db.fetch_all(
+    recent_rows = await db.async_fetch_all(
         "SELECT * FROM anomaly_events WHERE timestamp >= ? "
         "ORDER BY timestamp DESC LIMIT 10",
         (since_24h,),

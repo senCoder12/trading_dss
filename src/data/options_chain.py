@@ -1,9 +1,9 @@
 """
 Options chain data fetcher and parser.
 
-Fetches raw option chain from NSE and parses it into structured
-strong-typed data classes for analysis, including PCR calculation,
-Max Pain calculation, and Buildup / Spike detection.
+Fetches options chain from NSE (via NSEScraper) or BSE (via BSEScraper) based on
+index exchange, then parses into structured data classes for analysis, including
+PCR calculation, Max Pain calculation, and Buildup / Spike detection.
 """
 
 from __future__ import annotations
@@ -11,10 +11,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
 from src.data.nse_scraper import NSEScraper
+
+if TYPE_CHECKING:
+    from src.data.bse_scraper import BSEScraper
 from src.data.index_registry import get_registry
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
@@ -123,14 +126,15 @@ class OptionsChainFetcher:
     needing database round-trips.
     """
 
-    def __init__(self, scraper: Optional[NSEScraper] = None) -> None:
+    def __init__(self, scraper: Optional[NSEScraper] = None, bse_scraper=None) -> None:
         self._scraper = scraper or NSEScraper()
+        self._bse_scraper = bse_scraper  # Optional[BSEScraper]
         # Memory storage for last two snapshots per symbol/expiry to do quick comparisons.
         # Key format: f"{symbol}_{expiry.isoformat()}" -> list[OptionsChainData] (max 2 items)
         self._previous_chains: dict[str, list[OptionsChainData]] = {}
 
     def _parse_date(self, date_str: str) -> date:
-        """Parse NSE date format supporting both 'dd-MMM-yyyy' and 'dd-mm-yyyy'."""
+        """Parse date format supporting NSE ('dd-MMM-yyyy'), numeric ('dd-mm-yyyy'), and BSE ('ddMONYYYY')."""
         if not date_str:
             return date.today()
         # Try 'dd-MMM-yyyy' (e.g. 23-Apr-2026)
@@ -142,12 +146,40 @@ class OptionsChainFetcher:
         try:
             return datetime.strptime(date_str, "%d-%m-%Y").date()
         except ValueError:
+            pass
+        # Try 'ddMONYYYY' BSE format (e.g. 23APR2026)
+        try:
+            return datetime.strptime(date_str, "%d%b%Y").date()
+        except ValueError:
             logger.warning(f"Failed to parse date string with known formats: {date_str}")
             return date.today()
 
+    def _fetch_bse_raw_chain(self, option_symbol: str, expiry: Optional[str] = None) -> Optional[dict]:
+        """Fetch raw options chain from BSE for BSE-listed indices (SENSEX)."""
+        if not self._bse_scraper:
+            logger.warning("BSE scraper not configured; %s options unavailable", option_symbol)
+            return None
+
+        meta = self._bse_scraper.get_option_chain_meta(option_symbol)
+        expiry_candidates = meta.get("expiryDates", []) if meta else []
+
+        target_expiry = expiry
+        if not target_expiry and expiry_candidates:
+            d = self._parse_date(expiry_candidates[0])
+            target_expiry = d.strftime("%d%b%Y").upper()
+
+        if not target_expiry:
+            return None
+
+        raw = self._bse_scraper.get_option_chain(option_symbol, target_expiry)
+        if raw:
+            freshness_tracker.update("options_chain")
+        return raw
+
     def fetch_raw_chain(self, option_symbol: str, expiry: Optional[str] = None) -> Optional[dict]:
         """
-        Hit NSE option chain API and return the raw parsed JSON response.
+        Fetch options chain from NSE or BSE based on exchange.
+        Returns raw parsed JSON response.
         """
         registry = get_registry()
         fo_symbols = {
@@ -158,7 +190,12 @@ class OptionsChainFetcher:
         if option_symbol.upper() not in fo_symbols:
             return None
 
-        # 1. Get Expiry metadata if not provided
+        # Route to BSE for BSE-listed indices (SENSEX)
+        idx_info = registry.get_index_by_option_symbol(option_symbol)
+        if idx_info and idx_info.exchange == "BSE":
+            return self._fetch_bse_raw_chain(option_symbol, expiry)
+
+        # 1. Get Expiry metadata if not provided (NSE path)
         meta = self._scraper.get_option_chain_meta(option_symbol)
         expiry_candidates = meta.get("expiryDates", []) if meta else []
         
@@ -194,20 +231,23 @@ class OptionsChainFetcher:
         Parse raw options chain into structured OptionsChainData.
         Defaults to nearest expiry if expiry_date is None.
         """
+        from src.data.index_registry import get_registry
+        registry = get_registry()
+        idx_info = registry.get_index_by_option_symbol(option_symbol)
+
         target_expiry_str = None
         if expiry_date:
-             # Normalize to NSE format for the API call
-             target_expiry_str = expiry_date.strftime("%d-%b-%Y").lstrip("0")
+            if idx_info and idx_info.exchange == "BSE":
+                target_expiry_str = expiry_date.strftime("%d%b%Y").upper()
+            else:
+                target_expiry_str = expiry_date.strftime("%d-%b-%Y").lstrip("0")
 
         raw = self.fetch_raw_chain(option_symbol, expiry=target_expiry_str)
         if not raw:
             return None
 
         # Resolve canonical index_id for DB foreign keys (e.g. NIFTY -> NIFTY50)
-        from src.data.index_registry import get_registry
-        registry = get_registry()
         canonical_id = option_symbol
-        idx_info = registry.get_index_by_option_symbol(option_symbol)
         if idx_info:
             canonical_id = idx_info.id
 

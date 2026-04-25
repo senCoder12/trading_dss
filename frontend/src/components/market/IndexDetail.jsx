@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { usePolling } from '../../hooks/usePolling';
 import { api } from '../../api/client';
 import { Spinner } from '../common/Spinner';
@@ -5,7 +6,8 @@ import { formatPrice, formatPercentage, formatLargeNumber } from '../../utils/fo
 import { REFRESH_INTERVALS } from '../../utils/constants';
 
 export function IndexDetail({ indexId }) {
-  const { data, loading } = usePolling(() => api.getIndexPrice(indexId), REFRESH_INTERVALS.marketPrices);
+  const fetchFn = useCallback(() => api.getIndexPrice(indexId), [indexId]);
+  const { data, loading } = usePolling(fetchFn, REFRESH_INTERVALS.marketPrices);
 
   if (loading) return <div className="flex justify-center p-4"><Spinner /></div>;
   if (!data) return null;

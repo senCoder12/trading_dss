@@ -39,16 +39,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
 
-# Angel One token IDs for the four main F&O indices on NSE.
-# These are stable exchange-assigned identifiers, not user-configured.
-_INDEX_TOKENS: dict[str, str] = {
-    "NIFTY50": "26000",
-    "BANKNIFTY": "26009",
-    "FINNIFTY": "99926037",
-    "MIDCPNIFTY": "99926074",
-    "SENSEX": "99919000", # BSE SENSEX Index Token
+# Angel One token IDs for indices.  Stable exchange-assigned identifiers.
+# Format: {index_id: (token, exchange_code)}
+# exchangeType: 1=NSE, 2=NFO, 3=BSE, 4=BFO
+_INDEX_TOKENS: dict[str, tuple[str, int]] = {
+    "NIFTY50": ("26000", 1),         # NSE
+    "BANKNIFTY": ("26009", 1),       # NSE
+    "FINNIFTY": ("99926037", 1),     # NSE
+    "MIDCPNIFTY": ("99926074", 1),   # NSE
+    "SENSEX": ("99919000", 3),       # BSE
 }
-_TOKEN_TO_INDEX: dict[str, str] = {v: k for k, v in _INDEX_TOKENS.items()}
+_TOKEN_TO_INDEX: dict[str, str] = {token: idx for idx, (token, _) in _INDEX_TOKENS.items()}
+
+# Exchange type to exchange code mapping
+_EXCHANGE_TYPE_MAP: dict[int, str] = {
+    1: "NSE",
+    2: "NFO",
+    3: "BSE",
+    4: "BFO",
+}
 
 # Strike intervals per F&O index
 _STRIKE_INTERVAL: dict[str, int] = {
@@ -135,36 +144,60 @@ class DataRouter:
     def _start_websocket_feed(self) -> None:
         """Load master contract, compute ATM option tokens, start WebSocket."""
         try:
-            self._master_contract = self.broker_client.get_master_contract()
+            # Load both NFO (NSE F&O) and BFO (BSE F&O) master contracts
+            self._master_contract = self.broker_client.get_master_contract("NFO")
+            bfo_contract = self.broker_client.get_master_contract("BFO")
+            if bfo_contract is not None and self._master_contract is not None:
+                import pandas as pd  # noqa: PLC0415
+                self._master_contract = pd.concat(
+                    [self._master_contract, bfo_contract], ignore_index=True
+                )
 
-            index_tokens = list(_INDEX_TOKENS.values())
-            nfo_tokens = self._get_atm_option_tokens()
+            # Group index tokens by exchange type
+            tokens_by_exchange: dict[int, list[str]] = {}
+            for idx_id, (token, exchange_type) in _INDEX_TOKENS.items():
+                if exchange_type not in tokens_by_exchange:
+                    tokens_by_exchange[exchange_type] = []
+                tokens_by_exchange[exchange_type].append(token)
 
-            subscribe_list: list[dict] = [
-                {"exchangeType": 1, "tokens": index_tokens},
-            ]
-            if nfo_tokens:
-                subscribe_list.append({"exchangeType": 2, "tokens": nfo_tokens})
+            option_tokens_by_exchange = self._get_atm_option_tokens()
+
+            # Build subscription list for each exchange
+            subscribe_list: list[dict] = []
+            for exchange_type in sorted(tokens_by_exchange.keys()):
+                subscribe_list.append({
+                    "exchangeType": exchange_type,
+                    "tokens": tokens_by_exchange[exchange_type],
+                })
+            # Add options tokens for each exchange
+            for exchange_type in sorted(option_tokens_by_exchange.keys()):
+                if option_tokens_by_exchange[exchange_type]:
+                    subscribe_list.append({
+                        "exchangeType": exchange_type,
+                        "tokens": option_tokens_by_exchange[exchange_type],
+                    })
 
             self.ws_feed.on_tick_update = self._handle_tick
             self.ws_feed.on_oi_update = self._handle_oi_update
             self.ws_feed.start(subscribe_list)
 
+            total_index_tokens = sum(len(t) for t in tokens_by_exchange.values())
+            total_option_tokens = sum(len(t) for t in option_tokens_by_exchange.values())
             logger.info(
                 "WebSocket: subscribed to %d index token(s) + %d option token(s)",
-                len(index_tokens),
-                len(nfo_tokens),
+                total_index_tokens,
+                total_option_tokens,
             )
         except Exception as exc:
             logger.error("WebSocket feed start failed: %s", exc)
 
-    def _get_atm_option_tokens(self) -> list[str]:
-        """Return tokens for ATM ±depth strikes for all active F&O indices."""
+    def _get_atm_option_tokens(self) -> dict[int, list[str]]:
+        """Return tokens for ATM ±depth strikes for all active F&O indices, grouped by exchange."""
         if self._master_contract is None or self.registry is None:
-            return []
+            return {}
 
         depth = settings.broker.websocket_subscribe_depth
-        tokens: list[str] = []
+        tokens_by_exchange: dict[int, list[str]] = {}
 
         try:
             for idx in self.registry.get_active_indices():
@@ -172,12 +205,15 @@ class DataRouter:
                     continue
 
                 # Only subscribe index tokens we know (those in _INDEX_TOKENS)
-                index_token = _INDEX_TOKENS.get(idx.id)
-                if not index_token:
+                token_info = _INDEX_TOKENS.get(idx.id)
+                if not token_info:
                     continue
 
+                index_token, exchange_type = token_info
+                exchange = _EXCHANGE_TYPE_MAP.get(exchange_type, "NSE")
+
                 ltp = self.broker_client.get_ltp(
-                    "NSE", idx.nse_symbol or idx.option_symbol, index_token
+                    exchange, idx.nse_symbol or idx.option_symbol, index_token
                 )
                 if not ltp:
                     continue
@@ -193,6 +229,11 @@ class DataRouter:
                 sym_df = sym_df.sort_values("expiry")
                 nearest_expiry = sym_df["expiry"].iloc[0]
 
+                # Determine options exchange: BFO for BSE indices, NFO for NSE indices
+                opt_exchange_type = 4 if exchange_type == 3 else 2  # BFO if BSE, else NFO
+                if opt_exchange_type not in tokens_by_exchange:
+                    tokens_by_exchange[opt_exchange_type] = []
+
                 for offset in range(-depth, depth + 1):
                     strike = atm + offset * interval
                     for opt_type in ("CE", "PE"):
@@ -200,12 +241,12 @@ class DataRouter:
                             idx.option_symbol, nearest_expiry, strike, opt_type, mc
                         )
                         if t:
-                            tokens.append(t)
+                            tokens_by_exchange[opt_exchange_type].append(t)
 
         except Exception as exc:
             logger.error("ATM option token lookup failed: %s", exc)
 
-        return tokens
+        return tokens_by_exchange
 
     # ── WebSocket callbacks ────────────────────────────────────────────────
 
@@ -292,8 +333,9 @@ class DataRouter:
         Falls back to scraper otherwise.
         """
         if self.ws_feed:
-            token = _INDEX_TOKENS.get(index_id)
-            if token:
+            token_info = _INDEX_TOKENS.get(index_id)
+            if token_info:
+                token, _ = token_info
                 tick = self.ws_feed.get_latest(token)
                 if tick:
                     return {

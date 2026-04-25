@@ -80,11 +80,16 @@ class OptionsChainSnapshot:
     option_type: str                 # "CE" | "PE"
     open_interest: int
     oi_change: int
+    oi_change_pct: float
     volume: int
     ltp: float
+    ltp_change: float
+    ltp_change_pct: float
     iv: Optional[float]              # implied volatility (%)
     bid_price: Optional[float]
+    bid_qty: int
     ask_price: Optional[float]
+    ask_qty: int
 
 
 @dataclass
@@ -340,11 +345,16 @@ TABLE_DDL: dict[str, list[str]] = {
             option_type    TEXT    NOT NULL CHECK (option_type IN ('CE','PE')),
             open_interest  INTEGER NOT NULL DEFAULT 0,
             oi_change      INTEGER NOT NULL DEFAULT 0,
+            oi_change_pct  REAL    NOT NULL DEFAULT 0,
             volume         INTEGER NOT NULL DEFAULT 0,
             ltp            REAL    NOT NULL DEFAULT 0,
+            ltp_change     REAL    NOT NULL DEFAULT 0,
+            ltp_change_pct REAL    NOT NULL DEFAULT 0,
             iv             REAL,
             bid_price      REAL,
+            bid_qty        INTEGER NOT NULL DEFAULT 0,
             ask_price      REAL,
+            ask_qty        INTEGER NOT NULL DEFAULT 0,
             UNIQUE (index_id, timestamp, expiry_date, strike_price, option_type)
         )
         """,
@@ -581,8 +591,10 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
     "options_chain_snapshot": {
         "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",
         "expiry_date": "TEXT", "strike_price": "REAL", "option_type": "TEXT",
-        "open_interest": "INTEGER", "oi_change": "INTEGER", "volume": "INTEGER",
-        "ltp": "REAL", "iv": "REAL", "bid_price": "REAL", "ask_price": "REAL",
+        "open_interest": "INTEGER", "oi_change": "INTEGER", "oi_change_pct": "REAL",
+        "volume": "INTEGER", "ltp": "REAL", "ltp_change": "REAL",
+        "ltp_change_pct": "REAL", "iv": "REAL", "bid_price": "REAL",
+        "bid_qty": "INTEGER", "ask_price": "REAL", "ask_qty": "INTEGER",
     },
     "oi_aggregated": {
         "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",

@@ -373,6 +373,21 @@ def _v11_overnight_data(db: DatabaseManager) -> None:
     )
 
 
+@migration(version=12, description="Add missing columns to options_chain_snapshot (oi_change_pct, ltp_change, ltp_change_pct, bid_qty, ask_qty)")
+def _v12_options_chain_columns(db: DatabaseManager) -> None:
+    cols_to_add = [
+        ("oi_change_pct",  "REAL    NOT NULL DEFAULT 0"),
+        ("ltp_change",     "REAL    NOT NULL DEFAULT 0"),
+        ("ltp_change_pct", "REAL    NOT NULL DEFAULT 0"),
+        ("bid_qty",        "INTEGER NOT NULL DEFAULT 0"),
+        ("ask_qty",        "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    existing = {row["name"] for row in db.fetch_all("PRAGMA table_info(options_chain_snapshot)", ())}
+    for col, col_def in cols_to_add:
+        if col not in existing:
+            db.execute(f"ALTER TABLE options_chain_snapshot ADD COLUMN {col} {col_def}")
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

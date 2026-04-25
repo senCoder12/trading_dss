@@ -62,6 +62,7 @@ class Index(BaseModel):
     display_name: str
     nse_symbol: Optional[str] = None
     yahoo_symbol: Optional[str] = None
+    nse_archive_name: Optional[str] = None
     exchange: str
     lot_size: Optional[int] = None
     has_options: bool = False

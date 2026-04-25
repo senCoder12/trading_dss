@@ -373,10 +373,11 @@ class DecisionEngine:
             oi_summary,
             vix_value,
             benchmark_rows,
+            intraday_tf,
         ) = self._step_gather_data(index_id, as_of=as_of)
         step_timings["1_gather_data"] = int((time.monotonic() - t0) * 1000)
 
-        price_df, timeframe_label = self._build_price_df(daily_rows, intraday_rows)
+        price_df, timeframe_label = self._build_price_df(daily_rows, intraday_rows, intraday_tf)
         current_price = float(current_bar["close"]) if current_bar else 0.0
 
         # ── Stale-data check (non-blocking — adds warnings) ──────────
@@ -866,10 +867,18 @@ class DecisionEngine:
         except Exception:
             logger.warning("Step 1: daily history unavailable for %s", index_id)
 
+        _intraday_tf = "5m"
         try:
             intraday_rows = self._db.fetch_all(
                 Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "5m", as_of_ts, 100)
             )
+            if not intraday_rows:
+                intraday_rows = self._db.fetch_all(
+                    Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "1m", as_of_ts, 500)
+                )
+                if intraday_rows:
+                    _intraday_tf = "1m"
+                    logger.debug("Step 1: using 1m intraday fallback for %s (%d bars)", index_id, len(intraday_rows))
         except Exception:
             logger.debug("Step 1: intraday unavailable for %s", index_id)
 
@@ -904,6 +913,7 @@ class DecisionEngine:
         return (
             current_bar, daily_rows, intraday_rows,
             options_chain, oi_summary, vix_value, benchmark_rows,
+            _intraday_tf,
         )
 
     def _step_technical(
@@ -1298,10 +1308,11 @@ class DecisionEngine:
         self,
         daily_rows: list[dict],
         intraday_rows: list[dict],
+        intraday_tf: str = "5m",
     ) -> tuple[pd.DataFrame, str]:
-        """Prioritize 5m for intraday; fall back to 1d."""
+        """Prioritize intraday for intraday; fall back to 1d."""
         if intraday_rows and len(intraday_rows) >= _MIN_BARS_FALLBACK:
-            return self._rows_to_df(intraday_rows), "5m"
+            return self._rows_to_df(intraday_rows), intraday_tf
         if daily_rows:
             return self._rows_to_df(daily_rows), "1d"
         return pd.DataFrame(), "1d"

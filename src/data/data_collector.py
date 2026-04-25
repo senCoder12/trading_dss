@@ -93,7 +93,7 @@ class DataCollector:
         # DataRouter: uses Angel One WebSocket when configured, otherwise wraps nse_scraper
         self.data_router = DataRouter(db=self.db, registry=self.registry, dry_run=self.dry_run)
         logger.info("DataRouter source: %s", self.data_router.get_data_source())
-        self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper)
+        self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper, bse_scraper=self.bse_scraper)
         self.historical_manager = HistoricalDataManager(registry=self.registry, db=self.db)
         self.fii_dii_fetcher = FIIDIIFetcher(scraper=self.nse_scraper)
         self.vix_tracker = VIXTracker(scraper=self.nse_scraper)
@@ -452,11 +452,12 @@ class DataCollector:
                 )
                 if component == "nse":
                     self.nse_scraper = NSEScraper(rate_limiter=self._nse_limiter)
-                    self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper)
+                    self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper, bse_scraper=self.bse_scraper)
                     self.fii_dii_fetcher = FIIDIIFetcher(scraper=self.nse_scraper)
                     self.vix_tracker = VIXTracker(scraper=self.nse_scraper)
                 elif component == "bse":
                     self.bse_scraper = BSEScraper()
+                    self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper, bse_scraper=self.bse_scraper)
 
     def _reset_failure(self, component: str) -> None:
         self._failures[component] = 0
@@ -624,13 +625,13 @@ class DataCollector:
 
                     if not self.dry_run:
                         self.options_fetcher.save_to_db(chain, self.db)
-                        # ── WebSocket broadcast ────────────────────────────
-                        from src.api.websocket import queue_event
-                        queue_event("options_update", {
-                            "index_id": idx.id,
-                            "expiry_date": chain.expiry_date,
-                            "timestamp": chain.timestamp,
-                        })
+
+                    from src.api.websocket import queue_event
+                    queue_event("options_update", {
+                        "index_id": idx.id,
+                        "expiry_date": chain.expiry_date,
+                        "timestamp": chain.timestamp,
+                    })
 
 
                     # ── OI buildup / spike detection ──────────────────────

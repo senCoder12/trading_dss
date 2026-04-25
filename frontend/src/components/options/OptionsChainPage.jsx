@@ -139,6 +139,7 @@ export default function OptionsChainPage() {
   const [selectedExpiry, setSelectedExpiry] = useState(null);
   const [showExpiries, setShowExpiries] = useState(false);
   const [highlight, setHighlight] = useState(null); // hovered strike
+  const [liveSpot, setLiveSpot] = useState(null);
 
   const atmRef = useRef(null);
   const containerRef = useRef(null);
@@ -148,7 +149,7 @@ export default function OptionsChainPage() {
     [selectedIndex, selectedExpiry],
   );
 
-  const { data, loading, error, lastUpdated, refetch } = usePolling(fetchChain, 60_000);
+  const { data, loading, error, lastUpdated, refetch } = usePolling(fetchChain, 30_000);
 
   // ── Auto-scroll to ATM ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -165,6 +166,21 @@ export default function OptionsChainPage() {
     }
   }, [data, selectedIndex, selectedExpiry]);
 
+  useEffect(() => { setLiveSpot(null); }, [selectedIndex]);
+
+  useEffect(() => {
+    refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIndex]);
+
+  useEffect(() => {
+    if (data?.expiries?.length > 0) {
+      if (!selectedExpiry || !data.expiries.includes(selectedExpiry)) {
+        setSelectedExpiry(data.expiries[0]);
+      }
+    }
+  }, [data?.expiries, selectedIndex]);
+
   // ── WebSocket Integration ──────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg) => {
     if (msg.type === 'options_update') {
@@ -174,6 +190,8 @@ export default function OptionsChainPage() {
           refetch();
         }
       }
+    } else if (msg.type === 'price_tick' && msg.data.index_id === selectedIndex) {
+      setLiveSpot(msg.data.ltp);
     }
   }, [selectedIndex, selectedExpiry, refetch]);
 
@@ -235,7 +253,11 @@ export default function OptionsChainPage() {
 
           {/* Group 2: Live Market Stats */}
           <div className="flex items-center flex-1">
-             <StatPill label="Spot" value={data.spot ? `₹${Number(data.spot).toLocaleString('en-IN')}` : '—'} />
+             <StatPill
+               label={liveSpot ? 'Spot ●' : 'Spot'}
+               value={(liveSpot ?? data.spot) ? `₹${Number(liveSpot ?? data.spot).toLocaleString('en-IN')}` : '—'}
+               colour={liveSpot ? 'text-emerald-300' : 'text-slate-100'}
+             />
              <StatPill label="Max Pain" value={data.max_pain ? `₹${Number(data.max_pain).toLocaleString('en-IN')}` : '—'} colour="text-yellow-400" />
              <PCRGauge pcr={data.pcr} />
              <OIBalance totalCe={data.total_ce_oi} totalPe={data.total_pe_oi} />
@@ -328,14 +350,7 @@ export default function OptionsChainPage() {
           <div className="text-center max-w-md px-6">
             <BarChart2 className="w-12 h-12 text-slate-700 mx-auto mb-3" />
             <p className="text-slate-400 text-sm font-semibold">No chain data for {selectedIndex}</p>
-            {selectedIndex === 'SENSEX' ? (
-              <p className="text-slate-600 text-xs mt-2 leading-relaxed">
-                SENSEX is a BSE index. The current options data pipeline is integrated with NSE. 
-                BSE options support is currently in development.
-              </p>
-            ) : (
-              <p className="text-slate-600 text-xs mt-1">Options chain data may not be available post-market or for this specific expiry.</p>
-            )}
+            <p className="text-slate-600 text-xs mt-1">Options chain data may not be available post-market or for this specific expiry.</p>
           </div>
         </div>
       ) : (

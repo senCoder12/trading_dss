@@ -53,6 +53,12 @@ _ENDPOINTS = {
     "index_data": f"{_BSE_API_BASE}/IndicesData/w",
     "market_status": f"{_BSE_API_BASE}/marketStatus/w",
     "index_members": f"{_BSE_API_BASE}/MSectors/w",
+    "option_chain_expiry": f"{_BSE_API_BASE}/ddlExpiry_Options/w",
+    "option_chain": f"{_BSE_API_BASE}/getoptionchain/w",
+}
+
+_BSE_SCRIP_CODES: dict[str, str] = {
+    "SENSEX": "1",
 }
 
 
@@ -362,6 +368,186 @@ class BSEScraper:
             cache_key="bse:market_status",
             cache_ttl=_CACHE_TTL_STATUS,
         )
+
+    def get_option_chain_meta(self, symbol: str) -> Optional[dict[str, Any]]:
+        """
+        Fetch available expiry dates for a BSE F&O symbol (e.g., "SENSEX").
+
+        Returns
+        -------
+        dict or None:
+            Dict with `expiryDates: list[str]` (formatted dd-MMM-yyyy), or ``None`` on failure.
+        """
+        scrip_cd = _BSE_SCRIP_CODES.get(symbol.upper())
+        if not scrip_cd:
+            return None
+
+        raw = self._call(
+            _ENDPOINTS["option_chain_expiry"],
+            params={"Scrip_cd": scrip_cd, "type": "Index"},
+            cache_key=f"bse:optmeta:{symbol.upper()}",
+            cache_ttl=300,
+        )
+        if not raw:
+            return None
+
+        expiry_list = raw if isinstance(raw, list) else raw.get("Table", [])
+        expiry_dates = []
+        for e in expiry_list:
+            exp_str = e.get("ExpiryDate", "")
+            if not exp_str:
+                continue
+            try:
+                parsed = self._parse_bse_date(exp_str)
+                if parsed:
+                    expiry_dates.append(parsed)
+            except Exception:
+                continue
+        return {"expiryDates": expiry_dates}
+
+    def get_option_chain(self, symbol: str, expiry: str) -> Optional[dict[str, Any]]:
+        """
+        Fetch the full BSE options chain for a symbol + expiry.
+
+        Parameters
+        ----------
+        symbol:
+            BSE F&O symbol e.g. "SENSEX"
+        expiry:
+            Expiry date in BSE format (ddMONYYYY), e.g. "25APR2025"
+
+        Returns
+        -------
+        dict or None:
+            Normalized options chain in NSE-compatible shape with ``records`` key, or ``None``.
+        """
+        scrip_cd = _BSE_SCRIP_CODES.get(symbol.upper())
+        if not scrip_cd:
+            return None
+
+        raw = self._call(
+            _ENDPOINTS["option_chain"],
+            params={
+                "scrip_cd": scrip_cd,
+                "type": "Index",
+                "expiry": expiry,
+                "optiontype": "Both",
+                "strikeprice": "",
+            },
+            cache_key=f"bse:optchain:{symbol.upper()}:{expiry}",
+            cache_ttl=60,
+        )
+        if not raw:
+            return None
+        return self._normalize_option_chain(symbol, raw)
+
+    def _parse_bse_date(self, date_str: str) -> Optional[str]:
+        """
+        Parse BSE date string to dd-MMM-yyyy format for compatibility with NSE parser.
+        Accepts ddMONYYYY (e.g., 25APR2025), dd-MON-YYYY, or ISO datetime.
+        """
+        if not date_str:
+            return None
+
+        from datetime import datetime
+
+        date_str = date_str.strip()
+
+        formats = ["%d%b%Y", "%d-%b-%Y", "%d-%B-%Y"]
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(date_str.upper(), fmt)
+                return dt.strftime("%d-%b-%Y")
+            except ValueError:
+                continue
+
+        try:
+            dt = datetime.fromisoformat(date_str.split("T")[0])
+            return dt.strftime("%d-%b-%Y")
+        except (ValueError, AttributeError):
+            return None
+
+    def _normalize_option_chain(self, symbol: str, raw: dict) -> dict:
+        """
+        Normalize BSE options chain JSON to NSE-compatible shape.
+        Converts BSE field names to match `OptionsChainFetcher` expectations.
+        """
+        f = self._float
+
+        underlying = f(raw.get("UnderlyingValue", raw.get("UndVal", 0.0)))
+
+        expiry_table = raw.get("Table1", raw.get("Table2", []))
+        if not isinstance(expiry_table, list):
+            expiry_table = []
+        expiry_dates = []
+        for e in expiry_table:
+            exp_str = e.get("ExpiryDate", "")
+            if exp_str:
+                parsed = self._parse_bse_date(exp_str)
+                if parsed:
+                    expiry_dates.append(parsed)
+
+        strikes_table = raw.get("Table", [])
+        if not isinstance(strikes_table, list):
+            strikes_table = []
+
+        data = []
+        for s in strikes_table:
+            strike_price = f(s.get("StrikePrice", 0.0))
+            expiry_str = s.get("ExpiryDate", "")
+            if expiry_str:
+                expiry_str = self._parse_bse_date(expiry_str) or expiry_str
+
+            ce = {
+                "openInterest": int(f(s.get("OI_CE", s.get("CE_OI", 0.0)))),
+                "changeinOpenInterest": int(f(s.get("OIChg_CE", s.get("CE_OIChg", 0.0)))),
+                "pchangeinOpenInterest": f(s.get("POIChg_CE", s.get("CE_POIChg", 0.0))),
+                "totalTradedVolume": int(f(s.get("Vol_CE", s.get("CE_VOL", s.get("Volume_CE", 0.0))))),
+                "impliedVolatility": f(s.get("IV_CE", s.get("CE_IV", 0.0))),
+                "lastPrice": f(s.get("LTP_CE", s.get("CE_LTP", 0.0))),
+                "change": f(s.get("Chng_CE", s.get("CE_PriceChng", s.get("CE_Chng", 0.0)))),
+                "pChange": f(s.get("PChng_CE", s.get("CE_ChngPcnt", s.get("CE_PChng", 0.0)))),
+                "totalBuyQuantity": int(f(s.get("BidQty_CE", s.get("CE_BidQty", 0.0)))),
+                "totalSellQuantity": int(f(s.get("AskQty_CE", s.get("CE_AskQty", 0.0)))),
+                "bidQty": int(f(s.get("BidQty_CE", s.get("CE_BidQty", 0.0)))),
+                "bidprice": f(s.get("BidPrice_CE", s.get("CE_BidPrice", 0.0))),
+                "askPrice": f(s.get("AskPrice_CE", s.get("CE_AskPrice", 0.0))),
+                "askQty": int(f(s.get("AskQty_CE", s.get("CE_AskQty", 0.0)))),
+                "expiryDate": expiry_str,
+            }
+
+            pe = {
+                "openInterest": int(f(s.get("OI_PE", s.get("PE_OI", 0.0)))),
+                "changeinOpenInterest": int(f(s.get("OIChg_PE", s.get("PE_OIChg", 0.0)))),
+                "pchangeinOpenInterest": f(s.get("POIChg_PE", s.get("PE_POIChg", 0.0))),
+                "totalTradedVolume": int(f(s.get("Vol_PE", s.get("PE_VOL", s.get("Volume_PE", 0.0))))),
+                "impliedVolatility": f(s.get("IV_PE", s.get("PE_IV", 0.0))),
+                "lastPrice": f(s.get("LTP_PE", s.get("PE_LTP", 0.0))),
+                "change": f(s.get("Chng_PE", s.get("PE_PriceChng", s.get("PE_Chng", 0.0)))),
+                "pChange": f(s.get("PChng_PE", s.get("PE_ChngPcnt", s.get("PE_PChng", 0.0)))),
+                "totalBuyQuantity": int(f(s.get("BidQty_PE", s.get("PE_BidQty", 0.0)))),
+                "totalSellQuantity": int(f(s.get("AskQty_PE", s.get("PE_AskQty", 0.0)))),
+                "bidQty": int(f(s.get("BidQty_PE", s.get("PE_BidQty", 0.0)))),
+                "bidprice": f(s.get("BidPrice_PE", s.get("PE_BidPrice", 0.0))),
+                "askPrice": f(s.get("AskPrice_PE", s.get("PE_AskPrice", 0.0))),
+                "askQty": int(f(s.get("AskQty_PE", s.get("PE_AskQty", 0.0)))),
+                "expiryDate": expiry_str,
+            }
+
+            data.append({
+                "strikePrice": strike_price,
+                "expiryDate": expiry_str,
+                "CE": ce,
+                "PE": pe,
+            })
+
+        return {
+            "records": {
+                "underlyingValue": underlying,
+                "expiryDates": expiry_dates,
+                "data": data,
+            }
+        }
 
     # ── Health ────────────────────────────────────────────────────────────────
 
