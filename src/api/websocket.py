@@ -28,6 +28,8 @@ from src.utils.date_utils import get_ist_now
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["broadcaster", "queue_event", "process_event_queue", "EventBroadcaster"]
+
 # ---------------------------------------------------------------------------
 # EventBroadcaster — async, used inside the FastAPI event loop
 # ---------------------------------------------------------------------------
