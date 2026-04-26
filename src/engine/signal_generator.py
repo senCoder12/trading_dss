@@ -342,7 +342,7 @@ class SignalGenerator:
 
         # Apply gap-fill only when the primary signal is indeterminate or weak
         if direction == "NO_TRADE" or abs(weighted_score) < 1.0:
-            gap_direction = self._determine_direction(gap_score)
+            gap_direction = self._determine_direction(gap_score, regime.regime)
             if gap_direction != "NO_TRADE":
                 weighted_score = gap_score
                 direction = gap_direction
@@ -704,9 +704,10 @@ class SignalGenerator:
             call_thresh = _SCORE_CALL_THRESHOLD
             put_thresh = _SCORE_PUT_THRESHOLD
 
-        # BUY_CALL disabled (1.7% success) — use PUT only
-        # Map both bullish AND bearish scores to BUY_PUT for a volatility-focused strategy
-        if abs(score) >= abs(put_thresh):
+        # Regime-aware direction: allow BUY_CALL in strong uptrends, otherwise PUT
+        if score >= call_thresh and regime in ("STRONG_TREND_UP", "TREND_UP"):
+            return "BUY_CALL"
+        if score <= put_thresh:
             return "BUY_PUT"
         return "NO_TRADE"
 
@@ -869,11 +870,13 @@ class SignalGenerator:
         if not resistance or not math.isfinite(resistance) or resistance <= 0:
             resistance = entry_price * 1.02  # fallback: 2% above entry
 
+        # Use S/R directly with small buffer; ATR for target distance (profit taking)
+        sr_buffer_pct = 0.002  # 0.2% buffer below support / above resistance
         if direction == "BUY_CALL":
-            stop_loss = support - atr * sl_mult * 2.0
+            stop_loss = support * (1.0 - sr_buffer_pct)  # just below support
             target = entry_price + atr * sl_mult * rr
         else:  # BUY_PUT
-            stop_loss = resistance + atr * sl_mult * 2.0
+            stop_loss = resistance * (1.0 + sr_buffer_pct)  # just above resistance
             target = entry_price - atr * sl_mult * rr
 
         stop_loss = max(stop_loss, 0.01)

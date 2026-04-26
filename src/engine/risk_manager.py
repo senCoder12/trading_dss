@@ -487,7 +487,7 @@ class RiskManager:
         refined.lots = lots
         refined.risk_amount = risk_amount
 
-        # Recompute after lot clamping
+        # Recompute after lot clamping — express in rupees with account context
         sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
         tgt_dist = abs(refined.refined_target - refined.refined_entry)
         tx_total = lots * self.config.transaction_cost_per_lot * 2  # entry + exit
@@ -498,6 +498,12 @@ class RiskManager:
             refined.max_loss_amount / self.config.total_capital * 100
         )
         refined.total_margin_required = 0.0  # filled in step 6 if chain available
+
+        # Account-size context: note the rupee amounts in reasoning
+        refined.adjustments_made.append(
+            f"Account context: max loss ₹{refined.max_loss_amount:.0f} "
+            f"({refined.risk_pct_of_capital:.2f}% of ₹{self.config.total_capital:.0f})"
+        )
 
         # --- Step 4: daily loss gate -------------------------------------
         if not self._step_check_daily_limit(refined, daily_remaining):
@@ -1037,33 +1043,46 @@ class RiskManager:
         daily_remaining: float,
     ) -> tuple[int, float]:
         """
-        Step 3 — calculate lots based on risk budget.
+        Step 3 — calculate lots based on Kelly criterion (or conservative fallback).
+
+        Kelly% = (b*p - (1-p)) / b, where:
+        - p = historical win rate
+        - b = avg_win / avg_loss (payoff ratio)
 
         Returns ``(lots, risk_amount_₹)``.
         """
         cfg = self.config
-        max_risk = cfg.total_capital * cfg.max_risk_per_trade_pct / 100
+        sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
 
-        # Confidence modifier
-        conf_map = {
-            "HIGH": cfg.high_confidence_size_pct,
-            "MEDIUM": cfg.medium_confidence_size_pct,
-            "LOW": cfg.low_confidence_size_pct,
-        }
-        conf_pct = conf_map.get(refined.confidence_level, cfg.low_confidence_size_pct)
-        risk_amount = max_risk * (conf_pct / 100.0)
+        # Attempt Kelly sizing from historical performance
+        hist = self._fetch_historical_stats(refined.index_id)
+        if hist["total_trades"] >= 10:  # need min sample size
+            kelly_pct = self._kelly_criterion(hist)
+            risk_amount = kelly_pct * cfg.total_capital
+            refined.adjustments_made.append(
+                f"Kelly criterion: {kelly_pct*100:.1f}% of capital "
+                f"({hist['total_trades']} trades, {hist['win_rate']*100:.1f}% win)"
+            )
+        else:
+            # Fallback: confidence-based sizing
+            max_risk = cfg.total_capital * cfg.max_risk_per_trade_pct / 100
+            conf_map = {
+                "HIGH": cfg.high_confidence_size_pct,
+                "MEDIUM": cfg.medium_confidence_size_pct,
+                "LOW": cfg.low_confidence_size_pct,
+            }
+            conf_pct = conf_map.get(refined.confidence_level, cfg.low_confidence_size_pct)
+            risk_amount = max_risk * (conf_pct / 100.0)
+            refined.adjustments_made.append(
+                f"Fallback: confidence-based sizing ({refined.confidence_level}) — "
+                f"insufficient history for Kelly ({hist['total_trades']} trades)"
+            )
 
         # Regime/anomaly position modifier from signal
         risk_amount *= refined.position_size_modifier
-
-        # Clamp to a meaningful minimum
         risk_amount = max(risk_amount, 0.0)
 
-        sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
-
-        # Delta-adjusted SL: option moves less than the index (delta < 1).
-        # Use entry delta from option_greeks if available; otherwise attempt a
-        # quick BS estimate; fall back to delta=1 (conservative) if unavailable.
+        # Delta-adjusted SL
         entry_delta = 1.0
         if refined.option_greeks and "delta" in refined.option_greeks:
             entry_delta = abs(float(refined.option_greeks["delta"]))
@@ -1082,9 +1101,7 @@ class RiskManager:
             except Exception:
                 entry_delta = 1.0
 
-        # Clamp delta to a sensible range (deep OTM ≥ 0.1, deep ITM ≤ 0.95)
         entry_delta = max(0.1, min(entry_delta, 0.95))
-
         effective_sl_distance = sl_dist * entry_delta
         loss_per_lot = effective_sl_distance * lot_size + cfg.transaction_cost_per_lot
 
@@ -1092,21 +1109,12 @@ class RiskManager:
             return 1, risk_amount
 
         lots = math.floor(risk_amount / loss_per_lot)
-        lots = max(lots, 1)           # at least 1 lot
-        lots = min(lots, cfg.max_lots_per_trade)  # safety cap
+        lots = max(lots, 1)
+        lots = min(lots, cfg.max_lots_per_trade)
 
         if entry_delta < 0.99:
             refined.adjustments_made.append(
-                f"Delta-adjusted sizing: delta={entry_delta:.2f}, "
-                f"effective SL={effective_sl_distance:.1f} pts (raw {sl_dist:.1f})"
-            )
-
-        # Verify we can actually afford 1 lot
-        one_lot_cost = loss_per_lot
-        if one_lot_cost > cfg.total_capital * 0.20:  # > 20% of capital for 1 lot
-            refined.adjustments_made.append(
-                f"Insufficient capital for even 1 lot: 1-lot risk ₹{one_lot_cost:.0f} "
-                f"> 20% of capital ₹{cfg.total_capital:.0f}"
+                f"Delta adjustment: {entry_delta:.2f}x, effective SL {effective_sl_distance:.1f}pts"
             )
 
         return lots, round(risk_amount, 2)
@@ -1495,6 +1503,67 @@ class RiskManager:
         h, m = settings.market_hours.market_close.split(":")
         close = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
         return now >= close - timedelta(minutes=minutes)
+
+    def _fetch_historical_stats(self, index_id: str) -> dict:
+        """Fetch win rate and payoff ratio from closed trades on *index_id*."""
+        try:
+            rows = self._db.fetch_all(
+                """
+                SELECT outcome, actual_pnl
+                FROM   trading_signals
+                WHERE  index_id = ?
+                  AND  outcome IN ('WIN', 'LOSS')
+                  AND  actual_pnl IS NOT NULL
+                ORDER  BY closed_at DESC
+                LIMIT  100
+                """,
+                (index_id,),
+            )
+
+            if not rows:
+                return {"total_trades": 0, "win_rate": 0.5, "avg_win": 0.0, "avg_loss": 0.0}
+
+            wins = [r["actual_pnl"] for r in rows if r["outcome"] == "WIN"]
+            losses = [r["actual_pnl"] for r in rows if r["outcome"] == "LOSS"]
+
+            if not wins or not losses:
+                return {
+                    "total_trades": len(rows),
+                    "win_rate": len(wins) / len(rows) if rows else 0.5,
+                    "avg_win": sum(wins) / len(wins) if wins else 0.0,
+                    "avg_loss": abs(sum(losses) / len(losses)) if losses else 0.0,
+                }
+
+            return {
+                "total_trades": len(rows),
+                "win_rate": len(wins) / len(rows),
+                "avg_win": sum(wins) / len(wins),
+                "avg_loss": abs(sum(losses) / len(losses)),
+            }
+        except Exception:
+            logger.debug(f"Could not fetch historical stats for {index_id}")
+            return {"total_trades": 0, "win_rate": 0.5, "avg_win": 0.0, "avg_loss": 0.0}
+
+    @staticmethod
+    def _kelly_criterion(hist: dict) -> float:
+        """
+        Calculate optimal position size via Kelly criterion.
+        Kelly% = (b*p - (1-p)) / b, where b = avg_win/avg_loss, p = win_rate.
+        Capped at 25% for safety (Kelly itself can be aggressive).
+        """
+        p = hist.get("win_rate", 0.5)
+        avg_win = hist.get("avg_win", 0.0)
+        avg_loss = hist.get("avg_loss", 0.0)
+
+        if avg_loss <= 0 or avg_win <= 0:
+            return 0.02  # conservative fallback: 2% per trade
+
+        b = avg_win / avg_loss
+        kelly = (b * p - (1 - p)) / b if b > 0 else 0.02
+
+        # Clamp to [0.5%, 25%] for practical trading
+        kelly = max(0.005, min(kelly, 0.25))
+        return kelly
 
     def _load_open_positions(self) -> None:
         """Restore open positions from DB on startup (today's OPEN signals)."""
