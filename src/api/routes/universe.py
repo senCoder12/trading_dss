@@ -212,14 +212,14 @@ async def get_options_chain(
 
         # Query latest price for the symbol
         price_row = db.fetch_one(
-            "SELECT ltp FROM price_data WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
+            "SELECT close FROM price_data WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
             (symbol,)
         )
 
         if not price_row:
             raise HTTPException(status_code=404, detail=f"No price data for {symbol}")
 
-        spot_price = price_row.get("ltp", 0)
+        spot_price = price_row.get("close", 0)
 
         # Get available expiries
         expiry_rows = db.fetch_all(

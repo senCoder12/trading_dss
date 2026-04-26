@@ -540,7 +540,7 @@ async def get_options_summary(
         nearest_expiry = expiries[-1]["expiry_date"]
 
     # Get aggregated OI data
-    oi_row = db.fetch_one(Q.GET_LATEST_OI_AGGREGATED, (index_id, nearest_expiry))
+    oi_row = db.fetch_one(Q.GET_LATEST_OI_AGGREGATED, (index_id, nearest_expiry, now.isoformat()))
 
     # Get spot price
     price_row = db.fetch_one(Q.GET_LATEST_PRICE_ANY_TF, (index_id,))
