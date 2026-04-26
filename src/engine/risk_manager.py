@@ -51,7 +51,7 @@ class RiskConfig:
     # Capital & risk limits
     total_capital: float = 100_000.0          # ₹ total trading capital
     max_risk_per_trade_pct: float = 2.0        # % of capital per trade
-    max_risk_per_day_pct: float = 5.0          # % daily loss limit
+    max_risk_per_day_pct: float = 2.0          # % daily loss limit (hard stop at 2%)
     max_open_positions: int = 3                # simultaneous open positions
     max_positions_per_index: int = 1           # positions in same index
     max_lots_per_trade: int = 5                # absolute safety cap

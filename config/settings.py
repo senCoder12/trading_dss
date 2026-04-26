@@ -273,6 +273,17 @@ class LoggingSettings(BaseSettings):
     model_config = {"env_prefix": "LOG_", "extra": "ignore"}
 
 
+class TradingSettings(BaseSettings):
+    """F&O universe and trading scope configuration."""
+
+    restrict_to_major_indices: bool = Field(
+        default=False,
+        description="If True, trade only NIFTY50, BANKNIFTY, FINNIFTY (highest liquidity). If False, trade all F&O indices.",
+    )
+
+    model_config = {"env_prefix": "TRADING_", "extra": "ignore"}
+
+
 class BrokerSettings(BaseSettings):
     """Broker API configuration. Credentials loaded from .env without any prefix."""
 
@@ -347,6 +358,7 @@ class Settings(BaseSettings):
     thresholds: SignalThresholds = Field(default_factory=SignalThresholds)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    trading: TradingSettings = Field(default_factory=TradingSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
 
     model_config = {

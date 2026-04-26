@@ -529,7 +529,10 @@ class DecisionEngine:
             logger.critical("KILL SWITCH ACTIVE — skipping all indices")
             return []
 
-        fo_indices = self.registry.get_indices_with_options()
+        from config.settings import settings
+        fo_indices = self.registry.get_trading_universe(
+            major_only=settings.trading.restrict_to_major_indices
+        )
         if not fo_indices:
             logger.warning("DecisionEngine.run_all_indices: no F&O indices in registry")
             return []

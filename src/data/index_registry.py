@@ -363,8 +363,33 @@ class IndexRegistry:
         return [i for i in self.get_active_indices() if i.exchange == ex]
 
     def get_indices_with_options(self) -> list[Index]:
-        """Return active indices that have options (weekly or monthly)."""
+        """Return active indices that have options (weekly or monthly).
+
+        Note: This includes ALL F&O-enabled indices from config. To restrict
+        to top-liquidity indices, see get_trading_universe().
+        """
         return [i for i in self.get_active_indices() if i.has_options]
+
+    def get_trading_universe(self, major_only: bool = False) -> list[Index]:
+        """Return F&O indices for signal generation.
+
+        Parameters
+        ----------
+        major_only:
+            If True, restrict to highest-liquidity indices (NIFTY50, BANKNIFTY, FINNIFTY).
+            If False, use all F&O-enabled indices from config.
+
+        Returns
+        -------
+        Sorted list of Index objects ready for trading.
+        """
+        fo_indices = self.get_indices_with_options()
+
+        if major_only:
+            major_ids = {"NIFTY50", "BANKNIFTY", "FINNIFTY"}
+            fo_indices = [i for i in fo_indices if i.id in major_ids]
+
+        return sorted(fo_indices, key=lambda x: x.id)
 
     def get_index_by_option_symbol(self, option_symbol: str) -> Optional[Index]:
         """Return the Index matching the given option_symbol (e.g. 'NIFTY')."""

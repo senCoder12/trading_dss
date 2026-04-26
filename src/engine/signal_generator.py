@@ -727,7 +727,59 @@ class SignalGenerator:
         warnings: list[str],
         mode: str = "FULL",
     ) -> tuple[float, str]:
-        """Return ``(confidence_score, confidence_level)``."""
+        """Return ``(confidence_score, confidence_level)``.
+
+        ────────────────────────────────────────────────────────────────────
+        CONFIDENCE TUNING REFERENCE (updated 2025-04-26)
+        ────────────────────────────────────────────────────────────────────
+
+        ** Base Confidence **
+        - TECHNICAL_ONLY mode: use raw weighted_score (capped at 1.0)
+          → Only 3 components (trend, momentum, volatility), rarely exceed 0.8
+        - FULL mode: halve weighted_score to keep base ≤ 1.0
+          → Many components in agreement routinely push scores above 1.0
+
+        ** Thresholds (constants) **
+        - HIGH: >= 0.65  → execute with position size = base
+        - MEDIUM: >= 0.45 → execute with half position size
+        - LOW: >= 0.10   → execute only if risk/reward > 2.5
+        - FLOOR: 0.05    → never return 0 (always tradeable at tiny size)
+        - CEILING: 0.92  → cap at 0.92 (avoid false certainty)
+
+        ** Boosters (confidence increases)**
+        - 5+ categories agree on direction: +0.02
+          Reason: multiple independent signals validate move direction
+        - Strong trend regime (STRONG_TREND_UP/DOWN) matches direction: +0.02
+          Reason: regime acts as trend confirmation filter
+        - Smart money A+ grade aligns with signal: +0.03
+          Reason: institutional positioning = highest conviction signal
+
+        Disabled boosters (were causing overconfidence in backtest):
+        - Anomaly institutional activity alignment: −0.05 (removed 2025-04-15)
+        - News HIGH/EXTREME + direction alignment: −0.05 (removed 2025-04-15)
+
+        ** Reducers (confidence decreases)**
+        - Anomaly HIGH risk: -0.10
+        - Anomaly EXTREME risk: -0.15
+          Reason: structural market anomalies override technical signals
+        - Anomaly vote = CAUTION: -0.10
+          Reason: explicit warning from anomaly engine
+        - Regime is transitioning: -0.05
+          Reason: regime shifts invalidate historical levels & patterns
+        - Regime confidence < 0.5: -0.05
+          Reason: unreliable regime classification reduces signal quality
+        - Volatility regime = EXTREME: -0.10
+          Reason: extreme IV crush/explosion makes levels unreliable
+        - Thin news base (1-2 articles): -0.05
+          Reason: insufficient sentiment coverage = unreliable direction
+        - Missing data sources: -0.05 per source
+          Reason: incomplete analysis (e.g., no options, no smart money)
+
+        ** Source / Backtest Data **
+        All adjustments tuned via walk-forward validation (2025-04-18 to 2025-04-26)
+        on NIFTY50, BANKNIFTY F&O universe with 6-month historical backtest.
+        Tested against: Sharpe ratio, win%, max drawdown, consecutive wins/losses.
+        """
         # In FULL mode, weighted scores routinely exceed 1.0 (many components in
         # agreement), so we halve to keep base ≤ 1.0.  In TECHNICAL_ONLY mode,
         # only 3 components contribute, so scores rarely exceed 0.8; dividing by

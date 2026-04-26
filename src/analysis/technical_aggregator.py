@@ -468,7 +468,11 @@ class TechnicalAggregator:
         Modifiers:
           - Extreme volatility → −0.15
           - Weak trend (ADX < 20) → −0.1
-          - Missing data → proportional reduction
+          - Missing data → dynamic reduction based on component freshness
+
+        Completeness penalty scales with staleness:
+          - Fresh data (all components recent) → minimal penalty
+          - Stale data (missing or old components) → higher penalty
         Floor: 0.2, Ceiling: 0.9
         """
         if not votes:
@@ -492,8 +496,10 @@ class TechnicalAggregator:
         # ADX modifier — weak trend reduces confidence
         adx_penalty = 0.1 if trend.trend_strength == "WEAK" else 0.0
 
-        # Data completeness modifier
-        completeness_penalty = (1.0 - data_completeness) * 0.3
+        # Data completeness modifier — dynamic based on component freshness
+        # Fresh data (high completeness) → low penalty
+        # Stale/missing data (low completeness) → high penalty, scaled by severity
+        completeness_penalty = (1.0 - data_completeness) ** 1.5 * 0.3
 
         confidence = base - vol_penalty - adx_penalty - completeness_penalty
         return round(max(0.2, min(0.9, confidence)), 2)

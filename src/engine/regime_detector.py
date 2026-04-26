@@ -63,7 +63,10 @@ class SignalWeights:
         return abs(total - 1.0) < 1e-6
 
     def normalise(self) -> None:
-        """Scale all weights so they sum to exactly 1.0."""
+        """Scale all weights so they sum to exactly 1.0.
+
+        Raises ValueError if total is zero or negative (no non-zero weights).
+        """
         total = (
             self.trend_weight
             + self.momentum_weight
@@ -74,7 +77,8 @@ class SignalWeights:
             + self.anomaly_weight
         )
         if total <= 0:
-            return
+            raise ValueError("Cannot normalise weights: sum must be positive")
+
         factor = 1.0 / total
         self.trend_weight *= factor
         self.momentum_weight *= factor
@@ -83,6 +87,29 @@ class SignalWeights:
         self.news_weight *= factor
         self.smart_money_weight *= factor
         self.anomaly_weight *= factor
+
+        # Validate result: ensure all weights are non-negative and sum to 1.0
+        normalized_total = (
+            self.trend_weight
+            + self.momentum_weight
+            + self.options_weight
+            + self.volume_weight
+            + self.news_weight
+            + self.smart_money_weight
+            + self.anomaly_weight
+        )
+        assert abs(normalized_total - 1.0) < 1e-6, f"Normalisation failed: weights sum to {normalized_total}, not 1.0"
+
+        weights = [
+            self.trend_weight,
+            self.momentum_weight,
+            self.options_weight,
+            self.volume_weight,
+            self.news_weight,
+            self.smart_money_weight,
+            self.anomaly_weight,
+        ]
+        assert all(w >= 0.0 for w in weights), f"Normalisation produced negative weights: {weights}"
 
 
 @dataclass

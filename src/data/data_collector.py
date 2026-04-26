@@ -115,6 +115,10 @@ class DataCollector:
         # Monotonic timestamp of last auto-recovery attempt per component
         self._last_recovery: Dict[str, float] = {}
 
+        # Signal generation heartbeat monitoring
+        self._last_signal_time: float = time.monotonic()
+        self._last_heartbeat_log: float = time.monotonic()
+
         self.health_status: Dict[str, Any] = {
             "last_successful_price_fetch": None,
             "last_vix_regime": None,
@@ -406,7 +410,12 @@ class DataCollector:
             logger.error("News collection failed: %s", exc)
 
     def _run_decision_cycle(self) -> None:
-        """Scheduled task: Run full decision cycle for all indices."""
+        """Scheduled task: Run full decision cycle for all indices.
+
+        Includes heartbeat monitoring to detect signal generation stalls:
+        - Log heartbeat every 30 seconds if no new signals
+        - Alert (HIGH severity) if > 60 seconds without actionable signals
+        """
         if self.decision_engine is None or not self._should_run():
             return
 
@@ -414,9 +423,43 @@ class DataCollector:
         try:
             results = self.decision_engine.run_all_indices()
             actionable = [r for r in results if r.is_actionable]
+
+            # Update signal generation timestamp if actionable signals found
+            if actionable:
+                self._last_signal_time = time.monotonic()
+
+            # Heartbeat monitoring: log every 30s if stale, alert if > 60s
+            now = time.monotonic()
+            elapsed_since_signal = now - self._last_signal_time
+            elapsed_since_log = now - self._last_heartbeat_log
+
+            if elapsed_since_signal > 60:
+                # Critical: no signals for > 60 seconds
+                logger.critical(
+                    "Signal generation stalled: no actionable signals in %.1f seconds",
+                    elapsed_since_signal,
+                )
+                if self.telegram_bot:
+                    self.telegram_bot.send_alert(
+                        f"CRITICAL: No trading signals generated in {int(elapsed_since_signal)}s. "
+                        "Check data sources and decision engine.",
+                        priority="CRITICAL",
+                    )
+                self._last_heartbeat_log = now
+            elif elapsed_since_log > 30:
+                # Regular heartbeat: log every 30s if no signals
+                if elapsed_since_signal > 0:
+                    logger.info(
+                        "Heartbeat: %d seconds since last actionable signal",
+                        int(elapsed_since_signal),
+                    )
+                    self._last_heartbeat_log = now
+
+            # Send alerts for actionable signals
             if actionable and self.telegram_bot:
                 for res in actionable:
                     self.telegram_bot.send_alert(res.alert_message, priority="HIGH")
+
             logger.info("Decision cycle complete: %d signals, %d actionable", len(results), len(actionable))
         except Exception as exc:
             logger.error("Decision cycle failed: %s", exc, exc_info=True)
