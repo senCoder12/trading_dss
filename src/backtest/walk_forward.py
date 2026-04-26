@@ -61,6 +61,7 @@ class WalkForwardConfig:
     simulator_config: SimulatorConfig = field(default_factory=SimulatorConfig)
     mode: str = "TECHNICAL_ONLY"
     min_confidence: str = "MEDIUM"
+    warmup_bars: int = 250         # Bars to warm up indicators before trading
 
     # Robustness checks
     parameter_sensitivity: bool = False  # If True, also test ±20% param variation
@@ -307,6 +308,7 @@ class WalkForwardValidator:
             start_date=start,
             end_date=end,
             timeframe=config.timeframe,
+            warmup_bars=config.warmup_bars,
             simulator_config=config.simulator_config,
             mode=config.mode,
             min_confidence=config.min_confidence,
@@ -347,6 +349,7 @@ class WalkForwardValidator:
                 start_date=w["test_start"],
                 end_date=w["test_end"],
                 timeframe=config.timeframe,
+                warmup_bars=config.warmup_bars,
                 simulator_config=config.simulator_config,
                 mode=config.mode,
                 min_confidence=config.min_confidence,

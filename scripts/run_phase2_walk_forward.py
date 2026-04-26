@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--train-days", type=int, default=252, help="Train window size in trading days")
     parser.add_argument("--test-days", type=int, default=63, help="Test window size in trading days")
     parser.add_argument("--step-days", type=int, default=63, help="Step size between windows in trading days")
+    parser.add_argument("--warmup-bars", type=int, default=50, help="Bars to warm up indicators (default: 50)")
     args = parser.parse_args()
 
     db = DatabaseManager()
@@ -53,6 +54,7 @@ def main():
     print(f"Train Window: {args.train_days} trading days")
     print(f"Test Window:  {args.test_days} trading days")
     print(f"Step Size:    {args.step_days} trading days")
+    print(f"Warmup:       {args.warmup_bars} bars")
     print(f"Entry/Exit Slippage: 1% / 0.5%")
     print(f"{'='*70}\n")
 
@@ -79,6 +81,7 @@ def main():
         simulator_config=simulator_config,
         mode="TECHNICAL_ONLY",
         min_confidence="LOW",
+        warmup_bars=args.warmup_bars,
         parameter_sensitivity=False,
     )
 
