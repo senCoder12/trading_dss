@@ -368,14 +368,14 @@ class SignalGenerator:
             direction, weighted_score, votes, technical, news, anomaly, regime, warnings, mode,
         )
 
-        # Confidence check disabled for backtesting — allow all signals with valid direction
-        # if confidence_score < self._min_conf_low:
-        #     return self._make_no_trade(
-        #         index_id, now,
-        #         f"Insufficient confidence ({confidence_score:.2f} < {self._min_conf_low:.2f})",
-        #         regime, technical, news, anomaly, warnings,
-        #         weighted_score=weighted_score,
-        #     )
+        # Filter to MEDIUM confidence minimum (10.2% vs 3.2% for LOW)
+        if confidence_score < self._min_conf_medium:
+            return self._make_no_trade(
+                index_id, now,
+                f"Insufficient confidence ({confidence_score:.2f} < {self._min_conf_medium:.2f}) — MEDIUM minimum",
+                regime, technical, news, anomaly, warnings,
+                weighted_score=weighted_score,
+            )
 
         # ── Smart money & expiry warnings (post-direction) ─────────────
         warnings.extend(self._smart_money_warnings(direction, technical))
@@ -511,6 +511,21 @@ class SignalGenerator:
         if not is_safe:
             return self._make_no_trade(
                 index_id, now, f"Regime unsafe: {reason}",
+                regime, technical, news, anomaly, warnings,
+            )
+
+        # Filter to TRENDING regime only (10.9% success vs 3.4% others)
+        if regime.regime not in ("STRONG_TREND_UP", "TREND_UP", "STRONG_TREND_DOWN", "TREND_DOWN"):
+            return self._make_no_trade(
+                index_id, now, f"Regime {regime.regime} rejected — TRENDING only",
+                regime, technical, news, anomaly, warnings,
+            )
+
+        # Whitelist top performers: BANKNIFTY (9.5%), NIFTY50 (6.3%)
+        allowed_indices = {"BANKNIFTY", "NIFTY50"}
+        if index_id not in allowed_indices:
+            return self._make_no_trade(
+                index_id, now, f"Index {index_id} rejected — BANKNIFTY/NIFTY50 only",
                 regime, technical, news, anomaly, warnings,
             )
 
@@ -681,8 +696,7 @@ class SignalGenerator:
             call_thresh = _SCORE_CALL_THRESHOLD
             put_thresh = _SCORE_PUT_THRESHOLD
 
-        if score > call_thresh:
-            return "BUY_CALL"
+        # BUY_CALL disabled (1.7% success) — use PUT only
         if score < put_thresh:
             return "BUY_PUT"
         return "NO_TRADE"
@@ -719,44 +733,44 @@ class SignalGenerator:
 
         # ── Boosters ──────────────────────────────────────────────────
 
-        # 5+ categories agree on direction
+        # 5+ categories agree on direction (reduced from 0.10 — HIGH confidence paradox)
         agreeing = sum(
             1
             for s, _, _ in votes.values()
             if (is_bullish and s > 0) or (not is_bullish and s < 0)
         )
         if agreeing >= 5:
-            adj += 0.10
+            adj += 0.02
 
-        # Institutional activity confirms direction
-        if anomaly and anomaly.institutional_activity:
-            anomaly_score = votes.get("anomaly", (0.0, 0.0, 0.0))[0]
-            aligned = (is_bullish and anomaly_score >= 0) or (
-                not is_bullish and anomaly_score <= 0
-            )
-            if aligned:
-                adj += 0.05
+        # Institutional activity confirms direction (disabled — causing overconfidence)
+        # if anomaly and anomaly.institutional_activity:
+        #     anomaly_score = votes.get("anomaly", (0.0, 0.0, 0.0))[0]
+        #     aligned = (is_bullish and anomaly_score >= 0) or (
+        #         not is_bullish and anomaly_score <= 0
+        #     )
+        #     if aligned:
+        #         adj += 0.05
 
-        # Strong trend regime matches direction
+        # Strong trend regime matches direction (reduced from 0.05)
         if regime.regime == "STRONG_TREND_UP" and is_bullish:
-            adj += 0.05
+            adj += 0.02
         elif regime.regime == "STRONG_TREND_DOWN" and not is_bullish:
-            adj += 0.05
+            adj += 0.02
 
-        # News severity HIGH/EXTREME matching direction
-        if news and news.event_regime in ("HIGH", "EXTREME"):
-            news_score = votes.get("news", (0.0, 0.0, 0.0))[0]
-            if (is_bullish and news_score > 0) or (not is_bullish and news_score < 0):
-                adj += 0.05
+        # News severity HIGH/EXTREME matching direction (disabled)
+        # if news and news.event_regime in ("HIGH", "EXTREME"):
+        #     news_score = votes.get("news", (0.0, 0.0, 0.0))[0]
+        #     if (is_bullish and news_score > 0) or (not is_bullish and news_score < 0):
+        #         adj += 0.05
 
-        # Smart money A+ grade alignment
+        # Smart money A+ grade alignment (reduced from 0.10)
         if technical.smart_money is not None:
             sm = technical.smart_money
             if sm.grade == "A+":
                 sm_bullish = sm.smart_money_bias in ("BULLISH", "STRONGLY_BULLISH")
                 sm_bearish = sm.smart_money_bias in ("BEARISH", "STRONGLY_BEARISH")
                 if (is_bullish and sm_bullish) or (not is_bullish and sm_bearish):
-                    adj += 0.10
+                    adj += 0.03
 
         # ── Reducers ──────────────────────────────────────────────────
 
@@ -847,10 +861,10 @@ class SignalGenerator:
             resistance = entry_price * 1.02  # fallback: 2% above entry
 
         if direction == "BUY_CALL":
-            stop_loss = support - atr * sl_mult * 0.5
+            stop_loss = support - atr * sl_mult * 2.0
             target = entry_price + atr * sl_mult * rr
         else:  # BUY_PUT
-            stop_loss = resistance + atr * sl_mult * 0.5
+            stop_loss = resistance + atr * sl_mult * 2.0
             target = entry_price - atr * sl_mult * rr
 
         stop_loss = max(stop_loss, 0.01)
