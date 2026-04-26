@@ -565,6 +565,14 @@ GROUP BY index_id, signal_type, confidence_level
 ORDER BY total DESC
 """
 
+COUNT_SIGNALS_TODAY = """
+SELECT COUNT(*) AS count
+FROM trading_signals
+WHERE index_id = ?
+  AND DATE(generated_at) = DATE(?)
+  AND signal_type IN ('BUY_CALL', 'BUY_PUT')
+"""
+
 # ============================================================================
 # fii_dii_activity
 # ============================================================================

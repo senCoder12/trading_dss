@@ -33,7 +33,8 @@ DEFAULT_BROKERAGE_FLAT: Final[float] = 20.0        # ₹20 per order (flat broke
 BROKERAGE_CAP_EQUITY: Final[float] = 20.0          # Maximum per-order brokerage
 
 # ── Expiry rules ────────────────────────────────────────────────────────────
-# Indices with weekly options expire every Thursday
+# Indices with weekly options expire every Tuesday (as of Sept 2, 2025)
+# Previously expired on Thursdays before that date
 WEEKLY_EXPIRY_INDICES: Final[frozenset[str]] = frozenset({
     "NIFTY",
     "BANKNIFTY",
@@ -42,7 +43,7 @@ WEEKLY_EXPIRY_INDICES: Final[frozenset[str]] = frozenset({
     "SENSEX",
 })
 
-# All other F&O contracts expire on last Thursday of the month
+# All other F&O contracts expire on last Tuesday of the month
 MONTHLY_EXPIRY_INDICES: Final[frozenset[str]] = frozenset({
     "NIFTY50",
     "BANKNIFTY",

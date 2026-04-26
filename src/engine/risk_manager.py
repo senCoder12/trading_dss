@@ -172,6 +172,7 @@ class _OpenPosition:
     lot_size: int
     entry_time: datetime
     confidence_level: str
+    is_hero_zero: bool = False
 
 
 @dataclass
@@ -567,6 +568,7 @@ class RiskManager:
             lot_size=lot_size,
             entry_time=signal.generated_at,
             confidence_level=signal.confidence_level,
+            is_hero_zero=getattr(signal, "is_hero_zero", False),
         )
         self._open_positions[signal.signal_id] = pos
 
@@ -606,6 +608,20 @@ class RiskManager:
 
         pnl_points = sign * (current_price - pos.entry_price)
         pnl_rupees = pnl_points * pos.lots * pos.lot_size
+
+        # --- Hero Zero hard exit at 14:55 IST ---
+        if pos.is_hero_zero:
+            hz_exit = now.replace(hour=14, minute=55, second=0, microsecond=0)
+            if now >= hz_exit:
+                return PositionUpdate(
+                    signal_id=signal_id,
+                    action="EXIT_TIME",
+                    current_pnl=round(pnl_rupees, 2),
+                    current_pnl_pct=round(
+                        pnl_rupees / self.config.total_capital * 100, 4
+                    ),
+                    time_in_trade_minutes=time_in_trade,
+                )
 
         # --- Force exit near close (intraday) ---
         if self._is_near_close(now, self.config.force_exit_minutes_before_close):

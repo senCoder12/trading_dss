@@ -157,12 +157,16 @@ class SimulatorConfig:
     sebi_charges_pct: float = 0.000001
     stamp_duty_pct: float = 0.00003
 
-    # Slippage model
+    # Slippage model (Phase 2: use percentage-based for validation)
     slippage_points: float = 2.0
-    slippage_pct: float = 0.05
-    use_percentage_slippage: bool = False
-    use_variable_spread: bool = True       # Use SpreadModel instead of fixed slippage
+    slippage_pct: float = 0.05            # Legacy: not used when use_percentage_slippage=True
+    use_percentage_slippage: bool = True  # Default to percentage-based for Phase 2
+    use_variable_spread: bool = False     # Default to fixed slippage (not dynamic spreads)
     spread_model: Optional[SpreadModel] = None  # Custom model (uses default if None)
+
+    # Differentiated entry/exit slippage (Phase 2 Task 5: 1% entry, 0.5% exit)
+    entry_slippage_pct: float = 1.0       # 1% entry slippage
+    exit_slippage_pct: float = 0.5        # 0.5% exit slippage
 
     # Execution rules
     intraday_only: bool = True
@@ -456,7 +460,7 @@ class TradeSimulator:
             return None
         self._bar_signals.add(bar_key)
 
-        # --- Calculate slippage ---
+        # --- Calculate entry slippage ---
         if self.config.use_variable_spread:
             model = self.config.spread_model or SpreadModel()
             slippage = model.estimate_spread(
@@ -469,7 +473,7 @@ class TradeSimulator:
                 hour_of_day=self._get_hour(timestamp),
             )
         elif self.config.use_percentage_slippage:
-            slippage = entry_price * self.config.slippage_pct / 100
+            slippage = entry_price * self.config.entry_slippage_pct / 100
         else:
             slippage = self.config.slippage_points
 
@@ -700,7 +704,7 @@ class TradeSimulator:
                 hour_of_day=self._get_hour(exit_timestamp),
             )
         elif cfg.use_percentage_slippage:
-            slippage = exit_price * cfg.slippage_pct / 100
+            slippage = exit_price * cfg.exit_slippage_pct / 100
         else:
             slippage = cfg.slippage_points
 

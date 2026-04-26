@@ -658,6 +658,7 @@ class SignalTracker:
         except (json.JSONDecodeError, TypeError):
             reasoning_dict = {"text": str(reasoning_raw)}
         reasoning_dict["signal_id"] = signal_id
+        reasoning_dict["is_hero_zero"] = getattr(signal, "is_hero_zero", False)
 
         # Stash option-trade fields (strike/expiry/premium/lots/risk) for the
         # REST API to surface in the UI. These aren't first-class DB columns,

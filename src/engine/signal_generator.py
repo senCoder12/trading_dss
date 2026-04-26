@@ -32,6 +32,7 @@ from src.analysis.anomaly.anomaly_aggregator import AnomalyVote
 from src.analysis.news.news_engine import NewsVote
 from src.analysis.technical_aggregator import TechnicalAnalysisResult
 from src.database.db_manager import DatabaseManager
+from src.database import queries as Q
 from src.engine.regime_detector import MarketRegime, RegimeDetector, SignalWeights
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,10 @@ class TradingSignal:
     # Metadata
     data_completeness: float = 1.0      # 0–1, fraction of data sources available
     signals_generated_today: int = 0    # Running count for this index today
+
+    # Hero Zero metadata (populated only when this is a HZ signal)
+    is_hero_zero: bool = False
+    hero_zero_result: Optional[object] = None  # HeroZeroResult (avoid circular import)
 
 
 # ---------------------------------------------------------------------------
@@ -214,11 +219,12 @@ class SignalDeduplicator:
     def _cleanup_expired(self) -> None:
         """Remove entries older than the dedup window."""
         now = datetime.now(tz=_IST)
-        expired = [
-            k for k, v in self._recent_signals.items()
-            if (now - v.replace(tzinfo=_IST) if v.tzinfo is None else now - v).total_seconds()
-            > self.window_seconds * 2
-        ]
+        expired = []
+        for k, v in self._recent_signals.items():
+            # Normalize v to aware datetime if naive
+            v_aware = v if v.tzinfo is not None else v.replace(tzinfo=_IST)
+            if (now - v_aware).total_seconds() > self.window_seconds * 2:
+                expired.append(k)
         for k in expired:
             del self._recent_signals[k]
 
@@ -267,6 +273,7 @@ class SignalGenerator:
         regime: MarketRegime,
         current_spot_price: float,
         mode: str = "FULL",
+        hero_zero_result: Optional[object] = None,
         timestamp: Optional[datetime] = None,
     ) -> TradingSignal:
         """Generate a TradingSignal from all available analysis inputs.
@@ -306,8 +313,13 @@ class SignalGenerator:
             index_id, current_spot_price, technical, news, anomaly, regime, now, warnings,
         )
         if no_trade is not None:
-            print(f"DEBUG: {index_id} safety check failed: {no_trade.reasoning}")
             return no_trade
+
+        # ── Step 1.5: Hero Zero Override ───────────────────────────────
+        if hero_zero_result is not None and getattr(hero_zero_result, "is_triggered", False):
+            return self._build_hero_zero_signal(
+                index_id, now, current_spot_price, hero_zero_result, regime, technical, news, anomaly
+            )
 
         # ── Step 2: Collect All Votes ──────────────────────────────────
         available = self._available_components(technical, news, anomaly)
@@ -327,22 +339,6 @@ class SignalGenerator:
 
         # ── Step 4: Direction ──────────────────────────────────────────
         direction = self._determine_direction(weighted_score, regime.regime)
-
-        # ── HERO_ZERO Detection ────────────────────────────────────────
-        is_expiry_day = (technical.options and technical.options.days_to_expiry == 0)
-        is_afternoon = now.hour >= 13 and (now.hour > 13 or now.minute >= 30)
-        is_hero_zero_candidate = is_expiry_day and is_afternoon
-
-        print(f"DEBUG: {index_id} at {now.strftime('%H:%M')} | score={weighted_score:.2f} | dir={direction} | HZ_cand={is_hero_zero_candidate}")
-
-        if is_hero_zero_candidate and direction == "NO_TRADE":
-            # Hero Zero: very aggressive final-hour trades on expiry. Use minimal thresholds.
-            if weighted_score > 0.10:
-                direction = "BUY_CALL"
-                warnings.append("HERO_ZERO: Bullish momentum on expiry afternoon")
-            elif weighted_score < -0.10:
-                direction = "BUY_PUT"
-                warnings.append("HERO_ZERO: Bearish momentum on expiry afternoon")
 
         # Apply gap-fill only when the primary signal is indeterminate or weak
         if direction == "NO_TRADE" or abs(weighted_score) < 1.0:
@@ -368,7 +364,7 @@ class SignalGenerator:
             direction, weighted_score, votes, technical, news, anomaly, regime, warnings, mode,
         )
 
-        # Filter to MEDIUM confidence minimum (10.2% vs 3.2% for LOW)
+        # Filter to MEDIUM confidence minimum — high-quality signals only
         if confidence_score < self._min_conf_medium:
             return self._make_no_trade(
                 index_id, now,
@@ -407,7 +403,7 @@ class SignalGenerator:
         risk_level = anomaly.risk_level if anomaly else "NORMAL"
         data_completeness = self._data_completeness(technical, news, anomaly)
         vote_breakdown = self._build_vote_breakdown(votes)
-        today_count = len(self._today_signals.get(index_id, []))
+        today_count = self._get_signals_today_count(index_id, now)
 
         # ── Step 7: Reasoning ──────────────────────────────────────────
         reasoning = self._build_reasoning(
@@ -473,6 +469,15 @@ class SignalGenerator:
         self._refresh_daily_cache(datetime.now(tz=_IST))
         return list(self._today_signals.get(index_id, []))
 
+    def _get_signals_today_count(self, index_id: str, timestamp: datetime) -> int:
+        """Query DB for actionable signal count generated today."""
+        try:
+            result = self._db.fetch_one(Q.COUNT_SIGNALS_TODAY, (index_id, timestamp))
+            return result[0] if result else 0
+        except Exception as e:
+            logger.warning(f"Failed to fetch today's signal count for {index_id}: {e}")
+            return 0
+
     def get_all_active_signals(self) -> list[TradingSignal]:
         """Return all open signals across all indices."""
         return [
@@ -499,6 +504,16 @@ class SignalGenerator:
     ) -> Optional[TradingSignal]:
         """Return a NO_TRADE signal on failure, or ``None`` if all checks pass."""
 
+        # Data freshness: reject if technical input > 10 min old
+        if technical and technical.timestamp:
+            age_secs = (now - technical.timestamp).total_seconds()
+            if age_secs > 600:  # 10 minutes
+                return self._make_no_trade(
+                    index_id, now,
+                    f"Data stale: technical {age_secs:.0f}s old (> 10 min)",
+                    regime, technical, news, anomaly, warnings,
+                )
+
         # Invalid spot price
         if not current_spot_price or current_spot_price <= 0:
             return self._make_no_trade(
@@ -514,13 +529,6 @@ class SignalGenerator:
                 regime, technical, news, anomaly, warnings,
             )
 
-        # Filter to TRENDING regime only (10.9% success vs 3.4% others)
-        if regime.regime not in ("STRONG_TREND_UP", "TREND_UP", "STRONG_TREND_DOWN", "TREND_DOWN"):
-            return self._make_no_trade(
-                index_id, now, f"Regime {regime.regime} rejected — TRENDING only",
-                regime, technical, news, anomaly, warnings,
-            )
-
         # Whitelist top performers: BANKNIFTY (9.5%), NIFTY50 (6.3%)
         allowed_indices = {"BANKNIFTY", "NIFTY50"}
         if index_id not in allowed_indices:
@@ -529,8 +537,8 @@ class SignalGenerator:
                 regime, technical, news, anomaly, warnings,
             )
 
-        # Daily signal cap
-        today_count = len(self._today_signals.get(index_id, []))
+        # Daily signal cap (query DB instead of in-memory cache)
+        today_count = self._get_signals_today_count(index_id, now)
         if today_count >= regime.max_trades_today:
             return self._make_no_trade(
                 index_id, now,
@@ -697,7 +705,8 @@ class SignalGenerator:
             put_thresh = _SCORE_PUT_THRESHOLD
 
         # BUY_CALL disabled (1.7% success) — use PUT only
-        if score < put_thresh:
+        # Map both bullish AND bearish scores to BUY_PUT for a volatility-focused strategy
+        if abs(score) >= abs(put_thresh):
             return "BUY_PUT"
         return "NO_TRADE"
 
@@ -1449,7 +1458,7 @@ class SignalGenerator:
         weighted_score: float = 0.0,
     ) -> TradingSignal:
         risk_level = anomaly.risk_level if anomaly else "NORMAL"
-        today_count = len(self._today_signals.get(index_id, []))
+        today_count = self._get_signals_today_count(index_id, now)
         return TradingSignal(
             signal_id=str(uuid.uuid4()),
             index_id=index_id,
@@ -1474,6 +1483,65 @@ class SignalGenerator:
             data_completeness=self._data_completeness(technical, news, anomaly),
             signals_generated_today=today_count,
         )
+
+    def _build_hero_zero_signal(
+        self,
+        index_id: str,
+        now: datetime,
+        spot: float,
+        hz_result: object,
+        regime: MarketRegime,
+        technical: Optional[TechnicalAnalysisResult],
+        news: Optional[NewsVote],
+        anomaly: Optional[AnomalyVote],
+    ) -> TradingSignal:
+        """Build a Hero Zero signal from HeroZeroResult.
+
+        Bypasses the normal vote/score pipeline.
+        Hard-caps position size at 25% regardless of regime/volatility modifiers.
+        """
+        sl = getattr(hz_result, "stop_loss", spot - 50)
+        rr = 1.5
+        direction = getattr(hz_result, "signal_direction", "NO_TRADE")
+
+        if direction == "BUY_CALL":
+            target = spot + abs(spot - sl) * rr
+        else:  # BUY_PUT
+            target = spot - abs(sl - spot) * rr
+
+        sl_dist = abs(spot - sl)
+        tgt_dist = abs(target - spot)
+        rr_ratio = round(tgt_dist / sl_dist, 2) if sl_dist > 0 else rr
+        today_count = self._get_signals_today_count(index_id, now)
+
+        signal = TradingSignal(
+            signal_id=str(uuid.uuid4()),
+            index_id=index_id,
+            generated_at=now,
+            signal_type=direction,
+            confidence_level="MEDIUM",
+            confidence_score=0.55,
+            entry_price=round(spot, 2),
+            target_price=round(target, 2),
+            stop_loss=round(sl, 2),
+            risk_reward_ratio=rr_ratio,
+            regime=regime.regime,
+            weighted_score=0.0,
+            vote_breakdown={},
+            risk_level="ELEVATED",
+            position_size_modifier=0.25,  # Hard cap
+            suggested_lot_count=1,
+            estimated_max_loss=round(sl_dist, 2),
+            estimated_max_profit=round(tgt_dist, 2),
+            reasoning=getattr(hz_result, "reasoning", "Hero Zero triggered"),
+            warnings=["HERO_ZERO: gamma squeeze detected"],
+            data_completeness=self._data_completeness(technical, news, anomaly),
+            signals_generated_today=today_count + 1,
+            is_hero_zero=True,
+            hero_zero_result=hz_result,
+        )
+        self._today_signals.setdefault(index_id, []).append(signal)
+        return signal
 
     def _refresh_daily_cache(self, now: datetime) -> None:
         """Reset the in-memory cache when the IST calendar day rolls over."""

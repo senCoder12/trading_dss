@@ -200,6 +200,8 @@ class DecisionEngine:
         self.news_engine = NewsEngine(db)
         self.anomaly_engine = AnomalyAggregator(db)
         self.regime_detector = RegimeDetector(db)
+        from src.engine.hero_zero_detector import HeroZeroDetector
+        self._hz_detector = HeroZeroDetector(db)
         self.signal_generator = SignalGenerator(db)
         self.risk_manager = RiskManager(db, config=risk_config)
 
@@ -426,11 +428,17 @@ class DecisionEngine:
         )
         step_timings["5_regime"] = int((time.monotonic() - t0) * 1000)
 
+        # ── Step 5b: Hero Zero Detection ───────────────────────────────
+        t0 = time.monotonic()
+        hz_result = self._step_hero_zero(index_id, options_chain, intraday_rows, as_of)
+        step_timings["5b_hero_zero"] = int((time.monotonic() - t0) * 1000)
+
         # ── Step 6: Signal Generation ──────────────────────────────────
         t0 = time.monotonic()
         anomaly_vote = self._anomaly_result_to_vote(anomaly_result, index_id)
         raw_signal = self._step_signal(
-            index_id, technical_result, news_vote, anomaly_vote, regime, current_price, as_of=as_of
+            index_id, technical_result, news_vote, anomaly_vote, regime, current_price,
+            hz_result=hz_result, as_of=as_of
         )
         step_timings["6_signal"] = int((time.monotonic() - t0) * 1000)
 
@@ -1035,6 +1043,53 @@ class DecisionEngine:
             logger.exception("Step 5: regime detection failed for %s", index_id)
             return self._fallback_regime(index_id, "Regime detection error")
 
+    def _step_hero_zero(
+        self,
+        index_id: str,
+        chain: Optional[object],
+        intraday_rows: list[dict],
+        now: Optional[datetime],
+    ) -> Optional[object]:
+        """Step 5b — Hero Zero gamma squeeze detection.
+
+        Returns HeroZeroResult or None if not in window / chain missing.
+        Never raises — failure is non-fatal.
+        """
+        try:
+            if chain is None:
+                return None
+
+            idx = self._registry.get_index(index_id)
+            lot_size = (idx.lot_size or 25) if idx else 25
+            vol_ratio = self._compute_volume_ratio(intraday_rows)
+            current_now = now or datetime.now(tz=_IST)
+
+            return self._hz_detector.detect(
+                index_id=index_id,
+                chain=chain,
+                price_bars=intraday_rows[-5:] if len(intraday_rows) >= 5 else intraday_rows,
+                volume_ratio=vol_ratio,
+                now=current_now,
+                lot_size=lot_size,
+            )
+        except Exception:
+            logger.exception("Step 5b: Hero Zero detection failed for %s (non-fatal)", index_id)
+            return None
+
+    def _compute_volume_ratio(self, price_bars: list[dict]) -> float:
+        """Compute current volume vs 20-period average.
+
+        Returns 0.0 if insufficient data.
+        """
+        if len(price_bars) < 5:
+            return 0.0
+        vols = [float(b.get("volume", 0) or 0) for b in price_bars]
+        if not vols:
+            return 0.0
+        current = vols[-1]
+        avg = sum(vols[-20:]) / min(len(vols), 20) if vols else 0.0
+        return current / avg if avg > 0 else 0.0
+
     def _step_signal(
         self,
         index_id: str,
@@ -1043,6 +1098,7 @@ class DecisionEngine:
         anomaly_vote: Optional[AnomalyVote],
         regime: MarketRegime,
         current_price: float,
+        hz_result: Optional[object] = None,
         as_of: Optional[datetime] = None,
     ) -> TradingSignal:
         """Step 6 — Signal generation."""
@@ -1059,6 +1115,7 @@ class DecisionEngine:
                 news=news_vote,
                 anomaly=anomaly_vote,
                 regime=regime,
+                hero_zero_result=hz_result,
                 current_spot_price=current_price,
                 timestamp=as_of,
             )
