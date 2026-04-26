@@ -12,12 +12,15 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
 from config.settings import settings
 from src.data.broker.angel_one import AngelOneClient
+
+if TYPE_CHECKING:
+    from src.data.broker.angel_one import AngelOneClient as AngelOneClientType
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
@@ -33,8 +36,18 @@ class SmartAPIClient:
     - Options chain with Greeks/IV
     """
 
-    def __init__(self) -> None:
-        self._angel = AngelOneClient()
+    def __init__(self, angel_client: Optional[AngelOneClientType] = None) -> None:
+        """
+        Initialize SmartAPIClient.
+
+        Parameters
+        ----------
+        angel_client:
+            Optional pre-authenticated AngelOneClient. If not provided, creates new one.
+            Pass DataRouter.broker_client to reuse existing authenticated session and
+            avoid rate-limiting issues.
+        """
+        self._angel = angel_client if angel_client is not None else AngelOneClient()
 
     def ensure_authenticated(self) -> bool:
         """Ensure session is active; re-login if needed."""

@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, date
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
@@ -28,6 +28,9 @@ from src.data.fo_universe_fetcher import FOUniverseFetcher
 from src.data.smart_api_client import SmartAPIClient
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
+
+if TYPE_CHECKING:
+    from src.data.nse_scraper import NSEScraper
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
@@ -89,6 +92,7 @@ class FOBulkFetcher:
         db: DatabaseManager,
         smart_api: SmartAPIClient,
         fo_universe: FOUniverseFetcher,
+        nse_scraper: Optional["NSEScraper"] = None,
     ) -> None:
         """
         Initialize bulk fetcher.
@@ -101,10 +105,13 @@ class FOBulkFetcher:
             SmartAPI client (Angel One authenticated)
         fo_universe:
             FOUniverseFetcher for symbol list + lot sizes
+        nse_scraper:
+            Optional NSEScraper for fallback when SmartAPI unavailable
         """
         self._db = db
         self._smart_api = smart_api
         self._fo_universe = fo_universe
+        self._nse_scraper = nse_scraper
 
         # Load settings
         self._batch_size: int = getattr(settings.broker, 'bulk_fetch_batch_size', 50)
@@ -135,12 +142,16 @@ class FOBulkFetcher:
             If > 30% of symbols fail (systemic issue).
         """
         symbols = self._fo_universe.get_symbols()
+        logger.info("DEBUG: fetch_all_quotes got %d symbols from universe", len(symbols))
         if not symbols:
             logger.error("F&O universe empty — cannot fetch quotes")
             raise DataFetchError("F&O universe is empty")
 
         logger.info("Fetching quotes for %d symbols in batches of %d", len(symbols), self._batch_size)
         start = time.time()
+
+        # Try both NSE and EQUITY exchange codes
+        exchange_code = "NSE"
 
         quotes: dict[str, StockQuote] = {}
         failed: list[str] = []
@@ -149,13 +160,25 @@ class FOBulkFetcher:
         for batch_idx in range(0, len(symbols), self._batch_size):
             batch = symbols[batch_idx : batch_idx + self._batch_size]
 
-            # TODO: Build exchange_tokens dict from lot sizes / exchange mapping
-            # For now, assume all NSE equity. Will refine with master contract lookup.
+            # Use symbol names directly as exchange_tokens (SmartAPI may accept this)
             exchange_tokens = {"NSE": batch}
+            logger.info("DEBUG: batch %d symbols: %s (first 3: %s)",
+                       batch_idx // self._batch_size + 1, len(batch), batch[:3] if batch else [])
 
             try:
-                logger.debug("Fetching batch %d: %s", batch_idx // self._batch_size + 1, batch[:3])
-                raw = self._smart_api.get_bulk_quotes("SNAP_QUOTE", exchange_tokens)
+                logger.debug("Fetching batch %d", batch_idx // self._batch_size + 1)
+                # Try different modes: LTP (simplest) -> QUOTE -> SNAP_QUOTE
+                raw = self._smart_api.get_bulk_quotes("LTP", exchange_tokens)
+                if not raw:
+                    logger.debug("LTP returned empty, trying QUOTE mode")
+                    raw = self._smart_api.get_bulk_quotes("QUOTE", exchange_tokens)
+                if not raw:
+                    logger.debug("QUOTE returned empty, trying SNAP_QUOTE mode")
+                    raw = self._smart_api.get_bulk_quotes("SNAP_QUOTE", exchange_tokens)
+                logger.info("DEBUG: batch raw response: fetched=%d, unfetched=%d, raw_keys=%s",
+                            len(raw.get("fetched", [])) if raw else 0,
+                            len(raw.get("unfetched", [])) if raw else 0,
+                            list(raw.keys()) if raw else None)
 
                 if raw:
                     for entry in raw.get("fetched", []):
@@ -182,6 +205,13 @@ class FOBulkFetcher:
         # Validate: fail if >30% lost
         fail_rate = len(failed) / len(symbols) if symbols else 0
         if fail_rate > 0.3:
+            # Fallback to NSE scraper if SmartAPI failed
+            if self._nse_scraper and len(quotes) == 0:
+                logger.warning(
+                    "SmartAPI quote fetch failed (%d%%). Falling back to NSE scraper.",
+                    int(fail_rate * 100)
+                )
+                return self._fallback_fetch_quotes_nse(symbols)
             raise DataFetchError(f"Quote fetch failure rate {fail_rate:.1%} exceeds 30% threshold")
 
         elapsed = time.time() - start
@@ -195,6 +225,58 @@ class FOBulkFetcher:
         )
 
         return quotes
+
+    def _fallback_fetch_quotes_nse(self, symbols: list[str]) -> dict[str, StockQuote]:
+        """Fallback: fetch quotes from NSE scraper when SmartAPI unavailable."""
+        logger.info("Fetching %d symbols from NSE scraper (fallback)", len(symbols))
+        start = time.time()
+
+        try:
+            # Get all indices from scraper
+            indices = self._nse_scraper.get_all_indices()
+            quotes: dict[str, StockQuote] = {}
+
+            for idx_data in indices:
+                symbol = idx_data.get("symbol", "")
+                if symbol not in symbols:
+                    continue
+
+                try:
+                    quote = StockQuote(
+                        symbol=symbol,
+                        ltp=float(idx_data.get("ltp", 0)),
+                        open=float(idx_data.get("open", 0)),
+                        high=float(idx_data.get("high", 0)),
+                        low=float(idx_data.get("low", 0)),
+                        close=float(idx_data.get("prev_close", 0)),
+                        volume=int(idx_data.get("volume", 0)),
+                        avg_volume_20d=0.0,  # Will be fetched separately
+                        price_change_pct=float(idx_data.get("price_change_pct", 0)),
+                        bid=float(idx_data.get("bid", 0)),
+                        ask=float(idx_data.get("ask", 0)),
+                        bid_ask_spread=float(idx_data.get("ask", 0)) - float(idx_data.get("bid", 0)),
+                        bid_ask_spread_pct=(
+                            (float(idx_data.get("ask", 0)) - float(idx_data.get("bid", 0)))
+                            / float(idx_data.get("ltp", 1)) * 100
+                            if float(idx_data.get("ltp", 0)) > 0
+                            else 0
+                        ),
+                        timestamp=datetime.now(tz=_IST),
+                    )
+                    quotes[symbol] = quote
+                except Exception as e:
+                    logger.warning("Failed to parse quote for %s: %s", symbol, e)
+
+            elapsed = time.time() - start
+            logger.info(
+                "NSE scraper fallback: fetched %d/%d symbols in %.1fs",
+                len(quotes), len(symbols), elapsed,
+            )
+            return quotes
+
+        except Exception as e:
+            logger.error("NSE scraper fallback failed: %s", e)
+            return {}
 
     def fetch_avg_volumes(self, symbols: list[str]) -> dict[str, float]:
         """

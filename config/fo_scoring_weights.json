@@ -1,0 +1,8 @@
+{
+  "oi_weight": 0.20,
+  "oi_change_weight": 0.25,
+  "volume_weight": 0.20,
+  "price_move_weight": 0.10,
+  "iv_change_weight": 0.15,
+  "spread_tightness_weight": 0.10
+}

@@ -380,6 +380,48 @@ def main() -> None:
             logger.error("Data Collector initialisation failed: %s", exc)
             # Non-fatal — continue without collector
 
+        # F&O Universe Manager
+        if "collector" in components:
+            try:
+                logger.info("FOUniverseManager: starting initialization...")
+                from src.analysis.fo_universe_manager import FOUniverseManager
+                from src.data.smart_api_client import SmartAPIClient
+                from src.data.fii_dii_data import FIIDIIFetcher
+
+                logger.info("FOUniverseManager: imports OK")
+                # Pass broker_client from DataRouter to avoid rate-limiting issues
+                broker_client = components["collector"].data_router.broker_client
+                smart_api = SmartAPIClient(angel_client=broker_client)
+                logger.info("FOUniverseManager: SmartAPIClient created (broker_client=%s)", "reused" if broker_client else "new")
+                nse_scraper = components["collector"].nse_scraper
+                logger.info("FOUniverseManager: got nse_scraper from collector")
+                fii_fetcher = FIIDIIFetcher()
+                logger.info("FOUniverseManager: FIIDIIFetcher created")
+
+                fo_manager = FOUniverseManager(
+                    db=db,
+                    smart_api=smart_api,
+                    nse_scraper=nse_scraper,
+                    fii_fetcher=fii_fetcher,
+                )
+                logger.info("FOUniverseManager: manager object created")
+                fo_manager.start_scheduler()
+                logger.info("FOUniverseManager: scheduler started")
+                components["fo_universe"] = fo_manager
+                print("  ✅ F&O Universe Manager initialised and scheduler started")
+
+                # Trigger initial universe selection if table is empty
+                if args.force_start:
+                    logger.info("Triggering initial F&O universe selection (--force-start)")
+                    try:
+                        fo_manager.run_daily_universe_selection()
+                        print("  ✅ Initial universe snapshot generated")
+                    except Exception as exc:
+                        logger.warning("Initial universe selection failed (non-fatal): %s", exc)
+            except Exception as exc:
+                logger.error("F&O Universe Manager initialisation failed: %s", exc, exc_info=True)
+                # Non-fatal — continue without universe manager
+
         # Decision Engine
         try:
             from src.engine.decision_engine import DecisionEngine
@@ -398,6 +440,15 @@ def main() -> None:
                 set_decision_engine(engine)
             except Exception as exc:
                 logger.warning("Could not wire Decision Engine into API: %s", exc)
+
+        # Wire F&O Universe Manager into API
+        if "fo_universe" in components:
+            try:
+                from src.api.dependencies import set_fo_universe_manager
+                set_fo_universe_manager(components["fo_universe"])
+                print("  ✅ F&O Universe Manager wired into API")
+            except Exception as exc:
+                logger.warning("Could not wire F&O Universe Manager into API: %s", exc)
 
         # Wire Decision Engine into DataCollector
         if "collector" in components and engine is not None:

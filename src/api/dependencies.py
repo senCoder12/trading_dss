@@ -45,6 +45,7 @@ def get_market_hours() -> MarketHoursManager:
 
 _decision_engine = None
 _signal_tracker = None
+_fo_universe_manager = None
 _kill_switch_lock = threading.Lock()
 _kill_switch_active = False
 _kill_switch_reason: Optional[str] = None
@@ -67,6 +68,16 @@ def get_signal_tracker():
 def set_signal_tracker(tracker):
     global _signal_tracker
     _signal_tracker = tracker
+
+
+def get_fo_universe_manager():
+    """Return the FOUniverseManager if one has been wired up."""
+    return _fo_universe_manager
+
+
+def set_fo_universe_manager(manager):
+    global _fo_universe_manager
+    _fo_universe_manager = manager
 
 
 # ── Kill switch ──────────────────────────────────────────────────────────────

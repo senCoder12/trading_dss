@@ -1,0 +1,24 @@
+[E 260425 13:21:19 smartConnect:246] Error occurred while making a POST request to https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getLtpData. Error: Invalid symboltoken. URL: https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getLtpData, Headers: {'Content-type': 'application/json', 'X-ClientLocalIP': '127.0.0.1', 'X-ClientPublicIP': '106.193.147.98', 'X-MACAddress': 'e2:33:b0:16:39:5e', 'Accept': 'application/json', 'X-PrivateKey': 'cW30jRVA', 'X-UserType': 'USER', 'X-SourceID': 'WEB'}, Request: {'exchange': 'NSE', 'tradingsymbol': 'SENSEX', 'symboltoken': '99919000'}, Response: {'message': 'Invalid symboltoken', 'errorcode': 'AB4006', 'status': False, 'data': None}
+[W 260425 13:36:37 smartWebSocketV2:318] Attempting to resubscribe/reconnect (Attempt 1)...
+[W 260425 13:39:04 smartWebSocketV2:318] Attempting to resubscribe/reconnect (Attempt 1)...
+[W 260425 22:56:15 smartWebSocketV2:318] Attempting to resubscribe/reconnect (Attempt 1)...
+[W 260425 23:19:56 smartWebSocketV2:342] Connection closed due to max retry attempts reached.
+[W 260425 23:19:56 smartWebSocketV2:342] Connection closed due to max retry attempts reached.
+[W 260425 23:19:56 smartWebSocketV2:342] Connection closed due to max retry attempts reached.
+[I 260425 23:26:31 smartConnect:124] in pool
+[I 260425 23:31:01 smartConnect:124] in pool
+[I 260425 23:33:08 smartConnect:124] in pool
+[I 260425 23:33:57 smartConnect:124] in pool
+[I 260425 23:34:31 smartConnect:124] in pool
+[I 260425 23:38:37 smartConnect:124] in pool
+[I 260425 23:41:02 smartConnect:124] in pool
+[I 260425 23:41:35 smartConnect:124] in pool
+[I 260425 23:42:05 smartConnect:124] in pool
+[I 260425 23:43:17 smartConnect:124] in pool
+[I 260425 23:43:57 smartConnect:124] in pool
+[I 260425 23:49:42 smartConnect:124] in pool
+[I 260425 23:50:48 smartConnect:124] in pool
+[I 260425 23:52:13 smartConnect:124] in pool
+[I 260425 23:54:25 smartConnect:124] in pool
+[W 260425 23:56:02 smartWebSocketV2:318] Attempting to resubscribe/reconnect (Attempt 1)...
+[I 260425 23:57:02 smartConnect:124] in pool

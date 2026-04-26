@@ -30,6 +30,7 @@ from src.api.routes import (
     portfolio,
     signals,
     system,
+    universe,
 )
 from src.api.websocket import broadcaster, process_event_queue
 from src.utils.date_utils import get_ist_now
@@ -175,6 +176,9 @@ def create_app() -> FastAPI:
     )
     application.include_router(
         backtest.router, prefix="/api/backtest", tags=["Backtest"],
+    )
+    application.include_router(
+        universe.router, prefix="/api/universe", tags=["F&O Universe"],
     )
 
     # ── Health check ─────────────────────────────────────────────────────

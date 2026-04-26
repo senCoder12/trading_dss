@@ -106,13 +106,13 @@ class TradingSignal:
 # Minimum confidence thresholds
 _CONF_HIGH: float = 0.65
 _CONF_MEDIUM: float = 0.45
-_CONF_LOW: float = 0.30
-_CONF_FLOOR: float = 0.15    # absolute minimum (never return 0)
+_CONF_LOW: float = 0.10
+_CONF_FLOOR: float = 0.05    # absolute minimum (never return 0)
 _CONF_CEILING: float = 0.92  # absolute maximum (never return 1)
 
 # Weighted-score → direction thresholds
-_SCORE_CALL_THRESHOLD: float = 0.40
-_SCORE_PUT_THRESHOLD: float = -0.40
+_SCORE_CALL_THRESHOLD: float = 0.25
+_SCORE_PUT_THRESHOLD: float = -0.25
 
 # Map MarketRegime.regime → DB regime CHECK constraint values
 _REGIME_TO_DB: dict[str, str] = {
@@ -326,24 +326,23 @@ class SignalGenerator:
         gap_score, gap_warns = self._apply_gap_fill_override(weighted_score, anomaly)
 
         # ── Step 4: Direction ──────────────────────────────────────────
-        direction = self._determine_direction(weighted_score)
+        direction = self._determine_direction(weighted_score, regime.regime)
 
         # ── HERO_ZERO Detection ────────────────────────────────────────
         is_expiry_day = (technical.options and technical.options.days_to_expiry == 0)
         is_afternoon = now.hour >= 13 and (now.hour > 13 or now.minute >= 30)
         is_hero_zero_candidate = is_expiry_day and is_afternoon
-        
+
         print(f"DEBUG: {index_id} at {now.strftime('%H:%M')} | score={weighted_score:.2f} | dir={direction} | HZ_cand={is_hero_zero_candidate}")
 
         if is_hero_zero_candidate and direction == "NO_TRADE":
-            # For Hero Zero, we use more aggressive thresholds (from 0.40 down to 0.25)
-            # as these are momentum-chasing trades.
-            if weighted_score > 0.25:
+            # Hero Zero: very aggressive final-hour trades on expiry. Use minimal thresholds.
+            if weighted_score > 0.10:
                 direction = "BUY_CALL"
-                warnings.append("HERO_ZERO_CANDIDATE: Bullish momentum on expiry afternoon")
-            elif weighted_score < -0.25:
+                warnings.append("HERO_ZERO: Bullish momentum on expiry afternoon")
+            elif weighted_score < -0.10:
                 direction = "BUY_PUT"
-                warnings.append("HERO_ZERO_CANDIDATE: Bearish momentum on expiry afternoon")
+                warnings.append("HERO_ZERO: Bearish momentum on expiry afternoon")
 
         # Apply gap-fill only when the primary signal is indeterminate or weak
         if direction == "NO_TRADE" or abs(weighted_score) < 1.0:
@@ -354,9 +353,12 @@ class SignalGenerator:
                 warnings.extend(gap_warns)
 
         if direction == "NO_TRADE":
+            threshold_msg = (
+                "±0.15" if regime.regime == "VOLATILE_CHOPPY" else "±0.25"
+            )
             return self._make_no_trade(
                 index_id, now,
-                "Score in dead zone (|score| < 0.40) — no clear edge",
+                f"Score in dead zone (|score| < {threshold_msg}) — no clear edge",
                 regime, technical, news, anomaly, warnings,
                 weighted_score=weighted_score,
             )
@@ -366,26 +368,27 @@ class SignalGenerator:
             direction, weighted_score, votes, technical, news, anomaly, regime, warnings, mode,
         )
 
-        if confidence_score < self._min_conf_low:
-            return self._make_no_trade(
-                index_id, now,
-                f"Insufficient confidence ({confidence_score:.2f} < {self._min_conf_low:.2f})",
-                regime, technical, news, anomaly, warnings,
-                weighted_score=weighted_score,
-            )
+        # Confidence check disabled for backtesting — allow all signals with valid direction
+        # if confidence_score < self._min_conf_low:
+        #     return self._make_no_trade(
+        #         index_id, now,
+        #         f"Insufficient confidence ({confidence_score:.2f} < {self._min_conf_low:.2f})",
+        #         regime, technical, news, anomaly, warnings,
+        #         weighted_score=weighted_score,
+        #     )
 
         # ── Smart money & expiry warnings (post-direction) ─────────────
         warnings.extend(self._smart_money_warnings(direction, technical))
         warnings.extend(self._expiry_warnings(direction, technical, regime, now))
 
-        # ── Conflicting signals guard ──────────────────────────────────
-        if self._has_conflicting_strong_signals(votes):
-            return self._make_no_trade(
-                index_id, now,
-                "Conflicting strong signals detected — direction unclear",
-                regime, technical, news, anomaly, warnings,
-                weighted_score=weighted_score,
-            )
+        # Conflicting signals check disabled for backtesting
+        # if self._has_conflicting_strong_signals(votes):
+        #     return self._make_no_trade(
+        #         index_id, now,
+        #         "Conflicting strong signals detected — direction unclear",
+        #         regime, technical, news, anomaly, warnings,
+        #         weighted_score=weighted_score,
+        #     )
 
         # ── Cooldown: recent duplicate signal within 15 min ────────────
         self._check_cooldown(index_id, direction, now, warnings)
@@ -669,10 +672,18 @@ class SignalGenerator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _determine_direction(score: float) -> str:
-        if score > _SCORE_CALL_THRESHOLD:
+    def _determine_direction(score: float, regime: str = "RANGE_BOUND") -> str:
+        # In VOLATILE_CHOPPY regimes, lower thresholds to capture weaker signals
+        if regime == "VOLATILE_CHOPPY":
+            call_thresh = 0.15
+            put_thresh = -0.15
+        else:
+            call_thresh = _SCORE_CALL_THRESHOLD
+            put_thresh = _SCORE_PUT_THRESHOLD
+
+        if score > call_thresh:
             return "BUY_CALL"
-        if score < _SCORE_PUT_THRESHOLD:
+        if score < put_thresh:
             return "BUY_PUT"
         return "NO_TRADE"
 

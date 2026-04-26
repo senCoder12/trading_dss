@@ -1,0 +1,90 @@
+
+> trading-dss-frontend@0.1.0 dev
+> vite
+
+
+  VITE v5.4.21  ready in 146 ms
+
+  ➜  Local:   http://localhost:3000/
+  ➜  Network: use --host to expose
+1:15:07 PM [vite] hmr update /src/components/options/OptionsChainPage.jsx, /src/index.css
+1:16:56 PM [vite] hmr update /src/components/options/OptionsChainPage.jsx, /src/index.css
+1:17:14 PM [vite] hmr update /src/components/options/OptionsChainPage.jsx, /src/index.css
+1:17:27 PM [vite] hmr update /src/components/options/OptionsChainPage.jsx, /src/index.css
+1:19:06 PM [vite] hmr update /src/components/options/OptionsChainPage.jsx, /src/index.css
+1:22:07 PM [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+1:22:07 PM [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+1:23:56 PM [vite] ws proxy error:
+Error: This socket has been ended by the other party
+    at genericNodeError (node:internal/errors:985:15)
+    at wrappedFn (node:internal/errors:539:14)
+    at Socket.writeAfterFIN [as write] (node:net:575:14)
+    at Socket.ondata (node:internal/streams/readable:1012:24)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:563:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+    at Readable.push (node:internal/streams/readable:394:5)
+    at TCP.onStreamRead (node:internal/stream_base_commons:189:23)
+1:24:07 PM [vite] ws proxy error:
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+1:32:09 PM [vite] ws proxy error:
+Error: This socket has been ended by the other party
+    at genericNodeError (node:internal/errors:985:15)
+    at wrappedFn (node:internal/errors:539:14)
+    at Socket.writeAfterFIN [as write] (node:net:575:14)
+    at Socket.ondata (node:internal/streams/readable:1012:24)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:563:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+    at Readable.push (node:internal/streams/readable:394:5)
+    at TCP.onStreamRead (node:internal/stream_base_commons:189:23)
+1:32:09 PM [vite] ws proxy error:
+Error: This socket has been ended by the other party
+    at genericNodeError (node:internal/errors:985:15)
+    at wrappedFn (node:internal/errors:539:14)
+    at Socket.writeAfterFIN [as write] (node:net:575:14)
+    at Socket.ondata (node:internal/streams/readable:1012:24)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:563:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+    at Readable.push (node:internal/streams/readable:394:5)
+    at TCP.onStreamRead (node:internal/stream_base_commons:189:23)
+1:32:09 PM [vite] ws proxy error:
+Error: This socket has been ended by the other party
+    at genericNodeError (node:internal/errors:985:15)
+    at wrappedFn (node:internal/errors:539:14)
+    at Socket.writeAfterFIN [as write] (node:net:575:14)
+    at Socket.ondata (node:internal/streams/readable:1012:24)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:563:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+    at Readable.push (node:internal/streams/readable:394:5)
+    at TCP.onStreamRead (node:internal/stream_base_commons:189:23)
+1:32:09 PM [vite] ws proxy error:
+Error: This socket has been ended by the other party
+    at genericNodeError (node:internal/errors:985:15)
+    at wrappedFn (node:internal/errors:539:14)
+    at Socket.writeAfterFIN [as write] (node:net:575:14)
+    at Socket.ondata (node:internal/streams/readable:1012:24)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:563:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+    at Readable.push (node:internal/streams/readable:394:5)
+    at TCP.onStreamRead (node:internal/stream_base_commons:189:23)
+1:32:09 PM [vite] ws proxy error:
+Error: This socket has been ended by the other party
+    at genericNodeError (node:internal/errors:985:15)
+    at wrappedFn (node:internal/errors:539:14)
+    at Socket.writeAfterFIN [as write] (node:net:575:14)
+    at Socket.ondata (node:internal/streams/readable:1012:24)
+    at Socket.emit (node:events:508:28)
+    at addChunk (node:internal/streams/readable:563:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:514:3)
+    at Readable.push (node:internal/streams/readable:394:5)
+    at TCP.onStreamRead (node:internal/stream_base_commons:189:23)
+1:33:23 PM [vite] hmr update /src/components/options/OptionsChainPage.jsx, /src/index.css

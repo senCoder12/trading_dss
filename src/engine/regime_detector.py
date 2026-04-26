@@ -336,13 +336,8 @@ class RegimeDetector:
         """
         if regime.regime == "CRASH":
             return False, "CRASH regime — capital preservation mode, no new longs."
-        if regime.regime == "VOLATILE_CHOPPY" and regime.volatility_regime in (
-            "HIGH", "EXTREME",
-        ):
-            return (
-                False,
-                "VOLATILE_CHOPPY with high risk — stay out.",
-            )
+        # VOLATILE_CHOPPY is tradeable with risk controls: 0.4x position size,
+        # 1.5x stop loss, max 5 trades/day. Remove absolute block.
         if regime.position_size_multiplier <= 0.0:
             return False, "Opening auction — market not ready."
         vix_val = _extract_vix_from_warnings(regime.warnings)
@@ -742,7 +737,7 @@ class RegimeDetector:
             "TREND_DOWN":        (1.0, 1.0, _DEFAULT_MAX_TRADES),
             "RANGE_BOUND":       (0.8, 0.8, 3),
             "EVENT_DRIVEN":      (0.5, 1.5, 2),
-            "VOLATILE_CHOPPY":   (0.4, 1.5, 1),
+            "VOLATILE_CHOPPY":   (0.4, 1.5, 10),  # Raised from 5 to 10 for choppy markets
             "CRASH":             (0.3, 2.0, 1),
             "BREAKOUT":          (1.0, 1.2, _DEFAULT_MAX_TRADES),
         }

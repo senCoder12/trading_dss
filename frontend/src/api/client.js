@@ -77,4 +77,9 @@ export const api = {
   deactivateKillSwitch: () => del('/system/kill-switch'),
   getLiveConfig: () => get('/system/config/live'),
   updateLiveConfig: (settings) => post('/system/config/live', settings),
+
+  // F&O Universe
+  getUniverseSnapshot: () => get('/universe/snapshot'),
+  getUniverseOptionsChain: (symbol, expiry) =>
+    get(`/universe/options-chain/${symbol}${expiry ? `?expiry=${expiry}` : ''}`),
 };

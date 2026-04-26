@@ -409,6 +409,16 @@ def _v14_fo_avg_volumes_table(db: DatabaseManager) -> None:
             conn.execute(stmt)
 
 
+@migration(version=15, description="Add fo_universe_snapshots table for daily universe orchestration")
+def _v15_fo_universe_snapshots_table(db: DatabaseManager) -> None:
+    from src.database.models import TABLE_DDL
+
+    conn = db._conn()
+    with conn:
+        for stmt in TABLE_DDL["fo_universe_snapshots"]:
+            conn.execute(stmt)
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

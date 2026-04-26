@@ -16,6 +16,7 @@ import NewsPage from './components/news/NewsPage';
 import AnomalyPage from './components/anomalies/AnomalyPage';
 import SystemPage from './components/system/SystemPage';
 import OptionsChainPage from './components/options/OptionsChainPage';
+import UniversePage from './components/universe/UniversePage';
 
 import { useNotification } from './hooks/useNotification';
 import { DataStoreProvider, useDataStore } from './hooks/useDataStore';
@@ -29,6 +30,7 @@ const SHORTCUTS = [
   { key: '6', label: 'Anomalies' },
   { key: '7', label: 'System' },
   { key: '8', label: 'Options Chain' },
+  { key: '9', label: 'F&O Universe' },
   { key: 'S', label: 'Settings' },
   { key: 'Esc', label: 'Close panel' },
   { key: '?', label: 'This help' },
@@ -53,6 +55,7 @@ function KeyboardShortcuts({ setSettingsOpen }) {
         case '6': navigate('/anomalies'); break;
         case '7': navigate('/system'); break;
         case '8': navigate('/options'); break;
+        case '9': navigate('/universe'); break;
         case 's': setSettingsOpen(true); break;
         case 'Escape':
           setSettingsOpen(false);
@@ -95,6 +98,7 @@ function AppLayout({ sidebarOpen, setSidebarOpen, settingsOpen, setSettingsOpen,
             <Route path="/anomalies" element={<AnomalyPage />} />
             <Route path="/system" element={<SystemPage />} />
             <Route path="/options" element={<OptionsChainPage />} />
+            <Route path="/universe" element={<UniversePage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

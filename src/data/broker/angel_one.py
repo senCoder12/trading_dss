@@ -127,6 +127,8 @@ class AngelOneClient:
         self.ensure_authenticated()
         try:
             data = self._get_smart_api().getMarketData(mode, exchange_tokens)
+            logger.info("DEBUG: getMarketData response status=%s, keys=%s",
+                       data.get("status"), list(data.keys()) if data else None)
             if data["status"]:
                 return data["data"]
         except Exception as exc:

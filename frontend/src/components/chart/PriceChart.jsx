@@ -286,8 +286,8 @@ export default function PriceChart({
         </div>
       )}
 
-      {/* Chart canvas — always mounted so the ref stays valid */}
-      <div ref={containerRef} style={{ display: priceData.length ? 'block' : 'none' }} />
+      {/* Chart canvas — always mounted with fixed height */}
+      {priceData.length > 0 && <div ref={containerRef} style={{ height }} />}
     </div>
   );
 }

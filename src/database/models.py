@@ -315,6 +315,55 @@ class FOAvgVolume:
 
 
 @dataclass
+class FODailyScore:
+    """
+    Daily F&O stock scores from the scoring engine.
+
+    Computed once per trading day; rank and tier reflect relative
+    tradability within the liquid universe on that date.
+    """
+
+    id: Optional[int]
+    date: str                           # "YYYY-MM-DD"
+    symbol: str
+    rank: int                           # 1 = best score
+    tier: str                           # "PRIORITY" | "ACTIVE" | "WATCHLIST"
+    composite_score: float              # 0–100
+    oi_score: float                     # 0–100
+    oi_change_score: float              # 0–100
+    volume_score: float                 # 0–100
+    price_move_score: float             # 0–100
+    iv_change_score: float              # 0–100
+    spread_score: float                 # 0–100
+    total_oi: int                       # CE + PE OI
+    volume_ratio: float                 # today_vol / avg_vol_20d
+    timestamp: str                      # ISO-8601 IST
+
+
+@dataclass
+class FOUniverseSnapshot:
+    """
+    Daily snapshot of F&O trading universe and priority watchlist.
+
+    Computed at 9:00 AM before market open; intraday refreshed
+    at 15-min intervals to keep watchlist current.
+    """
+
+    id: Optional[int]
+    date: str                           # "YYYY-MM-DD"
+    timestamp: str                      # ISO-8601 IST
+    active_universe: str                # JSON: list of top 50 StockScore dicts
+    priority_watchlist: str             # JSON: list of top 15 StockScore dicts
+    total_liquid: int                   # Passed liquidity filter
+    total_fo_stocks: int                # Total F&O universe
+    market_breadth: float               # % of F&O stocks with significant moves
+    top_sector: str                     # Sector dominating activity
+    filter_stats: str                   # JSON from FilterResult
+    is_market_hours: bool               # Was this during market hours?
+    refresh_count: int                  # Times refreshed today
+
+
+@dataclass
 class SchemaVersion:
     """Migration version tracking."""
 
@@ -640,6 +689,54 @@ TABLE_DDL: dict[str, list[str]] = {
         )
         """,
     ],
+
+    # ── F&O daily scores ──────────────────────────────────────────────────
+    "fo_daily_scores": [
+        """
+        CREATE TABLE IF NOT EXISTS fo_daily_scores (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT    NOT NULL,
+            symbol           TEXT    NOT NULL,
+            rank             INTEGER NOT NULL,
+            tier             TEXT    NOT NULL CHECK (tier IN ('PRIORITY','ACTIVE','WATCHLIST')),
+            composite_score  REAL    NOT NULL,
+            oi_score         REAL    NOT NULL,
+            oi_change_score  REAL    NOT NULL,
+            volume_score     REAL    NOT NULL,
+            price_move_score REAL    NOT NULL,
+            iv_change_score  REAL    NOT NULL,
+            spread_score     REAL    NOT NULL,
+            total_oi         INTEGER NOT NULL,
+            volume_ratio     REAL    NOT NULL,
+            timestamp        TEXT    NOT NULL,
+            UNIQUE (date, symbol)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_fo_scores_date       ON fo_daily_scores (date)",
+        "CREATE INDEX IF NOT EXISTS idx_fo_scores_date_tier  ON fo_daily_scores (date, tier)",
+        "CREATE INDEX IF NOT EXISTS idx_fo_scores_rank       ON fo_daily_scores (rank)",
+    ],
+
+    # ── F&O universe snapshots ────────────────────────────────────────────
+    "fo_universe_snapshots": [
+        """
+        CREATE TABLE IF NOT EXISTS fo_universe_snapshots (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            date                TEXT    NOT NULL UNIQUE,
+            timestamp           TEXT    NOT NULL,
+            active_universe     TEXT    NOT NULL DEFAULT '[]',
+            priority_watchlist  TEXT    NOT NULL DEFAULT '[]',
+            total_liquid        INTEGER NOT NULL DEFAULT 0,
+            total_fo_stocks     INTEGER NOT NULL DEFAULT 0,
+            market_breadth      REAL    NOT NULL DEFAULT 0,
+            top_sector          TEXT    NOT NULL DEFAULT 'unknown',
+            filter_stats        TEXT    NOT NULL DEFAULT '{}',
+            is_market_hours     INTEGER NOT NULL DEFAULT 0,
+            refresh_count       INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_fo_snapshots_date ON fo_universe_snapshots (date)",
+    ],
 }
 
 # Ordered list of table names to ensure FK-safe creation order
@@ -660,6 +757,8 @@ TABLE_CREATION_ORDER: list[str] = [
     "fo_universe",
     "fo_universe_history",
     "fo_avg_volumes",
+    "fo_daily_scores",
+    "fo_universe_snapshots",
 ]
 
 
@@ -762,5 +861,13 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
     },
     "fo_avg_volumes": {
         "symbol": "TEXT", "avg_volume_20d": "REAL", "last_updated": "TEXT",
+    },
+    "fo_daily_scores": {
+        "id": "INTEGER", "date": "TEXT", "symbol": "TEXT", "rank": "INTEGER",
+        "tier": "TEXT", "composite_score": "REAL", "oi_score": "REAL",
+        "oi_change_score": "REAL", "volume_score": "REAL",
+        "price_move_score": "REAL", "iv_change_score": "REAL",
+        "spread_score": "REAL", "total_oi": "INTEGER",
+        "volume_ratio": "REAL", "timestamp": "TEXT",
     },
 }

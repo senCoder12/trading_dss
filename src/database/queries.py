@@ -818,3 +818,86 @@ SELECT * FROM fo_avg_volumes ORDER BY symbol
 DELETE_FO_AVG_VOLUMES = """
 DELETE FROM fo_avg_volumes
 """
+
+# ============================================================================
+# fo_daily_scores
+# ============================================================================
+
+UPSERT_FO_DAILY_SCORE = """
+INSERT INTO fo_daily_scores
+    (date, symbol, rank, tier, composite_score,
+     oi_score, oi_change_score, volume_score,
+     price_move_score, iv_change_score, spread_score,
+     total_oi, volume_ratio, timestamp)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(date, symbol) DO UPDATE SET
+    rank = excluded.rank,
+    tier = excluded.tier,
+    composite_score = excluded.composite_score,
+    oi_score = excluded.oi_score,
+    oi_change_score = excluded.oi_change_score,
+    volume_score = excluded.volume_score,
+    price_move_score = excluded.price_move_score,
+    iv_change_score = excluded.iv_change_score,
+    spread_score = excluded.spread_score,
+    total_oi = excluded.total_oi,
+    volume_ratio = excluded.volume_ratio,
+    timestamp = excluded.timestamp
+"""
+
+LIST_FO_SCORES_BY_DATE = """
+SELECT * FROM fo_daily_scores WHERE date = ? ORDER BY rank
+"""
+
+LIST_FO_SCORES_BY_DATE_AND_TIER = """
+SELECT * FROM fo_daily_scores WHERE date = ? AND tier = ? ORDER BY rank
+"""
+
+GET_FO_SCORE = """
+SELECT * FROM fo_daily_scores WHERE date = ? AND symbol = ?
+"""
+
+LIST_TOP_FO_SCORES = """
+SELECT * FROM fo_daily_scores WHERE date = ? AND rank <= ? ORDER BY rank
+"""
+
+DELETE_FO_SCORES_BY_DATE = """
+DELETE FROM fo_daily_scores WHERE date = ?
+"""
+
+# ============================================================================
+# fo_universe_snapshots
+# ============================================================================
+
+UPSERT_FO_UNIVERSE_SNAPSHOT = """
+INSERT INTO fo_universe_snapshots
+    (date, timestamp, active_universe, priority_watchlist,
+     total_liquid, total_fo_stocks, market_breadth, top_sector,
+     filter_stats, is_market_hours, refresh_count)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(date) DO UPDATE SET
+    timestamp = excluded.timestamp,
+    active_universe = excluded.active_universe,
+    priority_watchlist = excluded.priority_watchlist,
+    total_liquid = excluded.total_liquid,
+    total_fo_stocks = excluded.total_fo_stocks,
+    market_breadth = excluded.market_breadth,
+    top_sector = excluded.top_sector,
+    filter_stats = excluded.filter_stats,
+    is_market_hours = excluded.is_market_hours,
+    refresh_count = excluded.refresh_count
+"""
+
+GET_FO_UNIVERSE_SNAPSHOT = """
+SELECT * FROM fo_universe_snapshots WHERE date = ?
+"""
+
+GET_LATEST_FO_UNIVERSE_SNAPSHOT = """
+SELECT * FROM fo_universe_snapshots ORDER BY date DESC LIMIT 1
+"""
+
+DELETE_FO_UNIVERSE_SNAPSHOT = """
+DELETE FROM fo_universe_snapshots WHERE date = ?
+"""

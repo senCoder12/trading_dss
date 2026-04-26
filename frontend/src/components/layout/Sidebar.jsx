@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, TrendingUp, Briefcase, BarChart2,
-  Newspaper, AlertTriangle, Activity, X, LineChart,
+  Newspaper, AlertTriangle, Activity, X, LineChart, Zap,
 } from 'lucide-react';
 
 
@@ -11,6 +11,7 @@ const NAV = [
   { to: '/portfolio', icon: Briefcase,        label: 'Portfolio' },
   { to: '/market',    icon: BarChart2,        label: 'Market' },
   { to: '/options',   icon: LineChart,        label: 'Options Chain' },
+  { to: '/universe',  icon: Zap,              label: 'F&O Universe' },
   { to: '/news',      icon: Newspaper,        label: 'News' },
   { to: '/anomalies', icon: AlertTriangle,    label: 'Anomalies' },
   { to: '/system',    icon: Activity,         label: 'System' },

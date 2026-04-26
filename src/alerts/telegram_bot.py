@@ -100,6 +100,17 @@ class TelegramBot:
         # Start time for uptime tracking
         self._start_time: Optional[datetime] = None
 
+        # F&O Universe Manager (wired lazily)
+        self._fo_universe_manager: Any = None
+
+    def set_fo_universe_manager(self, manager: Any) -> None:
+        """
+        Wire FOUniverseManager reference.
+
+        Called by DataCollector after manager is initialized.
+        """
+        self._fo_universe_manager = manager
+
     # ------------------------------------------------------------------
     # Formatting helpers
     # ------------------------------------------------------------------
@@ -319,6 +330,12 @@ class TelegramBot:
             "/alerts \u2014 Active anomaly alerts\n"
             "/vix \u2014 Current VIX & regime\n"
             "/fii \u2014 Latest FII/DII activity\n"
+            "\n"
+            "F&O Stock Universe:\n"
+            "/universe \u2014 Today's top 50 active & top 15 priority stocks\n"
+            "/watchlist \u2014 Compact priority watchlist (top 15)\n"
+            "/score RELIANCE \u2014 Detailed score breakdown for stock\n"
+            "\n"
             "/levels NIFTY50 \u2014 Key support/resistance levels\n"
             "/params \u2014 Currently approved strategy parameters\n"
             "/health \u2014 System component health check\n"
@@ -853,6 +870,103 @@ class TelegramBot:
             logger.exception("Error in /fii")
             return f"Unable to fetch FII/DII data: {exc}"
 
+    def _cmd_universe(self) -> str:
+        """Show today's F&O universe snapshot."""
+        if not hasattr(self, "_fo_universe_manager") or self._fo_universe_manager is None:
+            return "⏳ F&O universe not yet initialized. Check back after 9:00 AM."
+
+        try:
+            snapshot = self._fo_universe_manager.get_current_universe()
+            if not snapshot:
+                return "⏳ No universe snapshot yet. Run starts at 9:00 AM IST."
+
+            active = snapshot.active_universe
+            priority = snapshot.priority_watchlist
+
+            # Build top 15 with scores
+            watchlist_str = ""
+            for i, score in enumerate(priority[:15], 1):
+                watchlist_str += f"{i:2d}. {score.symbol:10s} {score.composite_score:5.1f}"
+                trend = (
+                    " OI↑ Vol↑" if score.oi_change_score > 70 and score.volume_score > 70
+                    else " OI↑" if score.oi_change_score > 70
+                    else " Vol↑" if score.volume_score > 70
+                    else ""
+                )
+                watchlist_str += trend + "\n"
+
+            return (
+                f"\U0001f4ca F&O Universe — {snapshot.timestamp.strftime('%d-%b %H:%M')}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Total F&O: {snapshot.total_fo_stocks} | Liquid: {snapshot.total_liquid}\n"
+                f"Active Top-50: {len(active)} | Breadth: {snapshot.market_breadth:.1f}%\n"
+                f"Top Sector: {snapshot.top_sector} | Refreshes: {snapshot.refresh_count}\n"
+                f"\n"
+                f"\U0001f525 Priority Watchlist (Top 15):\n"
+                f"{watchlist_str}\n"
+                f"Last refresh: {snapshot.timestamp.strftime('%H:%M:%S IST')}"
+            )
+        except Exception as exc:
+            logger.exception("Error in /universe")
+            return f"Unable to fetch F&O universe: {exc}"
+
+    def _cmd_watchlist(self) -> str:
+        """Show compact priority watchlist."""
+        if not hasattr(self, "_fo_universe_manager") or self._fo_universe_manager is None:
+            return "⏳ F&O universe not yet initialized. Check back after 9:00 AM."
+
+        try:
+            symbols = self._fo_universe_manager.get_priority_symbols()
+            if not symbols:
+                return "⏳ No watchlist yet. Run starts at 9:00 AM IST."
+
+            # Get scores for each symbol
+            lines = ["\U0001f4ca Priority Watchlist", "━━━━━━━━"]
+            for i, symbol in enumerate(symbols[:15], 1):
+                score = self._fo_universe_manager.get_stock_score(symbol)
+                if score:
+                    lines.append(f"{i:2d}. {symbol} {score.composite_score:.1f}")
+                else:
+                    lines.append(f"{i:2d}. {symbol}")
+
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.exception("Error in /watchlist")
+            return f"Unable to fetch watchlist: {exc}"
+
+    def _cmd_score(self, symbol: Optional[str] = None) -> str:
+        """Show detailed score for a stock."""
+        if not symbol:
+            return "Usage: /score RELIANCE"
+
+        symbol = symbol.upper().strip()
+
+        if not hasattr(self, "_fo_universe_manager") or self._fo_universe_manager is None:
+            return "⏳ F&O universe not yet initialized."
+
+        try:
+            score = self._fo_universe_manager.get_stock_score(symbol)
+            if not score:
+                return f"⚠️ {symbol} not in current universe."
+
+            return (
+                f"\U0001f4b9 {symbol} Score Details\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Composite: {score.composite_score:.1f} (Rank #{score.rank})\n"
+                f"Tier: {score.tier}\n"
+                f"\nComponent Scores (0–100):\n"
+                f"OI: {score.oi_score:.0f} | OI Change: {score.oi_change_score:.0f}\n"
+                f"Volume: {score.volume_score:.0f} | Price Move: {score.price_move_score:.0f}\n"
+                f"IV Change: {score.iv_change_score:.0f} | Spread: {score.spread_score:.0f}\n"
+                f"\nRaw Metrics:\n"
+                f"Total OI: {score.total_oi:,} | Volume Ratio: {score.volume_ratio:.2f}x\n"
+                f"Price Change: {score.price_change_pct:+.2f}% | IV Change: {score.iv_change:+.1f}%\n"
+                f"Bid-Ask Spread: {score.bid_ask_spread_pct:.2f}%"
+            )
+        except Exception as exc:
+            logger.exception("Error in /score")
+            return f"Unable to fetch score for {symbol}: {exc}"
+
     def _cmd_levels(self, index_id: Optional[str] = None) -> str:
         if not index_id:
             return "Usage: /levels NIFTY50"
@@ -1103,8 +1217,8 @@ class TelegramBot:
 
     _COMMANDS = {
         "start", "help", "status", "signal", "portfolio", "performance",
-        "news", "premarket", "alerts", "vix", "fii", "levels", "params",
-        "health", "kill", "resume",
+        "news", "premarket", "alerts", "vix", "fii", "universe", "watchlist",
+        "score", "levels", "params", "health", "kill", "resume",
     }
 
     def handle_command(self, command: str, args: str = "") -> str:
@@ -1136,6 +1250,12 @@ class TelegramBot:
             return self._cmd_vix()
         if cmd == "fii":
             return self._cmd_fii()
+        if cmd == "universe":
+            return self._cmd_universe()
+        if cmd == "watchlist":
+            return self._cmd_watchlist()
+        if cmd == "score":
+            return self._cmd_score(args if args else None)
         if cmd == "levels":
             return self._cmd_levels(args if args else None)
         if cmd == "params":

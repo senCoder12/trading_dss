@@ -1,0 +1,482 @@
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-25 23:56:48 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 23:56:48 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 23:56:48 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 23:56:48 | src.database.db_manager | [32mINFO    [0m | Database schema initialised (18 tables)
+2026-04-25 23:56:48 | src.database.db_manager | [32mINFO    [0m | Database schema initialised (18 tables)
+2026-04-25 23:56:48 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 23:56:48 | src.data.index_registry | [32mINFO    [0m | DB sync complete — upserted=48, deactivated=0
+2026-04-25 23:56:48 | __main__ | [32mINFO    [0m | Registry loaded: 48 active, 5 F&O
+2026-04-25 23:56:48 | src.data.rate_limiter | [32mINFO    [0m | GlobalRateLimiter: created limiter for nseindia.com (25 req/60s)
+2026-04-25 23:56:48 | src.data.rate_limiter | [32mINFO    [0m | GlobalRateLimiter: created limiter for bseindia.com (15 req/60s)
+[I 260425 23:56:49 smartConnect:124] in pool
+2026-04-25 23:56:50 | src.data.broker.angel_one | [32mINFO    [0m | Angel One: logged in successfully
+2026-04-25 23:56:53 | src.data.broker.angel_one | [32mINFO    [0m | Master contract loaded: 50873 NFO instruments
+2026-04-25 23:56:54 | src.data.broker.angel_one | [32mINFO    [0m | Master contract loaded: 50846 BFO instruments
+2026-04-25 23:57:01 | src.data.broker.websocket_feed | [32mINFO    [0m | WebSocket feed started, subscribing to 2 instrument group(s)
+2026-04-25 23:57:01 | src.data.data_router | [32mINFO    [0m | WebSocket: subscribed to 5 index token(s) + 0 option token(s)
+2026-04-25 23:57:01 | src.data.data_router | [32mINFO    [0m | DataRouter: using Angel One SmartAPI (WebSocket mode)
+2026-04-25 23:57:01 | src.data.data_collector | [32mINFO    [0m | DataRouter source: Angel One SmartAPI (WebSocket, real-time)
+2026-04-25 23:57:01 | websocket | [32mINFO    [0m | Websocket connected
+2026-04-25 23:57:01 | src.data.broker.websocket_feed | [32mINFO    [0m | WebSocket: connection opened
+2026-04-25 23:57:01 | src.data.broker.websocket_feed | [32mINFO    [0m | WebSocket: subscribed (SnapQuote mode)
+2026-04-25 23:57:01 | src.analysis.news.language_handler | [32mINFO    [0m | Primary translator (deep-translator/Google) initialized
+2026-04-25 23:57:01 | src.analysis.news.language_handler | [32mINFO    [0m | argostranslate not installed — offline translation unavailable
+2026-04-25 23:57:01 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 23:57:01 | src.analysis.news.event_calendar | [32mINFO    [0m | Loaded event calendar: 22 recurring, 1 specific events
+2026-04-25 23:57:01 | src.analysis.news.news_engine | [32mINFO    [0m | NewsEngine initialised
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | FOUniverseManager: starting initialization...
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | FOUniverseManager: imports OK
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | FOUniverseManager: SmartAPIClient created
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | FOUniverseManager: got nse_scraper from collector
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | FOUniverseManager: FIIDIIFetcher created
+2026-04-25 23:57:01 | src.analysis.fo_stock_scorer | [32mINFO    [0m | Initialized FOStockScorer with weights: DatabaseManager(path='trading_dss.db', wal=True, connected=True)
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | FOUniverseManager: manager object created
+2026-04-25 23:57:01 | src.analysis.fo_universe_manager | [32mINFO    [0m | F&O Universe Manager scheduler started
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | FOUniverseManager: scheduler started
+2026-04-25 23:57:01 | __main__ | [32mINFO    [0m | Triggering initial F&O universe selection (--force-start)
+2026-04-25 23:57:01 | src.analysis.fo_universe_manager | [32mINFO    [0m | Starting daily universe selection
+2026-04-25 23:57:01 | src.analysis.fo_universe_manager | [32mINFO    [0m | DEBUG: calling refresh_if_stale()
+2026-04-25 23:57:01 | src.data.fo_universe_fetcher | [32mINFO    [0m | Fetching F&O universe from NSE...
+2026-04-25 23:57:01 | src.data.nse_scraper | [32mINFO    [0m | NSE session warmed up (cookies: 6, UA: Mozilla/5.0 (Macintosh; Intel Mac OS X 1…)
+2026-04-25 23:57:01 | src.data.nse_scraper | [31mERROR   [0m | NSE request to /api/fo-lot-size-master failed: HTTP 404: <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Resource not found</title>
+</head>
+<body style="background-color: #e8e8e8;">
+  <div style="font-size: 32px; padding: 50px 25px
+2026-04-25 23:57:01 | src.data.fo_universe_fetcher | [33mWARNING [0m | Lot size endpoint returned no data; using fallback lot_size=1
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BHARTIARTL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: WIPRO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TCS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HDFCLIFE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: AUROPHARMA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MARICO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: GLENMARK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: AUBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: POLICYBZR ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LODHA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PATANJALI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CGPOWER ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: UPL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BSE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DIXON ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ASTRAL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ANGELONE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: IDEA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: VEDL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: KOTAKBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: VBL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: WAAREEENER ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CIPLA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ONGC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TATAPOWER ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: IREDA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: JINDALSTEL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SWIGGY ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HINDZINC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BEL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SBIN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HINDALCO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ASIANPAINT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ICICIPRULI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MUTHOOTFIN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LICHSGFIN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: COALINDIA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: POWERGRID ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PREMIERENE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: AXISBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LTM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HUDCO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: FORCEMOT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CANBK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NTPC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PNB ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CROMPTON ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: APLAPOLLO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BLUESTARCO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BAJFINANCE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MARUTI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NMDC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: KEI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MANAPPURAM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SUNPHARMA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LAURUSLABS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ICICIGI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SONACOMS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: OFSS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: KAYNES ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BPCL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: FEDERALBNK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LICI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: GODFRYPHLP ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: GRASIM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HDFCBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TMPV ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: IEX ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BAJAJFINSV ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ULTRACEMCO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: UNOMINDA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PAGEIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NHPC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: JUBLFOOD ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: EXIDEIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BANKINDIA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NYKAA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NATIONALUM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: AMBER ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TATATECH ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MOTILALOFS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SAIL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: GODREJCP ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ITC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SAMMAANCAP ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TITAN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HCLTECH ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BANDHANBNK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SOLARINDS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BDL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PHOENIXLTD ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LUPIN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HINDUNILVR ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: JSWENERGY ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: INOXWIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NAUKRI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BIOCON ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SUZLON ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ADANIENT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CDSL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BHARATFORG ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DABUR ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: RECLTD ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BAJAJHLDNG ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: FORTIS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PFC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: COLPAL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: INDUSINDBK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MCX ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PAYTM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: RBLBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: JSWSTEEL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TATASTEEL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BANKBARODA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ETERNAL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ALKEM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TVSMOTOR ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SBICARD ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NAM-INDIA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: UNITDSPR ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: IRFC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ABB ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CHOLAFIN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SIEMENS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: KFINTECH ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PIIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MFSL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: INFY ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: IDFCFIRSTB ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SHREECEM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BRITANNIA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: RELIANCE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: INDIGO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: INDUSTOWER ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HAL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: INDIANB ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: VMM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DLF ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BHEL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ZYDUSLIFE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: GODREJPROP ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CUMMINSIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: UNIONBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: IOC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: KPITTECH ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: KALYANKJIL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: OBEROIRLTY ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TATACONSUM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: YESBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MPHASIS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: VOLTAS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TATAELXSI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: LTF ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HINDPETRO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TECHM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TORNTPOWER ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PGEL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ADANIPORTS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CONCOR ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: POWERINDIA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: APOLLOHOSP ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HAVELLS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: EICHERMOT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DIVISLAB ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: M&M ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MAXHEALTH ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MAZDOCK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SUPREMEIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: POLYCAB ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HYUNDAI ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ADANIPOWER ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ADANIGREEN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ADANIENSOL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NUVAMA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PETRONET ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: GAIL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: OIL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PRESTIGE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PERSISTENT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HDFCAMC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: HEROMOTOCO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DRREDDY ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TORNTPHARM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DMART ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DELHIVERY ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: AMBUJACEM ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NBCC ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: RVNL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ICICIBANK ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: CAMS ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: JIOFIN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: 360ONE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ABCAPITAL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: INDHOTEL ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BAJAJ-AUTO ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: COFORGE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MOTHERSON ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: MANKIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: COCHINSHIP ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SRF ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TIINDIA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PIDILITIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: GMRAIRPORT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PPLPHARMA ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: DALBHARAT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: TRENT ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: NESTLEIND ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SBILIFE ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: BOSCHLTD ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: PNBHOUSING ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: ASHOKLEY ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O history: SHRIRAMFIN ADDED (lot_size=1)
+2026-04-25 23:57:02 | src.data.fo_universe_fetcher | [32mINFO    [0m | F&O universe fetched: 213 stocks
+2026-04-25 23:57:02 | src.analysis.fo_universe_manager | [32mINFO    [0m | DEBUG: refresh_if_stale() returned True
+2026-04-25 23:57:02 | src.analysis.fo_universe_manager | [32mINFO    [0m | DEBUG: universe symbols count = 213
+2026-04-25 23:57:02 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: fetch_all_quotes got 213 symbols from universe
+2026-04-25 23:57:02 | src.data.fo_bulk_fetcher | [32mINFO    [0m | Fetching quotes for 213 symbols in batches of 50
+2026-04-25 23:57:02 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch 1 symbols: 50 (first 3: ['360ONE', 'ABB', 'ABCAPITAL'])
+[I 260425 23:57:02 smartConnect:124] in pool
+2026-04-25 23:57:02 | src.data.broker.angel_one | [32mINFO    [0m | Angel One: logged in successfully
+2026-04-25 23:57:02 | src.data.broker.angel_one | [32mINFO    [0m | DEBUG: getMarketData response status=True, keys=['status', 'message', 'errorcode', 'data']
+2026-04-25 23:57:02 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch raw response: fetched=0, unfetched=50, raw_keys=['fetched', 'unfetched']
+2026-04-25 23:57:03 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch 2 symbols: 50 (first 3: ['CUMMINSIND', 'DABUR', 'DALBHARAT'])
+2026-04-25 23:57:03 | src.data.broker.angel_one | [32mINFO    [0m | DEBUG: getMarketData response status=True, keys=['status', 'message', 'errorcode', 'data']
+2026-04-25 23:57:03 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch raw response: fetched=0, unfetched=50, raw_keys=['fetched', 'unfetched']
+2026-04-25 23:57:03 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch 3 symbols: 50 (first 3: ['IRFC', 'ITC', 'JINDALSTEL'])
+2026-04-25 23:57:04 | src.data.broker.angel_one | [32mINFO    [0m | DEBUG: getMarketData response status=True, keys=['status', 'message', 'errorcode', 'data']
+2026-04-25 23:57:04 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch raw response: fetched=0, unfetched=50, raw_keys=['fetched', 'unfetched']
+2026-04-25 23:57:04 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch 4 symbols: 50 (first 3: ['PAYTM', 'PERSISTENT', 'PETRONET'])
+2026-04-25 23:57:05 | src.data.broker.angel_one | [32mINFO    [0m | DEBUG: getMarketData response status=True, keys=['status', 'message', 'errorcode', 'data']
+2026-04-25 23:57:05 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch raw response: fetched=0, unfetched=50, raw_keys=['fetched', 'unfetched']
+2026-04-25 23:57:06 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch 5 symbols: 13 (first 3: ['ULTRACEMCO', 'UNIONBANK', 'UNITDSPR'])
+2026-04-25 23:57:06 | src.data.broker.angel_one | [32mINFO    [0m | DEBUG: getMarketData response status=True, keys=['status', 'message', 'errorcode', 'data']
+2026-04-25 23:57:06 | src.data.fo_bulk_fetcher | [32mINFO    [0m | DEBUG: batch raw response: fetched=0, unfetched=13, raw_keys=['fetched', 'unfetched']
+2026-04-25 23:57:06 | src.analysis.fo_universe_manager | [31mERROR   [0m | Daily universe selection failed: Quote fetch failure rate 100.0% exceeds 30% threshold
+Traceback (most recent call last):
+  File "/Users/mayukh/projects/trading_dss/src/analysis/fo_universe_manager.py", line 192, in run_daily_universe_selection
+    quotes = self.fo_bulk_fetcher.fetch_all_quotes()
+  File "/Users/mayukh/projects/trading_dss/src/data/fo_bulk_fetcher.py", line 201, in fetch_all_quotes
+    raise DataFetchError(f"Quote fetch failure rate {fail_rate:.1%} exceeds 30% threshold")
+src.data.fo_bulk_fetcher.DataFetchError: Quote fetch failure rate 100.0% exceeds 30% threshold
+2026-04-25 23:57:06 | __main__ | [33mWARNING [0m | Initial universe selection failed (non-fatal): Quote fetch failure rate 100.0% exceeds 30% threshold
+2026-04-25 23:57:06 | src.analysis.news.language_handler | [32mINFO    [0m | Primary translator (deep-translator/Google) initialized
+2026-04-25 23:57:06 | src.analysis.news.language_handler | [32mINFO    [0m | argostranslate not installed — offline translation unavailable
+2026-04-25 23:57:06 | src.analysis.news.event_calendar | [32mINFO    [0m | Loaded event calendar: 22 recurring, 1 specific events
+2026-04-25 23:57:06 | src.analysis.news.news_engine | [32mINFO    [0m | NewsEngine initialised
+2026-04-25 23:57:06 | src.analysis.anomaly.alert_manager | [32mINFO    [0m | Loaded 45 active alerts from database
+2026-04-25 23:57:06 | src.analysis.anomaly.anomaly_aggregator | [32mINFO    [0m | AnomalyAggregator initialised with all sub-detectors
+2026-04-25 23:57:06 | src.engine.signal_tracker | [32mINFO    [0m | SignalTracker initialised (capital=₹100000)
+2026-04-25 23:57:06 | src.engine.decision_engine | [32mINFO    [0m | DecisionEngine initialised — all sub-components ready
+2026-04-25 23:57:06 | src.data.data_collector | [32mINFO    [0m | DataCollector: decision engine wired in
+2026-04-25 23:57:06 | src.data.data_collector | [32mINFO    [0m | DataCollector: overnight engine wired in
+2026-04-25 23:57:06 | src.paper_trading.paper_engine | [32mINFO    [0m | load_state: resumed from today's state — capital ₹100000, 0 open position(s)
+2026-04-25 23:57:06 | src.paper_trading.paper_engine | [32mINFO    [0m | PaperTradingEngine initialised — capital ₹100000, config: min_conf=HIGH, indices=['NIFTY50', 'BANKNIFTY']
+2026-04-25 23:57:06 | src.data.data_collector | [32mINFO    [0m | Starting DataCollector scheduler
+2026-04-25 23:57:06 | src.alerts.telegram_bot | [32mINFO    [0m | Telegram bot thread started
+2026-04-25 23:57:06 | apscheduler.executors.default | [33mWARNING [0m | Run time of job "NSE Index Prices (trigger: interval[0:01:00], next run at: 2026-04-25 23:57:01 IST)" was missed by 0:00:05.148559
+2026-04-25 23:57:06 | apscheduler.executors.default | [33mWARNING [0m | Run time of job "NSE Options Chain (trigger: interval[0:03:00], next run at: 2026-04-25 23:57:01 IST)" was missed by 0:00:05.148609
+2026-04-25 23:57:06 | apscheduler.executors.default | [33mWARNING [0m | Run time of job "Collect and Analyze News (trigger: interval[0:02:00], next run at: 2026-04-25 23:57:01 IST)" was missed by 0:00:05.148743
+2026-04-25 23:57:06 | src.paper_trading.watchdog | [32mINFO    [0m | Watchdog started (interval=30s, max_recovery=3)
+2026-04-25 23:57:06 | src.data.data_collector | [32mINFO    [0m | force_run: executing 'collect_fii_dii'
+2026-04-25 23:57:06 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6285324288]: trading_dss.db (WAL=True)
+2026-04-25 23:57:06 | src.paper_trading.watchdog | [33mWARNING [0m | Watchdog: network WARNING — NSE unreachable: HTTPError
+2026-04-25 23:57:06 | src.api.app | [32mINFO    [0m | Serving frontend assets from /Users/mayukh/projects/trading_dss/frontend/dist/assets
+2026-04-25 23:57:06 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 23:57:06 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+2026-04-25 23:57:06 | src.data.data_collector | [32mINFO    [0m | FII net: -8828 Cr (neutral trend, 0 consecutive days)
+2026-04-25 23:57:06 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6201192448]: trading_dss.db (WAL=True)
+2026-04-25 23:57:06 | src.data.fii_dii_data | [32mINFO    [0m | Saved FII/DII data for 2026-04-24
+2026-04-25 23:57:06 | src.data.data_collector | [32mINFO    [0m | force_run: executing 'update_historical'
+2026-04-25 23:57:06 | src.data.data_collector | [32mINFO    [0m | Updating daily historical data for all active indices
+2026-04-25 23:57:07 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY50: Cannot download NIFTY50: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:07 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_NEXT50: Cannot download NIFTY_NEXT50: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:07 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY100: Cannot download NIFTY100: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:07 | telegram.ext.Application | [32mINFO    [0m | Application started
+2026-04-25 23:57:07 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY200: Cannot download NIFTY200: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:07 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY500: Cannot download NIFTY500: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:07 | src.alerts.telegram_bot | [32mINFO    [0m | Telegram bot polling started
+2026-04-25 23:57:07 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for BANKNIFTY: Cannot download BANKNIFTY: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:07 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for FINNIFTY: Cannot download FINNIFTY: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_IT: Cannot download NIFTY_IT: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_PHARMA: Cannot download NIFTY_PHARMA: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_METAL: Cannot download NIFTY_METAL: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_ENERGY: Cannot download NIFTY_ENERGY: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_FMCG: Cannot download NIFTY_FMCG: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_AUTO: Cannot download NIFTY_AUTO: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_REALTY: Cannot download NIFTY_REALTY: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_MEDIA: Cannot download NIFTY_MEDIA: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_INFRA: Cannot download NIFTY_INFRA: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_PSU_BANK: Cannot download NIFTY_PSU_BANK: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:08 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_PRIVATE_BANK: Cannot download NIFTY_PRIVATE_BANK: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:09 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_COMMODITIES: Cannot download NIFTY_COMMODITIES: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:09 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+2026-04-25 23:57:09 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_MIDCAP50: Cannot download NIFTY_MIDCAP50: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:09 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_MIDCAP100: Cannot download NIFTY_MIDCAP100: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:09 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_SMALLCAP50: Cannot download NIFTY_SMALLCAP50: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:09 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+2026-04-25 23:57:10 | yfinance | [31mERROR   [0m | HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^CNXSC100"}}}
+2026-04-25 23:57:11 | yfinance | [31mERROR   [0m | $^CNXSC100: possibly delisted; no price data found  (period=1y) (Yahoo error = "No data found, symbol may be delisted")
+2026-04-25 23:57:11 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for NIFTY_SMALLCAP100: Cannot download NIFTY_SMALLCAP100: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:11 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for INDIA_VIX: Cannot download INDIA_VIX: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:11 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for SENSEX: Cannot download SENSEX: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:11 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for BSE100: Cannot download BSE100: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:11 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for BSE200: Cannot download BSE200: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:11 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for BSE500: Cannot download BSE500: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:12 | yfinance | [31mERROR   [0m | HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ^BSEMDCP"}}}
+2026-04-25 23:57:13 | yfinance | [31mERROR   [0m | $^BSEMDCP: possibly delisted; no price data found  (period=1y) (Yahoo error = "No data found, symbol may be delisted")
+2026-04-25 23:57:13 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for BSE_MIDCAP: Cannot download BSE_MIDCAP: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:14 | yfinance | [31mERROR   [0m | $^BSESMCP: possibly delisted; no price data found  (period=1y) (Yahoo error = "No data found, symbol may be delisted")
+2026-04-25 23:57:14 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for BSE_SMALLCAP: Cannot download BSE_SMALLCAP: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:14 | src.data.historical_data | [31mERROR   [0m | Failed to update daily data for BSE_BANKEX: Cannot download BSE_BANKEX: no yahoo_symbol or nse_archive_name
+2026-04-25 23:57:14 | src.data.data_collector | [32mINFO    [0m | force_run: executing 'collect_technical_indicators'
+2026-04-25 23:57:14 | src.analysis.technical_aggregator | [32mINFO    [0m | Analysis complete for NIFTY50: signal=NEUTRAL confidence=0.47 (1 alerts)
+2026-04-25 23:57:14 | src.analysis.indicator_store | [32mINFO    [0m | Saved analysis for NIFTY50 at 2026-04-25T23:57:14.369990 (1 alerts)
+2026-04-25 23:57:14 | src.analysis.technical_aggregator | [32mINFO    [0m | Analysis complete for BANKNIFTY: signal=BUY confidence=0.47 (1 alerts)
+2026-04-25 23:57:14 | src.analysis.indicator_store | [32mINFO    [0m | Saved analysis for BANKNIFTY at 2026-04-25T23:57:14.416556 (1 alerts)
+2026-04-25 23:57:14 | src.data.data_collector | [33mWARNING [0m | Skipping indicators for FINNIFTY — only 4 daily bars (yfinance history limited for this ticker)
+2026-04-25 23:57:14 | src.analysis.indicators.volume | [33mWARNING [0m | All volume data is zero — returning NEUTRAL volume summary.
+2026-04-25 23:57:14 | src.analysis.technical_aggregator | [32mINFO    [0m | Analysis complete for MIDCPNIFTY: signal=BUY confidence=0.37 (0 alerts)
+2026-04-25 23:57:14 | src.analysis.indicator_store | [32mINFO    [0m | Saved analysis for MIDCPNIFTY at 2026-04-25T23:57:14.445472 (0 alerts)
+2026-04-25 23:57:14 | src.analysis.technical_aggregator | [32mINFO    [0m | Analysis complete for SENSEX: signal=NEUTRAL confidence=0.47 (1 alerts)
+2026-04-25 23:57:14 | src.analysis.indicator_store | [32mINFO    [0m | Saved analysis for SENSEX at 2026-04-25T23:57:14.465752 (1 alerts)
+2026-04-25 23:57:14 | src.data.data_collector | [32mINFO    [0m | Technical indicators computed for 4 indices
+2026-04-25 23:57:14 | src.data.data_collector | [32mINFO    [0m | force_run: executing 'decision_cycle'
+2026-04-25 23:57:14 | src.data.data_collector | [32mINFO    [0m | Starting scheduled decision cycle...
+2026-04-25 23:57:14 | src.engine.decision_engine | [32mINFO    [0m | DecisionEngine: starting cycle for NIFTY50
+2026-04-25 23:57:14 | src.engine.decision_engine | [33mWARNING [0m | DecisionEngine [NIFTY50]: Stale data: index_prices (never fetched old, max 300s)
+2026-04-25 23:57:14 | src.engine.decision_engine | [33mWARNING [0m | DecisionEngine [NIFTY50]: Stale data: options_chain (never fetched old, max 600s)
+2026-04-25 23:57:14 | src.engine.decision_engine | [33mWARNING [0m | DecisionEngine [NIFTY50]: Stale data: vix (never fetched old, max 480s)
+2026-04-25 23:57:14 | src.analysis.indicators.volume | [33mWARNING [0m | All volume data is zero — returning NEUTRAL volume summary.
+2026-04-25 23:57:14 | src.analysis.technical_aggregator | [32mINFO    [0m | Analysis complete for NIFTY50: signal=NEUTRAL confidence=0.60 (1 alerts)
+2026-04-25 23:57:14 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 15 articles from Moneycontrol (took 0.1s)
+2026-04-25 23:57:14 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 4 articles from Moneycontrol (took 0.1s)
+2026-04-25 23:57:14 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 15 articles from Moneycontrol (took 0.1s)
+2026-04-25 23:57:14 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 50 articles from Economic Times (took 0.1s)
+2026-04-25 23:57:14 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 50 articles from Economic Times (took 0.0s)
+2026-04-25 23:57:14 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 50 articles from Economic Times (took 0.0s)
+2026-04-25 23:57:15 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 0 articles from Economic Times (took 0.0s)
+2026-04-25 23:57:15 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 35 articles from Livemint (took 0.1s)
+2026-04-25 23:57:15 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 35 articles from Livemint (took 0.0s)
+2026-04-25 23:57:15 | src.analysis.news.rss_fetcher | [32mINFO    [0m | Fetched 35 articles from Livemint (took 0.0s)
+2026-04-25 23:57:20 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6386282496]: trading_dss.db (WAL=True)
+2026-04-25 23:57:20 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6352629760]: trading_dss.db (WAL=True)
+2026-04-25 23:57:20 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6335803392]: trading_dss.db (WAL=True)
+2026-04-25 23:57:20 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 23:57:20 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6335803392]: trading_dss.db (WAL=True)
+2026-04-25 23:57:35 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=12901707776]: trading_dss.db (WAL=True)
+2026-04-25 23:57:36 | src.paper_trading.watchdog | [33mWARNING [0m | Watchdog: network WARNING — NSE unreachable: HTTPError
+2026-04-25 23:57:38 | src.paper_trading.watchdog | [32mINFO    [0m | Watchdog stop requested
+2026-04-25 23:57:38 | src.data.data_collector | [32mINFO    [0m | Shutting down DataCollector…
+2026-04-25 23:57:38 | websocket | [31mERROR   [0m | error from callback <bound method SmartWebSocketV2._on_close of <SmartApi.smartWebSocketV2.SmartWebSocketV2 object at 0x112847a90>>: _on_close() takes 2 positional arguments but 4 were given
+2026-04-25 23:57:38 | src.data.data_collector | [32mINFO    [0m | Data collector shut down gracefully
+[W 260425 23:57:38 smartWebSocketV2:318] Attempting to resubscribe/reconnect (Attempt 1)...
+2026-04-25 23:57:38 | telegram.ext.Application | [32mINFO    [0m | Application is stopping. This might take a moment.
+2026-04-25 23:57:38 | telegram.ext.Application | [32mINFO    [0m | Application.stop() complete
+2026-04-25 23:57:38 | src.alerts.telegram_bot | [32mINFO    [0m | Telegram bot stopped
+
+    ╔═══════════════════════════════════════════════╗
+    ║    Trading Decision Support System v1.0        ║
+    ║    Indian Markets — Zero Cost Edition          ║
+    ╠═══════════════════════════════════════════════╣
+    ║  Market : 🔴 WEEKEND                            ║
+    ║  Mode   : Collector + API + Telegram           ║
+    ║  Paper Trading: 🟢 ACTIVE                      ║
+    ║  Capital: ₹   100,000                        ║
+    ╚═══════════════════════════════════════════════╝
+
+[1/5] Validating configuration...
+[PASS] Python 3.9.6 — OK
+[PASS] All dependencies installed — Ready
+[PASS] .env file — found and loaded
+[PASS] indices.json — 48 indices loaded, 5 with F&O
+[PASS] news_mappings.json — 15 categories, 377 keywords
+[PASS] rss_feeds.json — 22 feeds configured
+[PASS] sentiment_keywords.json — 48 bullish, 48 bearish, 20 neutral
+[PASS] Database — SQLite OK, 21 tables created
+[PASS] Migrations — Schema up to date
+[WARN] Schema — Unexpected table found: 'fo_universe_snapshots' (not in models.py)
+[WARN] Schema — Unexpected table found: 'paper_trading_state' (not in models.py)
+  ⚠️  2 warning(s) — check logs for details
+  ✅ Configuration valid
+
+[2/5] Initialising database...
+  ✅ Database ready (257.3 MB)
+
+[3/5] Initialising components...
+  ✅ Data Collector initialised
+  ✅ F&O Universe Manager initialised and scheduler started
+  ✅ Decision Engine initialised
+  ✅ F&O Universe Manager wired into API
+  ✅ Decision Engine wired into Collector
+  ✅ Overnight News Engine initialised
+  ✅ Telegram Bot initialised
+  ✅ Paper Trading initialised (₹100,000)
+  ✅ Watchdog initialised
+  ✅ Automated Reporter initialised (daily 15:45, weekly Sat)
+  ✅ API Server will start on port 8000
+
+[4/5] Starting services...
+  📡 Data Collector started
+  🤖 Telegram Bot started
+  🔍 Watchdog started (monitoring every 30s)
+  📊 Automated Reporter started
+  🌐 API Server started   → http://localhost:8000
+  📊 Dashboard            → http://localhost:8000
+  📋 API Docs             → http://localhost:8000/docs
+
+[5/5] System running!
+
+    Active Services:
+    │  📡 Data Collector   (prices, options, VIX)
+    │  🧠 Decision Engine  (signals, regime)
+    │  📰 News Engine      (sentiment, impact)
+    │  ⚠️  Anomaly Detector (volume, OI, divergence)
+    │  📝 Paper Trading    (NIFTY50, BANKNIFTY)
+    │  🔍 Watchdog         (health monitoring)
+    │  📊 Reporter         (daily 15:45, weekly Sat)
+    │  🤖 Telegram Bot    (alerts, commands)
+    └  🌐 API + Dashboard  (port 8000)
+
+  Press Ctrl+C to stop all services.
+
+
+
+Shutting down gracefully...
+  Stopping Watchdog...
+  Saving Paper Trading state...
+  Stopping Data Collector...
+  Stopping Telegram Bot...
+  ✅ All services stopped gracefully

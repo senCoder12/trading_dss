@@ -1,0 +1,1638 @@
+INFO:     Will watch for changes in these directories: ['/Users/mayukh/projects/trading_dss']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [9889] using StatReload
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [9892]
+INFO:     Waiting for application startup.
+2026-04-25 13:10:47 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:10:47 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:51020 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:28 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:51023 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:28 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+2026-04-25 13:11:28 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6181367808]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6215020544]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6265499648]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6198194176]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6248673280]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6231846912]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:51013 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51015 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51017 - "GET /api/news/feed?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51016 - "GET /api/system/health HTTP/1.1" 200 OK
+2026-04-25 13:11:28 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:51014 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51019 - "GET /api/market/prices HTTP/1.1" 200 OK
+2026-04-25 13:11:28 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6282326016]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:51035 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51032 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51033 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51030 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51039 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51041 - "GET /api/news/feed?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51046 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51047 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51053 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51062 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51057 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51054 - "GET /api/market/prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51061 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51065 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51068 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51071 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51082 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51078 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51085 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51086 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51081 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51089 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51100 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51098 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51101 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51097 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51104 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+2026-04-25 13:11:36 | src.engine.signal_tracker | [32mINFO    [0m | SignalTracker initialised (capital=₹100000)
+INFO:     127.0.0.1:51113 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51112 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51111 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51118 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51120 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51122 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51128 - "GET /api/news/feed?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51127 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51134 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51133 - "GET /api/news/feed?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51140 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:41 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:51139 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51143 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51149 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51148 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51152 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:44 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+2026-04-25 13:11:47 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+INFO:     127.0.0.1:51164 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51160 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51161 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51165 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51167 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51176 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51179 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51181 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51177 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51182 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51189 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51192 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51190 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51196 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51199 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51201 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51204 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:50 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:51208 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51211 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51214 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:50 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+INFO:     127.0.0.1:51217 - "WebSocket /ws" [accepted]
+2026-04-25 13:11:53 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+INFO:     127.0.0.1:51226 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51230 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51233 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51228 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51235 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51232 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51238 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51241 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51247 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51246 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51250 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51259 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51266 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51267 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51260 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51268 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51265 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51271 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51274 - "GET /api/system/status HTTP/1.1" 200 OK
+2026-04-25 13:12:30 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+INFO:     127.0.0.1:51287 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51291 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51292 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51294 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51288 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51304 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51306 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51302 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51308 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51309 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51312 - "WebSocket /ws" [accepted]
+2026-04-25 13:12:33 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+INFO:     127.0.0.1:51317 - "GET /api/market/prices/NIFTY_NEXT50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51318 - "GET /api/market/prices/NIFTY_NEXT50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51324 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51323 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51329 - "GET /api/market/prices/NIFTY_IT/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51330 - "GET /api/market/prices/NIFTY_IT/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51338 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51342 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51341 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51346 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51345 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51348 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51351 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51354 - "GET /api/system/status HTTP/1.1" 200 OK
+2026-04-25 13:13:08 | src.engine.signal_tracker | [32mINFO    [0m | SignalTracker initialised (capital=₹100000)
+INFO:     127.0.0.1:51363 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51362 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51360 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51368 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51372 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51371 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51380 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51381 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51384 - "GET /api/portfolio/trades?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51385 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51391 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51394 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51395 - "GET /api/portfolio/trades?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51397 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51402 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51403 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51407 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51413 - "WebSocket /ws" [accepted]
+2026-04-25 13:13:14 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 7
+INFO:     connection open
+INFO:     127.0.0.1:51411 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51418 - "WebSocket /ws" [accepted]
+2026-04-25 13:13:18 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 8
+INFO:     connection open
+INFO:     127.0.0.1:51428 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51431 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51430 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51435 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51433 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51436 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51439 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51442 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51465 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51464 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51468 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51476 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51480 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51484 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51481 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51487 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51485 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51490 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51493 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51499 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51500 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51503 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51508 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51516 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51520 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51512 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51521 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51517 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51524 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51528 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51538 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51537 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51541 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51550 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51557 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51561 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51553 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51556 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51560 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51564 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51567 - "GET /api/system/status HTTP/1.1" 200 OK
+2026-04-25 13:15:08 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 7
+INFO:     connection closed
+INFO:     127.0.0.1:51577 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:08 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 8
+INFO:     connection open
+2026-04-25 13:15:08 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 7
+INFO:     connection closed
+INFO:     127.0.0.1:51575 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51579 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51582 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:08 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 8
+INFO:     connection open
+INFO:     127.0.0.1:51585 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:12 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 9
+INFO:     connection open
+INFO:     127.0.0.1:51588 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:12 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 10
+INFO:     connection open
+INFO:     127.0.0.1:51594 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51593 - "GET /api/signals/current HTTP/1.1" 200 OK
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 9
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 8
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 7
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 6
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:15:25 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     127.0.0.1:51617 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:26 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:51609 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51614 - "GET /api/system/health HTTP/1.1" 200 OK
+2026-04-25 13:15:26 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     127.0.0.1:51610 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51615 - "GET /api/market/prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51611 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51616 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51626 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:26 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:51621 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51623 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51641 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:26 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:51630 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51636 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51637 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51638 - "GET /api/market/prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51644 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51652 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51653 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51647 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51657 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51659 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51662 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51665 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51668 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:29 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:51671 - "WebSocket /ws" [accepted]
+2026-04-25 13:15:29 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:51677 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51678 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51732 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51734 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51742 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51737 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51738 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51741 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51748 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51747 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51751 - "GET /api/market/options/NIFTY50/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51821 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51820 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51887 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51891 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51896 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51904 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51897 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51902 - "GET /api/market/options/NIFTY50/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51901 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51907 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51910 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51976 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51975 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52045 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52043 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52050 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52055 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52058 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52051 - "GET /api/market/options/NIFTY50/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52064 - "WebSocket /ws" [accepted]
+2026-04-25 13:16:56 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     127.0.0.1:52054 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     connection open
+2026-04-25 13:16:56 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+INFO:     127.0.0.1:52061 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52068 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52070 - "GET /api/market/options/NIFTY50/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52089 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:00 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+INFO:     127.0.0.1:52148 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52147 - "GET /api/signals/current HTTP/1.1" 200 OK
+2026-04-25 13:17:14 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+INFO:     127.0.0.1:52159 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:14 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+INFO:     127.0.0.1:52157 - "GET /api/market/options/NIFTY50/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52178 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:18 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+INFO:     127.0.0.1:52217 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52221 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52226 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52222 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52227 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52228 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+2026-04-25 13:17:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+INFO:     127.0.0.1:52239 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:27 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+INFO:     127.0.0.1:52237 - "GET /api/market/options/NIFTY50/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52258 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 7
+INFO:     connection open
+INFO:     127.0.0.1:52289 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52292 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52306 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52305 - "GET /api/signals/current HTTP/1.1" 200 OK
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 6
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     127.0.0.1:52336 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:44 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:52329 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52332 - "GET /api/system/health HTTP/1.1" 200 OK
+2026-04-25 13:17:45 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     127.0.0.1:52330 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52333 - "GET /api/market/prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52334 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52331 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52345 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:45 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:52340 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52342 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52360 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:45 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:52352 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52351 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52356 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52357 - "GET /api/market/prices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52372 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52371 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52368 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52363 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52376 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52378 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52381 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52384 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52387 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:47 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:52390 - "WebSocket /ws" [accepted]
+2026-04-25 13:17:47 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:52393 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52396 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:18:03 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+INFO:     127.0.0.1:52403 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:18:03 | src.engine.signal_tracker | [32mINFO    [0m | SignalTracker initialised (capital=₹100000)
+INFO:     127.0.0.1:52404 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52407 - "GET /api/portfolio/trades?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52408 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52411 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52419 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52420 - "GET /api/portfolio/trades?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52416 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52425 - "WebSocket /ws" [accepted]
+2026-04-25 13:18:04 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:52426 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+2026-04-25 13:18:04 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+INFO:     127.0.0.1:52429 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52432 - "WebSocket /ws" [accepted]
+2026-04-25 13:18:04 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:52435 - "WebSocket /ws" [accepted]
+2026-04-25 13:18:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+INFO:     127.0.0.1:52438 - "WebSocket /ws" [accepted]
+2026-04-25 13:18:07 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+INFO:     127.0.0.1:52444 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52449 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52453 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52450 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52456 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52454 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52459 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52462 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52468 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52467 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52471 - "GET /api/market/options/MIDCPNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52478 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52484 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52487 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52483 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52485 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52489 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52492 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52495 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52501 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52500 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52504 - "GET /api/market/options/MIDCPNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+2026-04-25 13:19:06 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+INFO:     127.0.0.1:52511 - "WebSocket /ws" [accepted]
+2026-04-25 13:19:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+2026-04-25 13:19:06 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+INFO:     127.0.0.1:52509 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52513 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52516 - "WebSocket /ws" [accepted]
+2026-04-25 13:19:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+INFO:     127.0.0.1:52519 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52522 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52525 - "WebSocket /ws" [accepted]
+2026-04-25 13:19:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 7
+INFO:     connection open
+INFO:     127.0.0.1:52528 - "WebSocket /ws" [accepted]
+2026-04-25 13:19:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 8
+INFO:     connection open
+INFO:     127.0.0.1:52539 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52542 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52545 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52540 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52543 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52546 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52549 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52552 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52555 - "GET /api/market/options/FINNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52558 - "GET /api/market/options/BANKNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52562 - "GET /api/market/options/MIDCPNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52565 - "GET /api/market/options/SENSEX/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52568 - "GET /api/market/options/FINNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52571 - "GET /api/market/options/MIDCPNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52574 - "GET /api/market/options/BANKNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52589 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52590 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52596 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52604 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52606 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52605 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52615 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52617 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52614 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52618 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52621 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52627 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52628 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52632 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52640 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52646 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52649 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52644 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52650 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52652 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52655 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52658 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52673 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52672 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52677 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52687 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52686 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52692 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52694 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52691 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52695 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52698 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52701 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52704 - "GET /api/market/options/FINNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52707 - "GET /api/market/options/MIDCPNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52710 - "GET /api/market/options/BANKNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52713 - "GET /api/market/options/SENSEX/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52716 - "GET /api/market/options/MIDCPNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52722 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52721 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52725 - "GET /api/market/options/MIDCPNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52733 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52734 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52737 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52742 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52743 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52741 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52746 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52749 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52761 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52760 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52764 - "GET /api/market/options/MIDCPNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 7
+INFO:     connection closed
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 6
+INFO:     connection closed
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:21:39 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [9892]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [11709]
+INFO:     Waiting for application startup.
+2026-04-25 13:21:39 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:21:39 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:52768 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:52771 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:52774 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:52777 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6194458624]: trading_dss.db (WAL=True)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6228111360]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:52787 - "GET /api/market/vix HTTP/1.1" 200 OK
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6244937728]: trading_dss.db (WAL=True)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6211284992]: trading_dss.db (WAL=True)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6261764096]: trading_dss.db (WAL=True)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6177632256]: trading_dss.db (WAL=True)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:52792 - "GET /api/system/health HTTP/1.1" 200 OK
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6278590464]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:52793 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:21:45 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:21:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:21:46 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:52786 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52795 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52789 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52798 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52801 - "GET /api/system/status HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:21:46 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:21:46 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:21:46 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:21:46 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:21:46 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [11709]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [11726]
+INFO:     Waiting for application startup.
+2026-04-25 13:21:46 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:21:46 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:52805 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:49 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:52808 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:49 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:52811 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:49 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:52814 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:49 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:21:52 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:21:52 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:21:52 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:21:52 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:21:53 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [11726]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [11749]
+INFO:     Waiting for application startup.
+2026-04-25 13:21:53 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:21:53 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:52818 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:56 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:52821 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:56 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:52824 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:56 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:52827 - "WebSocket /ws" [accepted]
+2026-04-25 13:21:56 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:21:58 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:21:58 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:21:58 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:21:58 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:21:58 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [11749]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [11762]
+INFO:     Waiting for application startup.
+2026-04-25 13:21:59 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:21:59 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:52831 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:01 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:52834 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:01 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:52837 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:01 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:52840 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:01 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:22:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:22:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:22:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:22:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:22:07 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [11762]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [11791]
+INFO:     Waiting for application startup.
+2026-04-25 13:22:08 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:22:08 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:52844 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:52847 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:52850 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:52853 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+2026-04-25 13:22:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6171570176]: trading_dss.db (WAL=True)
+2026-04-25 13:22:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:22:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6154743808]: trading_dss.db (WAL=True)
+2026-04-25 13:22:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6188396544]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:52860 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:22:13 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:22:13 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:22:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:22:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:52859 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52862 - "GET /api/market/options/MIDCPNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52878 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52881 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52880 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52891 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52892 - "GET /api/market/vix HTTP/1.1" 200 OK
+2026-04-25 13:22:33 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6222049280]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:52888 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52893 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52896 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52899 - "GET /api/market/options/SENSEX/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52902 - "GET /api/market/options/FINNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52905 - "GET /api/market/options/FINNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52908 - "GET /api/market/options/BANKNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52911 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+2026-04-25 13:22:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:22:39 | src.engine.signal_tracker | [32mINFO    [0m | SignalTracker initialised (capital=₹100000)
+INFO:     127.0.0.1:52920 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52918 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52917 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52925 - "GET /api/signals/performance?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52929 - "GET /api/signals/history?days=7 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52928 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52942 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52937 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52943 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52944 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52940 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52952 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52950 - "GET /api/portfolio/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52953 - "GET /api/market/prices/NIFTY50/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52957 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52959 - "GET /api/market/prices/NIFTY50/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52962 - "WebSocket /ws" [accepted]
+2026-04-25 13:22:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:52971 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52979 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52980 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52975 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52974 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52976 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52983 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52986 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52992 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52991 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53002 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53006 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53008 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53003 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53010 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53009 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53013 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53016 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53021 - "GET /api/market/prices/SENSEX/history?days=120&timeframe=1d HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53022 - "GET /api/market/prices/SENSEX/indicators?timeframe=1d&indicators=ema9,ema20,ema50,ema200,bb,vwap HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53028 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53027 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53035 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53034 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53039 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53041 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53050 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53053 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53055 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53056 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53051 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53059 - "GET /api/system/status HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:23:56 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:23:56 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:23:56 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:23:56 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:23:56 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [11791]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [12040]
+INFO:     Waiting for application startup.
+2026-04-25 13:23:57 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:23:57 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53064 - "WebSocket /ws" [accepted]
+2026-04-25 13:23:59 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53067 - "WebSocket /ws" [accepted]
+2026-04-25 13:23:59 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53070 - "WebSocket /ws" [accepted]
+2026-04-25 13:23:59 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53073 - "WebSocket /ws" [accepted]
+2026-04-25 13:23:59 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+2026-04-25 13:23:59 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6192443392]: trading_dss.db (WAL=True)
+2026-04-25 13:23:59 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:23:59 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6175617024]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53079 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:24:00 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:24:00 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53078 - "GET /api/signals/current HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:24:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:24:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:24:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:24:07 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:24:07 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [12040]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [12066]
+INFO:     Waiting for application startup.
+2026-04-25 13:24:08 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:24:08 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53083 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53086 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53089 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53092 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:10 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+2026-04-25 13:24:15 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6188871680]: trading_dss.db (WAL=True)
+2026-04-25 13:24:15 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53098 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53106 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53108 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:24:15 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:24:15 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6273003520]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53102 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53105 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53110 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53113 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53116 - "GET /api/system/status HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:24:18 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:24:18 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:24:18 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:24:18 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:24:18 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [12066]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [12096]
+INFO:     Waiting for application startup.
+2026-04-25 13:24:18 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:24:18 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53120 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:21 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53123 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:21 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53126 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:21 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53129 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:21 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/data_router.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:24:26 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:24:26 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:24:26 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:24:26 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:24:26 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [12096]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [12118]
+INFO:     Waiting for application startup.
+2026-04-25 13:24:27 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:24:27 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53134 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:29 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53137 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:29 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53140 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:29 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53143 - "WebSocket /ws" [accepted]
+2026-04-25 13:24:29 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+2026-04-25 13:24:30 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6129135616]: trading_dss.db (WAL=True)
+2026-04-25 13:24:30 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:24:30 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6112309248]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53149 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:24:30 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:24:30 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53148 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53159 - "GET /api/news/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53160 - "GET /api/news/feed?limit=5&min_severity=HIGH HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53173 - "GET /api/market/vix HTTP/1.1" 200 OK
+2026-04-25 13:24:45 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6213267456]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53176 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53178 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53174 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53177 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53179 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53182 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53185 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53191 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53190 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53197 - "WebSocket /ws" [accepted]
+2026-04-25 13:25:00 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+INFO:     127.0.0.1:53196 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53200 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53203 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53206 - "GET /api/market/options/NIFTY50/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53209 - "GET /api/market/options/SENSEX/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53212 - "WebSocket /ws" [accepted]
+2026-04-25 13:25:03 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+INFO:     127.0.0.1:53215 - "GET /api/market/options/MIDCPNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53218 - "GET /api/market/options/FINNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53221 - "GET /api/market/options/BANKNIFTY/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53228 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53235 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53231 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53239 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53236 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53240 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53243 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53246 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53274 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53272 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53275 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53281 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53286 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53291 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53288 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53292 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53294 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53297 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53300 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53307 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53306 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53309 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53313 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53316 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53320 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53323 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53328 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53334 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53337 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53333 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53335 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53340 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53345 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53348 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53356 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53359 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53361 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53365 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53366 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53363 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53369 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53372 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53381 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53379 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53390 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53393 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53388 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53391 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53396 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53399 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53402 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53422 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53420 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53425 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53428 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53423 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53426 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53434 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53432 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53437 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53447 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53446 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53451 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53455 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53450 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53454 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53461 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53459 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53464 - "GET /api/system/status HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/bse_scraper.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:32:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+2026-04-25 13:32:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:32:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:32:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:32:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:32:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:32:09 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [12118]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13585]
+INFO:     Waiting for application startup.
+2026-04-25 13:32:10 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:32:10 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53472 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:12 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53475 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:12 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53478 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:12 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53481 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:12 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53484 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:12 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+2026-04-25 13:32:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6153760768]: trading_dss.db (WAL=True)
+2026-04-25 13:32:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6170587136]: trading_dss.db (WAL=True)
+2026-04-25 13:32:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53489 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53500 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53502 - "GET /api/system/health HTTP/1.1" 200 OK
+2026-04-25 13:32:13 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:32:13 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:32:14 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53499 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53490 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53494 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53508 - "GET /api/market/vix HTTP/1.1" 200 OK
+2026-04-25 13:32:14 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6237892608]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53506 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53511 - "GET /api/system/status HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/bse_scraper.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:32:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:32:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:32:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:32:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:32:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:32:27 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13585]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13630]
+INFO:     Waiting for application startup.
+2026-04-25 13:32:28 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:32:28 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53515 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53518 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53521 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53524 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53527 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/options_chain.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:32:34 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:32:34 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:32:34 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:32:34 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:32:34 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:32:34 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13630]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13648]
+INFO:     Waiting for application startup.
+2026-04-25 13:32:35 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:32:35 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53531 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:37 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53534 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:37 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53537 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:37 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53540 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:37 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53543 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:37 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/options_chain.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:32:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:32:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:32:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:32:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:32:39 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:32:39 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13648]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13666]
+INFO:     Waiting for application startup.
+2026-04-25 13:32:40 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:32:40 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53547 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53550 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53553 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:42 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53556 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:43 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53559 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:43 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/options_chain.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:32:45 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:32:45 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:32:45 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:32:45 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:32:45 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:32:45 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13666]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13685]
+INFO:     Waiting for application startup.
+2026-04-25 13:32:46 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:32:46 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53563 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:48 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53566 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:48 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53569 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:49 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53572 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:49 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53575 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:49 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/options_chain.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:32:54 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:32:54 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:32:54 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:32:54 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:32:54 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:32:54 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13685]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13706]
+INFO:     Waiting for application startup.
+2026-04-25 13:32:55 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:32:55 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53579 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:57 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53582 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:57 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53585 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:58 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53588 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:58 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53591 - "WebSocket /ws" [accepted]
+2026-04-25 13:32:58 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/options_chain.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:33:03 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:33:03 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:33:03 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:33:03 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:33:03 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:33:03 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13706]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13729]
+INFO:     Waiting for application startup.
+2026-04-25 13:33:04 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:33:04 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53596 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53599 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53602 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53605 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53608 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:06 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/options_chain.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:33:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:33:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:33:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:33:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:33:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:33:10 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13729]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13747]
+INFO:     Waiting for application startup.
+2026-04-25 13:33:11 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:33:11 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+2026-04-25 13:33:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6148091904]: trading_dss.db (WAL=True)
+2026-04-25 13:33:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6164918272]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53630 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:13 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+2026-04-25 13:33:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53615 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+2026-04-25 13:33:14 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+INFO:     127.0.0.1:53626 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53628 - "GET /api/system/health HTTP/1.1" 200 OK
+2026-04-25 13:33:14 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53625 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53616 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53619 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53636 - "GET /api/market/vix HTTP/1.1" 200 OK
+2026-04-25 13:33:14 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6215397376]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53639 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53633 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53642 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:14 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53645 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:14 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53648 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:14 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53651 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:14 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/data_collector.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:33:16 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:33:16 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:33:16 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:33:16 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:33:16 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:33:16 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13747]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13765]
+INFO:     Waiting for application startup.
+2026-04-25 13:33:17 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:33:17 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53655 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:19 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53658 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:19 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53661 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:19 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53664 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:19 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53667 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:19 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+2026-04-25 13:33:23 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+INFO:     127.0.0.1:53674 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:23 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+2026-04-25 13:33:23 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6112653312]: trading_dss.db (WAL=True)
+2026-04-25 13:33:23 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:33:23 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53672 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53676 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53679 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:27 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 6
+INFO:     connection open
+WARNING:  StatReload detected changes in 'src/data/options_chain.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:33:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 5
+INFO:     connection closed
+2026-04-25 13:33:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:33:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:33:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:33:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:33:27 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:33:28 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13765]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13802]
+INFO:     Waiting for application startup.
+2026-04-25 13:33:28 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:33:28 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53683 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53686 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53689 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53692 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53695 - "WebSocket /ws" [accepted]
+2026-04-25 13:33:31 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+2026-04-25 13:33:54 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6117650432]: trading_dss.db (WAL=True)
+2026-04-25 13:33:54 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:33:54 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53698 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'src/data/data_collector.py'. Reloading...
+INFO:     Shutting down
+2026-04-25 13:34:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:34:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:34:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:34:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:34:10 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     Waiting for application shutdown.
+2026-04-25 13:34:10 | src.api.app | [32mINFO    [0m | trading_dss API shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [13802]
+/Users/mayukh/projects/trading_dss/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+INFO:     Started server process [13903]
+INFO:     Waiting for application startup.
+2026-04-25 13:34:10 | src.api.app | [32mINFO    [0m | trading_dss API v1.0.0 starting (env=development)
+2026-04-25 13:34:10 | src.api.websocket | [32mINFO    [0m | WebSocket event-queue processor started
+INFO:     Application startup complete.
+2026-04-25 13:34:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6147764224]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53717 - "WebSocket /ws" [accepted]
+2026-04-25 13:34:13 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+2026-04-25 13:34:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6164590592]: trading_dss.db (WAL=True)
+INFO:     connection open
+2026-04-25 13:34:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+2026-04-25 13:34:13 | src.data.index_registry | [32mINFO    [0m | IndexRegistry: loaded 48 indices (48 active)
+2026-04-25 13:34:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=8416368832]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53706 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53710 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53718 - "GET /api/system/health HTTP/1.1" 200 OK
+2026-04-25 13:34:13 | src.database.db_manager | [32mINFO    [0m | SQLite connected [thread=6215069696]: trading_dss.db (WAL=True)
+INFO:     127.0.0.1:53704 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53723 - "WebSocket /ws" [accepted]
+2026-04-25 13:34:13 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53711 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53720 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53726 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53729 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53732 - "WebSocket /ws" [accepted]
+2026-04-25 13:34:13 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53735 - "WebSocket /ws" [accepted]
+2026-04-25 13:34:13 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53738 - "WebSocket /ws" [accepted]
+2026-04-25 13:34:13 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open
+INFO:     127.0.0.1:53741 - "GET /api/market/options/BANKNIFTY/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53748 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53746 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53755 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53759 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53757 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53760 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53763 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53766 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53769 - "GET /api/market/options/SENSEX/chain HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53772 - "GET /api/market/options/SENSEX/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53790 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53789 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53801 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53804 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53809 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53802 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53810 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53807 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53813 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53816 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53819 - "GET /api/market/options/SENSEX/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53825 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53824 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53832 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53837 - "GET /api/system/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53842 - "GET /api/portfolio/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53836 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53839 - "GET /api/signals/current HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53843 - "GET /api/anomalies/active HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53846 - "GET /api/market/vix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53849 - "GET /api/system/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53852 - "GET /api/market/options/SENSEX/chain?expiry=2026-04-28 HTTP/1.1" 200 OK
+2026-04-25 13:36:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 4
+INFO:     connection closed
+2026-04-25 13:36:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 3
+INFO:     connection closed
+2026-04-25 13:36:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 2
+INFO:     connection closed
+2026-04-25 13:36:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 1
+INFO:     connection closed
+2026-04-25 13:36:09 | src.api.websocket | [32mINFO    [0m | WebSocket client disconnected. Total: 0
+INFO:     connection closed
+INFO:     127.0.0.1:53888 - "WebSocket /ws" [accepted]
+2026-04-25 13:36:20 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 1
+INFO:     connection open
+INFO:     127.0.0.1:53891 - "WebSocket /ws" [accepted]
+2026-04-25 13:36:20 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 2
+INFO:     connection open
+INFO:     127.0.0.1:53894 - "WebSocket /ws" [accepted]
+2026-04-25 13:36:20 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 3
+INFO:     connection open
+INFO:     127.0.0.1:53897 - "WebSocket /ws" [accepted]
+2026-04-25 13:36:20 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 4
+INFO:     connection open
+INFO:     127.0.0.1:53900 - "WebSocket /ws" [accepted]
+2026-04-25 13:36:20 | src.api.websocket | [32mINFO    [0m | WebSocket client connected. Total: 5
+INFO:     connection open

@@ -141,7 +141,7 @@ class SimulatorConfig:
     max_risk_per_trade_pct: float = 2.0
     max_risk_per_day_pct: float = 5.0
     max_open_positions: int = 3
-    max_positions_per_index: int = 1
+    max_positions_per_index: int = 5
     min_risk_reward_ratio: float = 1.3
 
     # ATR-based stop/target (used by optimizer)
