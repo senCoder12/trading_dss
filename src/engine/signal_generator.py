@@ -1284,11 +1284,7 @@ class SignalGenerator:
         }
 
     # ------------------------------------------------------------------
-    # Database persistence
-    # TODO: remove _save_signal - violates single persistence path.
-    # SignalTracker is the sole writer for trading_signals.
-    # This method should be removed and the caller should let
-    # SignalTracker.record_signal() handle persistence instead.
+    # Audit trail (persistence handled by SignalTracker only)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -1380,69 +1376,6 @@ class SignalGenerator:
 
             "data_completeness": signal.data_completeness,
         }
-
-    def _save_signal(
-        self,
-        signal: TradingSignal,
-        technical: Optional[TechnicalAnalysisResult],
-        news: Optional[NewsVote],
-        anomaly: Optional[AnomalyVote],
-    ) -> None:
-        """Insert the signal into the ``trading_signals`` table."""
-        regime_db = _REGIME_TO_DB.get(signal.regime, "RANGE_BOUND")
-
-        technical_vote = technical.overall_signal if technical else "NEUTRAL"
-        options_vote = (
-            technical.options.options_vote
-            if technical and technical.options
-            else "NEUTRAL"
-        )
-        news_vote_str = news.vote if news else "NEUTRAL"
-        anomaly_vote_str = anomaly.vote if anomaly else "NEUTRAL"
-
-        reasoning_json = json.dumps({
-            "text": signal.reasoning,
-            "vote_breakdown": signal.vote_breakdown,
-            "weighted_score": signal.weighted_score,
-            "warnings": signal.warnings,
-        }, ensure_ascii=False)
-
-        audit_json_str = (
-            json.dumps(signal.signal_audit, ensure_ascii=False, default=str)
-            if signal.signal_audit else None
-        )
-
-        try:
-            self._db.execute(
-                """
-                INSERT INTO trading_signals
-                    (index_id, generated_at, signal_type, confidence_level,
-                     entry_price, target_price, stop_loss, risk_reward_ratio,
-                     regime, technical_vote, options_vote, news_vote,
-                     anomaly_vote, reasoning, outcome, audit_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    signal.index_id,
-                    signal.generated_at.isoformat(),
-                    signal.signal_type,
-                    signal.confidence_level,
-                    signal.entry_price,
-                    signal.target_price,
-                    signal.stop_loss,
-                    signal.risk_reward_ratio,
-                    regime_db,
-                    technical_vote,
-                    options_vote,
-                    news_vote_str,
-                    anomaly_vote_str,
-                    reasoning_json,
-                    "OPEN",
-                    audit_json_str,
-                ),
-            )
-        except Exception:
-            logger.exception("Failed to persist signal %s to DB", signal.signal_id)
 
     # ------------------------------------------------------------------
     # Helpers

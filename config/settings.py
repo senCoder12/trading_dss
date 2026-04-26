@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo, available_timezones
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -229,6 +230,26 @@ class TelegramSettings(BaseSettings):
     model_config = {"env_prefix": "TELEGRAM_", "extra": "ignore"}
 
 
+class TimezoneValidator:
+    """Validator for timezone configuration."""
+
+    @staticmethod
+    def validate_timezone(v: str) -> str:
+        """Ensure timezone is valid and matches IST assumption."""
+        if v not in available_timezones():
+            raise ValueError(f"Timezone '{v}' is not valid")
+        if v != "Asia/Kolkata":
+            raise ValueError(
+                f"Timezone must be 'Asia/Kolkata' for Indian markets; got '{v}'. "
+                "Change TIMEZONE env var only if you understand market hours implications."
+            )
+        try:
+            ZoneInfo(v)
+        except Exception as e:
+            raise ValueError(f"Timezone '{v}' cannot be loaded: {e}")
+        return v
+
+
 class LoggingSettings(BaseSettings):
     """Logging configuration."""
 
@@ -289,11 +310,17 @@ class Settings(BaseSettings):
     app_name: str = Field(default="trading_dss", description="Application name")
     environment: str = Field(default="development", description="development | staging | production")
     debug: bool = Field(default=False, description="Enable debug mode")
+    timezone: str = Field(default="Asia/Kolkata", description="Market timezone (IST assumed)")
 
     # ── File paths ──────────────────────────────────────────────────────────
     config_dir: Path = Field(default=PROJECT_ROOT / "config")
     data_dir: Path = Field(default=PROJECT_ROOT / "data")
     cache_dir: Path = Field(default=PROJECT_ROOT / "data" / "cache")
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_tz(cls, v: str) -> str:
+        return TimezoneValidator.validate_timezone(v)
 
     # ── Derived config file paths ───────────────────────────────────────────
     @property
