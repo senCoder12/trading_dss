@@ -27,12 +27,19 @@ export function toChartTime(t, isDaily) {
   return Math.floor(new Date(t).getTime() / 1000);
 }
 
-/** Map [{time, value}] → chart-ready array, dropping nulls */
+/** Map [{time, value}] → chart-ready array, dropping nulls, deduped, asc sorted */
 export function toLineSeries(arr, isDaily) {
-  return (arr ?? [])
-    .filter(p => p?.value != null)
-    .map(p => ({ time: toChartTime(p.time, isDaily), value: p.value }))
-    .filter(p => p.time != null);
+  const seen = new Map();
+  for (const p of (arr ?? [])) {
+    if (p?.value == null) continue;
+    const t = toChartTime(p.time, isDaily);
+    if (t == null) continue;
+    seen.set(t, p.value);  // last write wins on dup
+  }
+  const entries = [...seen.entries()].sort((a, b) =>
+    typeof a[0] === 'string' ? a[0].localeCompare(b[0]) : a[0] - b[0],
+  );
+  return entries.map(([time, value]) => ({ time, value }));
 }
 
 /**

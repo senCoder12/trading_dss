@@ -22,8 +22,9 @@ from src.utils.market_hours import MarketHoursManager
 
 @lru_cache(maxsize=1)
 def get_index_registry() -> IndexRegistry:
-    """Return the module-level IndexRegistry singleton."""
-    return IndexRegistry.from_file(settings.indices_config_path)
+    """Return the process-wide IndexRegistry singleton."""
+    from src.data.index_registry import get_registry
+    return get_registry()
 
 
 @lru_cache(maxsize=1)

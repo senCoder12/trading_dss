@@ -351,9 +351,8 @@ def main() -> None:
         registry = None
         try:
             from config.settings import settings
-            from src.data.index_registry import IndexRegistry
-
-            registry = IndexRegistry.from_file(settings.indices_config_path)
+            from src.data.index_registry import get_registry
+            registry = get_registry(settings.indices_config_path)
             registry.sync_to_db(db)
             logger.info(
                 "Registry loaded: %d active, %d F&O",
@@ -426,11 +425,22 @@ def main() -> None:
         try:
             from src.engine.decision_engine import DecisionEngine
 
-            engine = DecisionEngine(db)
+            fo_manager = components.get("fo_universe")
+            engine = DecisionEngine(db, fo_manager=fo_manager)
             components["engine"] = engine
             print("  ✅ Decision Engine initialised")
         except Exception as exc:
             logger.error("Decision Engine initialisation failed: %s", exc)
+
+        # Wire F&O Universe Manager into DataCollector
+        if "collector" in components and "fo_universe" in components:
+            try:
+                components["collector"].fo_manager = components["fo_universe"]
+                # Trigger initial refresh to register priority stocks in the IndexRegistry
+                components["collector"].refresh_registry_with_stocks()
+                print("  ✅ F&O Universe Manager wired into Data Collector")
+            except Exception as exc:
+                logger.error("Failed to wire FOUniverseManager into DataCollector: %s", exc)
 
         # Wire engine into API dependency injection so /api/signals/* routes
         # can call it without a separate import cycle.

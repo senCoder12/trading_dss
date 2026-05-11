@@ -186,6 +186,105 @@ class FIIDIIFetcher:
             "consecutive_sell_days": consecutive_sell
         }
 
+    def fetch_futures_participant_positions(self) -> Optional[dict]:
+        """Fetch FII net futures/options positions from NSE participant-wise data.
+
+        This is the KEY institutional signal — FII net long/short in index futures
+        is the primary directional bias indicator. Published every 30 min by NSE.
+
+        Returns dict with keys:
+            fii_index_futures_net_long: FII net long contracts in index futures
+            fii_index_futures_net_short: FII net short contracts
+            fii_net_position: net (long - short)
+            fii_fo_trend: BULLISH / BEARISH / NEUTRAL
+            dii_index_futures_net_long: DII net long
+            dii_net_position: DII net
+        """
+        raw = self._scraper.get_fii_futures_positions()
+        if not raw:
+            return None
+
+        try:
+            data = raw if isinstance(raw, list) else raw.get("data", [])
+            if not data:
+                return None
+
+            fii_futures: dict = {}
+            dii_futures: dict = {}
+
+            for rec in data:
+                cat = str(rec.get("clientType") or rec.get("category") or "").upper()
+                seg = str(rec.get("instrumentType") or rec.get("instrument") or "").upper()
+
+                is_fii = "FII" in cat or "FPI" in cat or "FOREIGN" in cat
+                is_dii = "DII" in cat or "DOMESTIC" in cat
+                is_index_futures = "INDEX" in seg and ("FUT" in seg or "FUTURE" in seg)
+
+                if is_fii and is_index_futures:
+                    fii_futures = rec
+                elif is_dii and is_index_futures:
+                    dii_futures = rec
+
+            def _n(d: dict, *keys) -> float:
+                for k in keys:
+                    v = d.get(k)
+                    if v is not None:
+                        try:
+                            return float(str(v).replace(",", ""))
+                        except (TypeError, ValueError):
+                            pass
+                return 0.0
+
+            fii_long = _n(fii_futures, "longContracts", "buyContracts", "buyQuantity")
+            fii_short = _n(fii_futures, "shortContracts", "sellContracts", "sellQuantity")
+            fii_net = fii_long - fii_short
+
+            dii_long = _n(dii_futures, "longContracts", "buyContracts", "buyQuantity")
+            dii_short = _n(dii_futures, "shortContracts", "sellContracts", "sellQuantity")
+            dii_net = dii_long - dii_short
+
+            # FII trend based on net position magnitude
+            if fii_net > 5000:
+                trend = "BULLISH"
+            elif fii_net < -5000:
+                trend = "BEARISH"
+            else:
+                trend = "NEUTRAL"
+
+            return {
+                "fii_index_futures_net_long": fii_long,
+                "fii_index_futures_net_short": fii_short,
+                "fii_net_position": fii_net,
+                "fii_fo_trend": trend,
+                "dii_index_futures_net_long": dii_long,
+                "dii_net_position": dii_net,
+                "raw_records_count": len(data),
+            }
+        except Exception as e:
+            logger.error("Failed to parse futures participant positions: %s", e)
+            return None
+
+    def save_futures_positions_to_db(self, positions: dict, db: DatabaseManager) -> None:
+        """Save FII futures positions to DB for trend analysis."""
+        try:
+            from src.data.rate_limiter import freshness_tracker
+            db.execute(
+                """INSERT OR REPLACE INTO fii_dii_activity
+                   (date, category, buy_value, sell_value, net_value, segment)
+                   VALUES (?, 'FII', ?, ?, ?, 'F&O_FUTURES')""",
+                (
+                    date.today().isoformat(),
+                    float(positions.get("fii_index_futures_net_long", 0)),
+                    float(positions.get("fii_index_futures_net_short", 0)),
+                    float(positions.get("fii_net_position", 0)),
+                )
+            )
+            freshness_tracker.update("fii_futures")
+            logger.info("FII futures positions saved: net=%s trend=%s",
+                       positions.get("fii_net_position"), positions.get("fii_fo_trend"))
+        except Exception as e:
+            logger.error("Failed saving FII futures positions: %s", e)
+
     def save_to_db(self, data: FIIDIIData, db: DatabaseManager) -> None:
         """
         Saves DII and FII activities cleanly into DB. Supports UPSERT/ON CONFLICT.

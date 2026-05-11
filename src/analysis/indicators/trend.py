@@ -109,6 +109,11 @@ class TrendSummary:
     trend_vote: str                # STRONG_BULLISH / BULLISH / NEUTRAL / BEARISH / STRONG_BEARISH
     trend_confidence: float        # 0.0 – 1.0
 
+    # Supertrend
+    supertrend_signal: str = "NEUTRAL"    # "BULLISH" / "BEARISH" / "NEUTRAL"
+    supertrend_value: float = 0.0         # Current Supertrend line value
+    supertrend_distance: float = 0.0      # Abs distance of close from Supertrend line
+
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -545,7 +550,25 @@ class TrendIndicators:
         # --- ADX -----------------------------------------------------------
         adx_result = self.calculate_adx(clean)
 
-        # --- 5-signal vote -------------------------------------------------
+        # ── Supertrend ────────────────────────────────────────────────────
+        supertrend_signal = "NEUTRAL"
+        supertrend_val = 0.0
+        supertrend_dist = 0.0
+        try:
+            from src.analysis.technical import supertrend as _supertrend_fn
+            if len(clean) >= 15:
+                st_df = _supertrend_fn(clean, period=10, multiplier=3.0)
+                if not st_df.empty and len(st_df) > 0:
+                    direction = int(st_df["supertrend_direction"].iloc[-1])
+                    st_val = float(st_df["supertrend"].iloc[-1])
+                    close = float(clean["close"].iloc[-1])
+                    supertrend_val = round(st_val, 2)
+                    supertrend_dist = round(abs(close - st_val), 2)
+                    supertrend_signal = "BULLISH" if direction == 1 else "BEARISH"
+        except Exception as _st_e:
+            logger.debug("Supertrend computation skipped: %s", _st_e)
+
+        # --- 6-signal vote -------------------------------------------------
         bullish_count = sum([
             price_vs_ema20 == "ABOVE",
             price_vs_ema50 == "ABOVE",
@@ -554,7 +577,14 @@ class TrendIndicators:
             adx_result.trend_direction == "BULLISH",
         ])
 
+        # Supertrend is a strong confirming signal — counts as a full vote
+        if supertrend_signal == "BULLISH":
+            bullish_count += 1
+        elif supertrend_signal == "BEARISH":
+            pass  # bearish simply does not add to bullish_count
+
         _vote_map = {
+            6: ("STRONG_BULLISH", 0.95),
             5: ("STRONG_BULLISH", 0.95),
             4: ("BULLISH", 0.75),
             3: ("NEUTRAL", 0.50),
@@ -587,4 +617,7 @@ class TrendIndicators:
             trend_direction=adx_result.trend_direction,
             trend_vote=trend_vote,
             trend_confidence=trend_confidence,
+            supertrend_signal=supertrend_signal,
+            supertrend_value=supertrend_val,
+            supertrend_distance=supertrend_dist,
         )

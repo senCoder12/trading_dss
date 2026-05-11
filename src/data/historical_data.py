@@ -172,7 +172,7 @@ class HistoricalDataManager:
             try:
                 ticker = yf.Ticker(definition.yahoo_symbol)
                 df = ticker.history(period=period, interval=interval, auto_adjust=True)
-                if len(df) >= 10:
+                if len(df) >= 1:
                     df = df.rename(columns=str.lower)
                     df.index.name = "timestamp"
                     df.reset_index(inplace=True)
@@ -192,7 +192,11 @@ class HistoricalDataManager:
 
         if definition.nse_archive_name:
             days_map = {"1y": 365, "2y": 730, "max": 3650}
-            base_days = days_map.get(period, 365)
+            # handle numeric-day periods like "5d", "10d", "30d"
+            if period not in days_map and period.endswith("d") and period[:-1].isdigit():
+                base_days = int(period[:-1])
+            else:
+                base_days = days_map.get(period, 365)
             if period == "ytd":
                 from_date = date(date.today().year, 1, 1)
                 to_date = date.today()

@@ -584,14 +584,14 @@ async def get_options_summary(
         index_id=index_id,
         spot=spot,
         expiry=nearest_expiry,
-        pcr=round(oi_row["pcr"], 2) if oi_row and oi_row.get("pcr") else None,
+        pcr=round(oi_row["pcr"], 2) if oi_row and oi_row.get("pcr") is not None else None,
         max_pain=oi_row.get("max_pain_strike") if oi_row else None,
         oi_support=oi_row.get("highest_pe_oi_strike") if oi_row else None,
         oi_resistance=oi_row.get("highest_ce_oi_strike") if oi_row else None,
-        total_ce_oi=int(oi_row["total_ce_oi"]) if oi_row and oi_row.get("total_ce_oi") else None,
-        total_pe_oi=int(oi_row["total_pe_oi"]) if oi_row and oi_row.get("total_pe_oi") else None,
-        top_ce_strikes=[StrikeOI(strike=r["strike"], oi=int(r["oi"])) for r in top_ce if r.get("oi")],
-        top_pe_strikes=[StrikeOI(strike=r["strike"], oi=int(r["oi"])) for r in top_pe if r.get("oi")],
+        total_ce_oi=int(oi_row["total_ce_oi"]) if oi_row and oi_row.get("total_ce_oi") is not None else None,
+        total_pe_oi=int(oi_row["total_pe_oi"]) if oi_row and oi_row.get("total_pe_oi") is not None else None,
+        top_ce_strikes=[StrikeOI(strike=r["strike"], oi=int(r["oi"])) for r in top_ce if r.get("oi") is not None],
+        top_pe_strikes=[StrikeOI(strike=r["strike"], oi=int(r["oi"])) for r in top_pe if r.get("oi") is not None],
         iv_atm=iv_atm,
         updated_at=oi_row.get("timestamp") if oi_row else None,
     )
@@ -667,13 +667,13 @@ async def get_options_chain(
         if s not in strike_map:
             strike_map[s] = {}
         p = "ce" if row["option_type"] == "CE" else "pe"
-        strike_map[s][f"{p}_oi"]          = int(row["open_interest"]) if row.get("open_interest") else None
-        strike_map[s][f"{p}_oi_change"]   = int(row["oi_change"])     if row.get("oi_change")     else None
-        strike_map[s][f"{p}_oi_p_change"] = round(float(row["oi_change_pct"]), 2) if row.get("oi_change_pct") else None
-        strike_map[s][f"{p}_volume"]      = int(row["volume"])         if row.get("volume")         else None
-        strike_map[s][f"{p}_ltp"]         = round(float(row["ltp"]), 2) if row.get("ltp")          else None
-        strike_map[s][f"{p}_ltp_p_change"]= round(float(row["ltp_change_pct"]), 2) if row.get("ltp_change_pct") else None
-        strike_map[s][f"{p}_iv"]          = round(float(row["iv"]), 2) if row.get("iv")           else None
+        strike_map[s][f"{p}_oi"]          = int(row["open_interest"]) if row.get("open_interest") is not None else None
+        strike_map[s][f"{p}_oi_change"]   = int(row["oi_change"])     if row.get("oi_change") is not None else None
+        strike_map[s][f"{p}_oi_p_change"] = round(float(row["oi_change_pct"]), 2) if row.get("oi_change_pct") is not None else None
+        strike_map[s][f"{p}_volume"]      = int(row["volume"])         if row.get("volume") is not None else None
+        strike_map[s][f"{p}_ltp"]         = round(float(row["ltp"]), 2) if row.get("ltp") is not None else None
+        strike_map[s][f"{p}_ltp_p_change"]= round(float(row["ltp_change_pct"]), 2) if row.get("ltp_change_pct") is not None else None
+        strike_map[s][f"{p}_iv"]          = round(float(row["iv"]), 2) if row.get("iv") is not None else None
 
     atm_strike = min(strike_map.keys(), key=lambda s: abs(s - spot)) if spot and strike_map else None
 
@@ -701,11 +701,11 @@ async def get_options_chain(
             pe_delta=None,
         ))
 
-    total_ce = sum(r.ce_oi for r in strikes_out if r.ce_oi) or 0
-    total_pe = sum(r.pe_oi for r in strikes_out if r.pe_oi) or 0
+    total_ce = sum(r.ce_oi for r in strikes_out if r.ce_oi is not None) or 0
+    total_pe = sum(r.pe_oi for r in strikes_out if r.pe_oi is not None) or 0
     
     pcr_val = round(total_pe / total_ce, 2) if total_ce > 0 else (
-        round(oi_row["pcr"], 2) if oi_row and oi_row.get("pcr") else None
+        round(oi_row["pcr"], 2) if oi_row and oi_row.get("pcr") is not None else None
     )
     
     iv_atm = strike_map.get(atm_strike, {}).get("ce_iv") if atm_strike else None
@@ -717,8 +717,8 @@ async def get_options_chain(
         expiries=future_expiries or all_expiries,
         pcr=pcr_val,
         max_pain=oi_row.get("max_pain_strike") if oi_row else None,
-        total_ce_oi=total_ce if total_ce > 0 else None,
-        total_pe_oi=total_pe if total_pe > 0 else None,
+        total_ce_oi=total_ce if total_ce >= 0 else None,
+        total_pe_oi=total_pe if total_pe >= 0 else None,
         iv_atm=iv_atm,
         strikes=strikes_out,
         updated_at=latest_ts,

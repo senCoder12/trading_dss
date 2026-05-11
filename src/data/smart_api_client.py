@@ -101,11 +101,46 @@ class SmartAPIClient:
         """
         self.ensure_authenticated()
         try:
+            from datetime import timedelta
+            now = datetime.now()
+            from_date = now - timedelta(days=count + max(10, count // 2))
+            
+            interval_map = {
+                "day": "ONE_DAY",
+                "1": "ONE_MINUTE",
+                "5": "FIVE_MINUTE",
+                "15": "FIFTEEN_MINUTE",
+            }
+            mapped_interval = interval_map.get(interval, "ONE_DAY")
+            
+            historicParam = {
+                "exchange": exchange,
+                "symboltoken": str(token),
+                "interval": mapped_interval,
+                "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
+                "todate": now.strftime("%Y-%m-%d %H:%M")
+            }
+            
             smart_api = self._angel._get_smart_api()
-            data = smart_api.getCandleData(exchange, token, interval, count)
-            if data.get("status"):
-                return data.get("data", [])
-            logger.warning("Historical fetch failed: %s", data.get("message"))
+            data = smart_api.getCandleData(historicParam)
+            
+            if data and data.get("status"):
+                # SmartAPI returns list of lists: [timestamp, open, high, low, close, volume]
+                # Convert to list of dicts for the caller
+                bars = []
+                for row in data.get("data", []):
+                    if len(row) >= 6:
+                        bars.append({
+                            "timestamp": row[0],
+                            "open": row[1],
+                            "high": row[2],
+                            "low": row[3],
+                            "close": row[4],
+                            "volume": row[5]
+                        })
+                return bars[-count:] if count > 0 else bars
+                
+            logger.warning("Historical fetch failed: %s", data.get("message") if data else "No response")
             return None
         except Exception as exc:
             logger.error("Historical OHLCV fetch failed: %s", exc)

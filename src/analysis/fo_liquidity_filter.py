@@ -275,22 +275,30 @@ class LiquidityFilter:
         if quote.bid_ask_spread_pct > self._thresholds.max_bid_ask_spread_pct:
             return "spread"
 
-        # Must have options data
-        if symbol not in oi_data:
-            return "no_options"
+        # OI / IV filters — only applied when oi_data is populated (post-fetch stage)
+        if oi_data:
+            # Must have options data
+            if symbol not in oi_data:
+                return "no_options"
 
-        # OI filters
-        oi = oi_data[symbol]
-        total_oi = oi.total_ce_oi + oi.total_pe_oi
-        if total_oi < self._thresholds.min_total_oi:
-            return "oi"
+            # OI filters
+            oi = oi_data[symbol]
+            total_oi = oi.total_ce_oi + oi.total_pe_oi
+            if total_oi < self._thresholds.min_total_oi:
+                return "oi"
 
-        # IV filters
-        if oi.avg_iv < self._thresholds.min_iv or oi.avg_iv > self._thresholds.max_iv:
-            return "iv"
+            # IV filters
+            if oi.avg_iv < self._thresholds.min_iv or oi.avg_iv > self._thresholds.max_iv:
+                return "iv"
 
-        # Price movement (stock must not be sleeping)
-        if abs(quote.price_change_pct) < self._thresholds.min_price_change_pct:
+        # Price movement filter — only applied during active market hours
+        # (pre-market selection or weekend runs should not exclude zero-move stocks)
+        _now = datetime.now(_IST)
+        _market_open = (
+            _now.weekday() < 5  # Monday–Friday
+            and time(9, 15) <= _now.time() <= time(15, 30)
+        )
+        if _market_open and abs(quote.price_change_pct) < self._thresholds.min_price_change_pct:
             return "price"
 
         return None

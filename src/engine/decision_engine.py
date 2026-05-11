@@ -189,9 +189,14 @@ class DecisionEngine:
         self,
         db: DatabaseManager,
         risk_config: Optional[RiskConfig] = None,
+        fo_manager: Optional[Any] = None,
+        candle_store=None,
+        smart_api=None,
+        options_analyzer=None,
     ) -> None:
         self._db = db
         self._lock = threading.Lock()
+        self._fo_manager = fo_manager
 
         # ── Sub-components ────────────────────────────────────────────
         self.registry = get_registry()
@@ -221,7 +226,60 @@ class DecisionEngine:
         self._overnight_cache: Optional[dict] = None
         self._overnight_cache_date: Optional[str] = None
 
+        # Opening Range (9:15-9:30) cache — keyed by {index_id}_{date}
+        self._orb_cache: dict[str, dict] = {}
+
+        # Multi-timeframe cache — keyed by index_id, holds 15m and 1h bars
+        self._mtf_cache: dict[str, dict] = {}
+
+        # IV history cache — keyed by index_id, holds 30-day ATM IV list
+        self._iv_history_cache: dict[str, list[float]] = {}
+
+        # FII futures net position cache — keyed by index_id
+        self._fii_futures_cache: dict[str, Optional[float]] = {}
+
+        # Health/status dict for storing computed metrics accessible by the API
+        self.health_status: dict = {}
+
+        # ── Liquidity Engine (optional — requires candle_store + smart_api) ──
+        self.liquidity_engine = None
+        if candle_store is not None and smart_api is not None:
+            import weakref
+            from src.analysis.liquidity.liquidity_engine import LiquidityEngine
+            self.liquidity_engine = LiquidityEngine(
+                candle_store=candle_store,
+                db=db,
+                smart_api=smart_api,
+                options_analyzer=options_analyzer,
+                decision_engine_ref=weakref.ref(self),
+            )
+
+        # ── GEX Regime Detector (optional — requires smart_api) ──────────
+        self.gex_calculator = None
+        self.gex_regime_detector = None
+        if smart_api is not None:
+            try:
+                from src.analysis.gex import GEXCalculator
+                from src.analysis.gex.gex_regime_detector import GEXRegimeDetector
+                self.gex_calculator = GEXCalculator(smart_api=smart_api, db=db)
+                self.gex_regime_detector = GEXRegimeDetector(
+                    gex_calculator=self.gex_calculator, db=db
+                )
+            except Exception as _gex_exc:
+                logger.warning("GEX components failed to init (non-fatal): %s", _gex_exc)
+
+        # GEX state tracking
+        self._vix_readings: list[tuple] = []        # [(timestamp, float)]
+        self._price_trend: dict[str, str] = {}      # symbol → 'UP'/'DOWN'/'SIDEWAYS'
+        self._daily_plans: dict[str, dict] = {}     # symbol → morning trading plan
+        self._gex_brief_date: Optional[str] = None  # date string for dedup
+
         logger.info("DecisionEngine initialised — all sub-components ready")
+
+    def set_fo_universe_manager(self, manager: Any) -> None:
+        """Wire the F&O Universe Manager for priority stock signal generation."""
+        self._fo_manager = manager
+        logger.info("DecisionEngine: FOUniverseManager wired")
 
     # ------------------------------------------------------------------
     # Kill switch
@@ -382,6 +440,9 @@ class DecisionEngine:
         price_df, timeframe_label = self._build_price_df(daily_rows, intraday_rows, intraday_tf)
         current_price = float(current_bar["close"]) if current_bar else 0.0
 
+        # Update Opening Range cache (9:15-9:30 window)
+        self._update_orb_cache(index_id, now, current_bar)
+
         # ── Stale-data check (non-blocking — adds warnings) ──────────
         stale_warnings: list[str] = []
         _stale_confidence_penalty = 0.0
@@ -394,10 +455,61 @@ class DecisionEngine:
                 logger.warning("DecisionEngine [%s]: %s", index_id, msg)
                 _stale_confidence_penalty += 0.1  # 0.1 per stale source
 
+        # ── Step 2b: Advanced Options Analytics ───────────────────────
+        # Run before Step 2 so advanced_opts is available for TechnicalAggregator
+        advanced_opts = None
+        if options_chain is not None and current_price > 0:
+            try:
+                from src.analysis.options_analysis import run_advanced_options_analytics
+                chain_rows = []
+                for s in getattr(options_chain, 'strikes', []):
+                    chain_rows.append({
+                        "strike": s.strike_price,
+                        "ce_oi": s.ce_oi,
+                        "pe_oi": s.pe_oi,
+                        "ce_ltp": s.ce_ltp,
+                        "pe_ltp": s.pe_ltp,
+                        "ce_iv": s.ce_iv,
+                        "pe_iv": s.pe_iv,
+                        "ce_volume": s.ce_volume,
+                        "pe_volume": s.pe_volume,
+                    })
+                if chain_rows:
+                    chain_df = pd.DataFrame(chain_rows)
+                    idx_def = self.registry.get_index(index_id)
+                    lot_size = getattr(idx_def, 'lot_size', 50) or 50
+                    advanced_opts = run_advanced_options_analytics(
+                        chain_df=chain_df,
+                        spot_price=current_price,
+                        lot_size=lot_size,
+                    )
+                    logger.debug(
+                        "Advanced opts for %s: GEX=%.2f (%s) straddle=%.0f skew=%.2f",
+                        index_id, advanced_opts.gex, advanced_opts.gex_regime,
+                        advanced_opts.atm_straddle_price, advanced_opts.put_call_skew,
+                    )
+            except Exception as exc:
+                logger.debug("Advanced options analytics failed (non-fatal): %s", exc)
+        step_timings["2b_advanced_opts"] = 0  # negligible
+
         # ── Step 2: Technical Analysis ─────────────────────────────────
         t0 = time.monotonic()
+        # Load multi-TF data from cache (populated by _step_gather_data)
+        mtf = self._mtf_cache.get(index_id, {})
+        htf_rows = mtf.get("1h") or mtf.get("15m") or []
+        ltf_rows = mtf.get("1m") or []
+        htf_df = self._rows_to_df(htf_rows) if htf_rows else None
+        ltf_df = self._rows_to_df(ltf_rows) if ltf_rows else None
+        orb_data = self._get_orb(index_id, now)
+
+        _iv_hist = self._iv_history_cache.get(index_id, [])
+        _fii_net = self._fii_futures_cache.get(index_id)
         technical_result = self._step_technical(
-            index_id, price_df, options_chain, vix_value, benchmark_rows, timeframe_label
+            index_id, price_df, options_chain, vix_value, benchmark_rows, timeframe_label,
+            htf_df=htf_df, ltf_df=ltf_df, orb_data=orb_data,
+            iv_history=_iv_hist,
+            advanced_opts=advanced_opts,
+            fii_futures_net=_fii_net,
         )
         step_timings["2_technical"] = int((time.monotonic() - t0) * 1000)
 
@@ -414,6 +526,23 @@ class DecisionEngine:
                 news_vote, overnight, overnight_weight, index_id,
             )
 
+        # Apply GIFT NIFTY pre-market gap bias (if available and within first 45 min)
+        if overnight_weight > 0.4:  # Only effective before 10:00 AM
+            try:
+                gift_row = self._db.fetch_one(
+                    "SELECT implied_gap_pts, gap_classification FROM gift_nifty ORDER BY timestamp DESC LIMIT 1",
+                    ()
+                )
+                if gift_row and gift_row.get("implied_gap_pts"):
+                    gap_pts = float(gift_row["implied_gap_pts"])
+                    if abs(gap_pts) > 30:
+                        logger.debug("GIFT NIFTY gap %.0f pts will bias gap fill detection", gap_pts)
+                        # Store for anomaly engine to use as gap signal
+                        self.health_status["gift_nifty_gap_pts"] = round(gap_pts, 1)
+                        self.health_status["gift_nifty_gap_class"] = gift_row.get("gap_classification", "")
+            except Exception:
+                pass
+
         # ── Step 4: Anomaly Detection ──────────────────────────────────
         t0 = time.monotonic()
         anomaly_result = self._step_anomaly(
@@ -425,22 +554,99 @@ class DecisionEngine:
         t0 = time.monotonic()
         regime = self._step_regime(
             index_id, price_df, technical_result, event_modifier, anomaly_result, vix_value,
+            advanced_opts=advanced_opts,
         )
         step_timings["5_regime"] = int((time.monotonic() - t0) * 1000)
+
+        # ── Step 5c: BankNIFTY/NIFTY Divergence → inject into regime ──
+        try:
+            div_result = self._compute_banknifty_nifty_divergence()
+            if div_result and div_result.get("signal") not in ("ALIGNED", None):
+                regime.warnings.append(div_result["signal"])
+                div_pct = div_result.get("divergence_pct", 0)
+                logger.debug(
+                    "BankNIFTY divergence [%s]: %s (%.3f%%)",
+                    index_id, div_result["signal"], div_pct,
+                )
+        except Exception:
+            pass  # Non-fatal
 
         # ── Step 5b: Hero Zero Detection ───────────────────────────────
         t0 = time.monotonic()
         hz_result = self._step_hero_zero(index_id, options_chain, intraday_rows, as_of)
         step_timings["5b_hero_zero"] = int((time.monotonic() - t0) * 1000)
 
+        # ── Step 5d: GEX Regime Overlay ───────────────────────────────
+        t0 = time.monotonic()
+        gex_block_reason = self._step_gex_regime(
+            index_id=index_id,
+            options_chain=options_chain,
+            current_price=current_price,
+            vix_value=vix_value,
+            price_df=price_df,
+            event_modifier=event_modifier,
+        )
+        if vix_value is not None:
+            self._vix_readings.append((now, vix_value))
+            self._vix_readings = self._vix_readings[-20:]
+        step_timings["5d_gex"] = int((time.monotonic() - t0) * 1000)
+
         # ── Step 6: Signal Generation ──────────────────────────────────
         t0 = time.monotonic()
         anomaly_vote = self._anomaly_result_to_vote(anomaly_result, index_id)
         raw_signal = self._step_signal(
-            index_id, technical_result, news_vote, anomaly_vote, regime, current_price,
+            index_id, technical_result, anomaly_vote, regime, current_price,
             hz_result=hz_result, as_of=as_of
         )
         step_timings["6_signal"] = int((time.monotonic() - t0) * 1000)
+
+        # Apply GEX block (after signal generation so signal_type is known)
+        if (
+            gex_block_reason
+            and getattr(raw_signal, "signal_type", "NO_TRADE") in ("BUY_CALL", "BUY_PUT")
+        ):
+            logger.info(
+                "DecisionEngine [%s]: GEX blocks directional signal — %s",
+                index_id, gex_block_reason,
+            )
+            raw_signal = self._make_no_trade_signal(index_id, regime, gex_block_reason)
+
+        # ── Step 6b: Attach Recommended Strike to Signal ───────────────
+        if (
+            getattr(raw_signal, "signal_type", "NO_TRADE") in ("BUY_CALL", "BUY_PUT")
+            and options_chain is not None
+            and current_price > 0
+        ):
+            try:
+                idx_def = self.registry.get_index(index_id)
+                interval = 100.0 if (idx_def and "BANK" in (idx_def.id or "").upper()) else 50.0
+                rec_strike, rec_delta = self._select_optimal_strike(
+                    raw_signal.signal_type,
+                    current_price,
+                    options_chain,
+                    strike_interval=interval,
+                )
+                # Attach to signal using object.__setattr__ (works on both dataclasses and regular objects)
+                try:
+                    object.__setattr__(raw_signal, "recommended_strike", rec_strike)
+                    object.__setattr__(raw_signal, "recommended_delta", round(rec_delta, 4))
+                except (AttributeError, TypeError):
+                    # If dataclass is frozen or setattr not supported, skip
+                    pass
+                logger.debug(
+                    "Recommended strike for %s %s: %.0f (Δ≈%.2f)",
+                    index_id, raw_signal.signal_type, rec_strike, rec_delta,
+                )
+            except Exception as _e:
+                logger.debug("Strike selection failed (non-fatal): %s", _e)
+
+        # ── Step 6c: Liquidity Engine overlay ─────────────────────────
+        t0 = time.monotonic()
+        raw_signal = self._step_liquidity(
+            index_id, raw_signal, current_price, regime,
+            options_chain, stale_warnings,
+        )
+        step_timings["6c_liquidity"] = int((time.monotonic() - t0) * 1000)
 
         # ── Step 7: Risk Management ────────────────────────────────────
         t0 = time.monotonic()
@@ -484,6 +690,13 @@ class DecisionEngine:
                     f"Overnight regime hint: {regime_hint}"
                 )
 
+        rollover_warnings: list[str] = []
+        if self._is_rollover_week(now):
+            rollover_warnings.append(
+                "ROLLOVER WEEK: Near monthly expiry — liquidity may drop, spreads wider. "
+                "Use stricter entry filters."
+            )
+
         result = DecisionResult(
             index_id=index_id,
             timestamp=now,
@@ -497,7 +710,7 @@ class DecisionEngine:
             total_duration_ms=total_ms,
             alert_message=alert_message,
             alert_priority=alert_priority,
-            warnings=stale_warnings + overnight_warnings,
+            warnings=stale_warnings + overnight_warnings + rollover_warnings,
         )
         result.dashboard_summary = self._build_dashboard_summary(result, current_price)
 
@@ -538,6 +751,21 @@ class DecisionEngine:
             return []
 
         index_ids = [idx.id for idx in fo_indices]
+
+        # ── Priority Stock Expansion (Top 15) ──────────────────────────
+        # If F&O Universe manager is wired, we include the top 15 priority
+        # stocks in the full analysis cycle.
+        if self._fo_manager:
+            try:
+                priority_symbols = self._fo_manager.get_priority_symbols()
+                for symbol in priority_symbols:
+                    if symbol not in index_ids:
+                        index_ids.append(symbol)
+                        # Ensure the signal generator allows these stocks
+                        self.signal_generator.add_allowed_symbol(symbol)
+            except Exception:
+                logger.exception("Failed to fetch priority symbols for signal generation")
+
         results: list[DecisionResult] = []
         for i, index_id in enumerate(index_ids):
             try:
@@ -797,6 +1025,19 @@ class DecisionEngine:
         except Exception:
             logger.exception("get_dashboard_data: VIX query failed")
 
+        # VIX-based strategy mode recommendation
+        try:
+            if dashboard.vix_value > 20:
+                vix_strategy = "SELL_PREMIUM"
+            elif dashboard.vix_value < 14:
+                vix_strategy = "BUY_OPTIONS"
+            else:
+                vix_strategy = "NEUTRAL"
+            # Store in health status for API access
+            self.health_status["vix_strategy_mode"] = vix_strategy
+        except Exception:
+            pass
+
         # Market-wide news sentiment
         try:
             all_votes = self.news_engine.get_all_news_votes()
@@ -921,6 +1162,52 @@ class DecisionEngine:
         except Exception:
             logger.debug("Step 1: benchmark data unavailable")
 
+        # Load 15m and 1h for multi-timeframe analysis
+        intraday_15m: list[dict] = []
+        intraday_1h: list[dict] = []
+        try:
+            intraday_15m = self._db.fetch_all(
+                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "15m", as_of_ts, 50)
+            )
+        except Exception:
+            logger.debug("Step 1: 15m bars unavailable for %s", index_id)
+        try:
+            intraday_1h = self._db.fetch_all(
+                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "1h", as_of_ts, 30)
+            )
+        except Exception:
+            logger.debug("Step 1: 1h bars unavailable for %s", index_id)
+
+        self._mtf_cache[index_id] = {
+            "15m": intraday_15m,
+            "1h": intraday_1h,
+        }
+
+        # Load 30-day IV history for IV percentile calculation
+        try:
+            iv_rows = self._db.fetch_all(
+                Q.LIST_IV_HISTORY_30D, (index_id,)
+            )
+            iv_list = [float(r["atm_iv"]) for r in iv_rows if r.get("atm_iv", 0) > 0]
+            self._iv_history_cache[index_id] = iv_list
+        except Exception:
+            logger.debug("Step 1: IV history unavailable for %s", index_id)
+            self._iv_history_cache.setdefault(index_id, [])
+
+        # Load FII futures net position for SmartMoney OIMI wiring
+        fii_futures_net: Optional[float] = None
+        try:
+            fii_row = self._db.fetch_one(
+                "SELECT net_value FROM fii_dii_activity "
+                "WHERE segment = 'F&O_FUTURES' ORDER BY date DESC LIMIT 1",
+                ()
+            )
+            if fii_row and fii_row["net_value"] is not None:
+                fii_futures_net = float(fii_row["net_value"])
+        except Exception:
+            logger.debug("Step 1: FII futures position unavailable for %s", index_id)
+        self._fii_futures_cache[index_id] = fii_futures_net
+
         return (
             current_bar, daily_rows, intraday_rows,
             options_chain, oi_summary, vix_value, benchmark_rows,
@@ -935,6 +1222,12 @@ class DecisionEngine:
         vix_value: Optional[float],
         benchmark_rows: list[dict],
         timeframe: str = "1d",
+        htf_df: Optional[pd.DataFrame] = None,
+        ltf_df: Optional[pd.DataFrame] = None,
+        orb_data: Optional[dict] = None,
+        iv_history: Optional[list[float]] = None,
+        advanced_opts=None,
+        fii_futures_net: Optional[float] = None,
     ) -> Optional[TechnicalAnalysisResult]:
         """Step 2 — TechnicalAggregator."""
         try:
@@ -955,6 +1248,12 @@ class DecisionEngine:
                 vix_value=vix_value,
                 benchmark_df=bm_df,
                 timeframe=timeframe,
+                htf_df=htf_df,
+                ltf_df=ltf_df,
+                orb_data=orb_data,
+                iv_history=iv_history,
+                advanced_opts=advanced_opts,
+                fii_futures_net=fii_futures_net,
             )
         except Exception:
             logger.exception("Step 2: TechnicalAggregator failed for %s", index_id)
@@ -1028,11 +1327,57 @@ class DecisionEngine:
         event_modifier,
         anomaly_result: Optional[AnomalyDetectionResult],
         vix_value: Optional[float],
+        advanced_opts=None,
     ) -> MarketRegime:
         """Step 5 — Regime detection. Always returns a valid MarketRegime."""
         try:
             if technical_result is None:
                 return self._fallback_regime(index_id, "No technical result")
+
+            # Load FII futures positioning from DB
+            fii_futures_bias = None
+            fii_net_position = None
+            try:
+                row = self._db.fetch_one(
+                    "SELECT net_value FROM fii_dii_activity WHERE segment = 'F&O_FUTURES' ORDER BY date DESC LIMIT 1",
+                    ()
+                )
+                if row:
+                    fii_net_position = float(row["net_value"] or 0)
+                    fii_futures_bias = "BULLISH" if fii_net_position > 5000 else ("BEARISH" if fii_net_position < -5000 else "NEUTRAL")
+            except Exception:
+                pass
+
+            # Load AD ratio from DB
+            ad_ratio = None
+            try:
+                row = self._db.fetch_one(
+                    "SELECT ad_ratio FROM market_breadth ORDER BY timestamp DESC LIMIT 1",
+                    ()
+                )
+                if row:
+                    ad_ratio = float(row["ad_ratio"] or 0)
+            except Exception:
+                pass
+
+            # Load futures basis from DB
+            futures_basis = None
+            try:
+                row = self._db.fetch_one(
+                    "SELECT basis FROM futures_basis WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
+                    (index_id if index_id == "NIFTY50" else "NIFTY50",)
+                )
+                if row:
+                    futures_basis = float(row["basis"] or 0)
+            except Exception:
+                pass
+
+            # Extract GEX from advanced options analytics
+            gex_regime = None
+            gex_value = None
+            if advanced_opts is not None:
+                gex_regime = getattr(advanced_opts, "gex_regime", None)
+                gex_value = getattr(advanced_opts, "gex", None)
 
             return self.regime_detector.detect_regime(
                 index_id=index_id,
@@ -1041,6 +1386,12 @@ class DecisionEngine:
                 news_event_modifier=event_modifier,
                 anomaly_result=anomaly_result,
                 vix_value=vix_value,
+                fii_futures_bias=fii_futures_bias,
+                fii_net_position=fii_net_position,
+                gex_regime=gex_regime,
+                gex_value=gex_value,
+                ad_ratio=ad_ratio,
+                futures_basis=futures_basis,
             )
         except Exception:
             logger.exception("Step 5: regime detection failed for %s", index_id)
@@ -1097,7 +1448,6 @@ class DecisionEngine:
         self,
         index_id: str,
         technical_result: Optional[TechnicalAnalysisResult],
-        news_vote: Optional[NewsVote],
         anomaly_vote: Optional[AnomalyVote],
         regime: MarketRegime,
         current_price: float,
@@ -1115,7 +1465,7 @@ class DecisionEngine:
             return self.signal_generator.generate_signal(
                 index_id=index_id,
                 technical=technical_result,
-                news=news_vote,
+                news=None,
                 anomaly=anomaly_vote,
                 regime=regime,
                 hero_zero_result=hz_result,
@@ -1125,6 +1475,296 @@ class DecisionEngine:
         except Exception:
             logger.exception("Step 6: signal generation failed for %s", index_id)
             return self._make_no_trade_signal(index_id, regime, "Signal generation error")
+
+    def _step_liquidity(
+        self,
+        index_id: str,
+        raw_signal: TradingSignal,
+        current_price: float,
+        regime: MarketRegime,
+        options_chain,
+        stale_warnings: list[str],
+    ) -> TradingSignal:
+        """Step 6c — Liquidity engine overlay (non-fatal)."""
+        if self.liquidity_engine is None:
+            return raw_signal
+
+        proposed = getattr(raw_signal, "signal_type", "NO_TRADE")
+        if proposed == "NO_TRADE":
+            return raw_signal
+
+        try:
+            # Gather inputs
+            futures_ltp = float(getattr(raw_signal, "entry_price", current_price) or current_price)
+            basis_history: list[float] = []
+            try:
+                rows = self._db.fetch_all(
+                    "SELECT basis FROM futures_basis WHERE index_id = ? "
+                    "ORDER BY timestamp DESC LIMIT 20",
+                    (index_id,),
+                )
+                basis_history = [float(r["basis"]) for r in rows if r.get("basis") is not None]
+            except Exception:
+                pass
+
+            atm_ce_oi_change = 0
+            atm_pe_oi_change = 0
+            if options_chain is not None:
+                try:
+                    # Find ATM strike closest to current_price
+                    strikes = getattr(options_chain, "strikes", [])
+                    if strikes:
+                        atm = min(strikes, key=lambda s: abs(s.strike_price - current_price))
+                        atm_ce_oi_change = int(getattr(atm, "ce_oi_change", 0) or 0)
+                        atm_pe_oi_change = int(getattr(atm, "pe_oi_change", 0) or 0)
+                except Exception:
+                    pass
+
+            liq_input = self.liquidity_engine.get_decision_engine_input(
+                symbol=index_id,
+                proposed_signal=proposed,
+                current_price=current_price,
+                futures_ltp=futures_ltp,
+                futures_basis_history=basis_history,
+                atm_ce_oi_change=atm_ce_oi_change,
+                atm_pe_oi_change=atm_pe_oi_change,
+            )
+
+            action = liq_input.get("signal_action", "ALLOW")
+            liq_reason = liq_input.get("reason", "")
+
+            if action == "BLOCK":
+                logger.info(
+                    "DecisionEngine [%s]: signal BLOCKED by liquidity engine — %s",
+                    index_id, liq_reason,
+                )
+                return self._make_no_trade_signal(
+                    index_id, regime, f"Liquidity: {liq_reason}"
+                )
+
+            if action == "REVERSE":
+                flipped = "BUY_PUT" if proposed == "BUY_CALL" else "BUY_CALL"
+                logger.warning(
+                    "DecisionEngine [%s]: signal REVERSED by liquidity engine (%s → %s) — %s",
+                    index_id, proposed, flipped, liq_reason,
+                )
+                try:
+                    object.__setattr__(raw_signal, "signal_type", flipped)
+                    object.__setattr__(raw_signal, "reasoning",
+                                       f"[LIQUIDITY REVERSED] {liq_reason}")
+                except (AttributeError, TypeError):
+                    pass
+
+            # Apply confidence adjustment
+            conf_adj = float(liq_input.get("confidence_adjustment", 0.0))
+            if conf_adj != 0.0:
+                try:
+                    current_conf = float(getattr(raw_signal, "confidence_score", 0.0) or 0.0)
+                    object.__setattr__(raw_signal, "confidence_score",
+                                       max(0.0, current_conf + conf_adj))
+                except (AttributeError, TypeError):
+                    pass
+
+            # Attach snapshot for dashboard display
+            try:
+                object.__setattr__(raw_signal, "liquidity_snapshot", liq_input.get("snapshot"))
+            except (AttributeError, TypeError):
+                pass
+
+            # Use liquidity price targets if available and signal is actionable
+            liq_targets = liq_input.get("price_targets", [])
+            if liq_targets:
+                try:
+                    object.__setattr__(raw_signal, "target_price", liq_targets[0])
+                except (AttributeError, TypeError):
+                    pass
+
+        except Exception:
+            logger.exception("Step 6c: liquidity overlay failed for %s (non-fatal)", index_id)
+
+        return raw_signal
+
+    # ------------------------------------------------------------------
+    # Step 5d — GEX Regime Overlay
+    # ------------------------------------------------------------------
+
+    def _step_gex_regime(
+        self,
+        index_id: str,
+        options_chain,
+        current_price: float,
+        vix_value: Optional[float],
+        price_df: Optional[pd.DataFrame],
+        event_modifier,
+    ) -> Optional[str]:
+        """
+        Calculate or read latest GEX profile, run regime detector, return
+        block reason (non-None → caller should suppress directional signal).
+
+        Also triggers morning GEX brief on first call of the trading day.
+        """
+        if self.gex_calculator is None or self.gex_regime_detector is None:
+            return None
+
+        try:
+            # Calculate GEX profile inline if no fresh one exists
+            profile = self.gex_calculator._latest_profiles.get(index_id)
+            if profile is None and options_chain is not None and current_price > 0:
+                profile = self._update_gex_profile(
+                    index_id, options_chain, current_price
+                )
+
+            if profile is None:
+                return None
+
+            vix = vix_value or 15.0
+            vix_trend = self._compute_vix_trend()
+            price_trend = self._compute_price_trend_15min(index_id, price_df)
+            is_expiry = bool(
+                event_modifier and getattr(event_modifier, "is_expiry_day", False)
+            ) or self._default_is_expiry_day()
+            mins_to_close = self._minutes_to_close()
+
+            gex_regime = self.gex_regime_detector.classify_regime(
+                symbol=index_id,
+                gex_profile=profile,
+                vix_level=vix,
+                vix_trend=vix_trend,
+                current_price=current_price,
+                price_trend_15min=price_trend,
+                is_expiry_day=is_expiry,
+                minutes_to_close=mins_to_close,
+            )
+
+            # Morning brief (once per trading day per symbol)
+            today_str = datetime.now(tz=_IST).strftime("%Y-%m-%d")
+            brief_key = f"{index_id}_{today_str}"
+            if brief_key != self._gex_brief_date:
+                try:
+                    daily_plan = self.gex_regime_detector.get_day_trading_plan(
+                        symbol=index_id,
+                        gex_profile=profile,
+                        vix_level=vix,
+                        vix_trend=vix_trend,
+                        is_expiry_day=is_expiry,
+                    )
+                    self._daily_plans[index_id] = daily_plan
+                    self._gex_brief_date = brief_key
+                    logger.info(
+                        "GEX morning plan [%s]: %s | pos_size=%.1fx",
+                        index_id,
+                        daily_plan.get("day_type", ""),
+                        daily_plan.get("position_size_multiplier", 1.0),
+                    )
+                except Exception:
+                    logger.debug("GEX morning plan failed for %s (non-fatal)", index_id)
+
+            # Apply confidence multiplier via GEX signal
+            gex_signal = self.gex_calculator.get_gex_signal_for_engine(
+                index_id, current_price
+            )
+
+            # Block AVOID_DIRECTIONAL when regime is strong
+            if (
+                gex_regime.get("strategy_type") == "AVOID_DIRECTIONAL"
+                and gex_signal.get("regime_strength", 0) > 60
+            ):
+                return f"GEX blocks directional: {gex_regime.get('reason', 'POSITIVE_GEX regime')}"
+
+            return None
+
+        except Exception:
+            logger.debug("_step_gex_regime failed for %s (non-fatal)", index_id)
+            return None
+
+    def _update_gex_profile(self, index_id: str, options_chain, current_price: float):
+        """Convert options_chain object and calculate GEX profile inline."""
+        try:
+            from collections import defaultdict
+            idx_def = self.registry.get_index(index_id)
+            lot_size = getattr(idx_def, "lot_size", 50) or 50
+
+            strikes_raw = getattr(options_chain, "strikes", [])
+            if not strikes_raw:
+                return None
+
+            chain: dict = defaultdict(lambda: defaultdict(dict))
+            for s in strikes_raw:
+                expiry = getattr(s, "expiry_date", None)
+                if expiry is None:
+                    continue
+                expiry_key = expiry.isoformat() if hasattr(expiry, "isoformat") else str(expiry)
+                strike = float(getattr(s, "strike_price", 0) or 0)
+                if strike <= 0:
+                    continue
+                chain[strike][expiry_key]["CE"] = {
+                    "openInterest": int(getattr(s, "ce_oi", 0) or 0),
+                    "lastPrice": float(getattr(s, "ce_ltp", 0) or 0),
+                    "impliedVolatility": float(getattr(s, "ce_iv", 0) or 0),
+                }
+                chain[strike][expiry_key]["PE"] = {
+                    "openInterest": int(getattr(s, "pe_oi", 0) or 0),
+                    "lastPrice": float(getattr(s, "pe_ltp", 0) or 0),
+                    "impliedVolatility": float(getattr(s, "pe_iv", 0) or 0),
+                }
+
+            if not chain:
+                return None
+
+            return self.gex_calculator.calculate_gex_profile(
+                symbol=index_id,
+                spot_price=current_price,
+                options_chain=dict(chain),
+                lot_size=lot_size,
+                current_time=datetime.now(tz=_IST),
+            )
+        except Exception:
+            logger.debug("_update_gex_profile failed for %s (non-fatal)", index_id)
+            return None
+
+    def _compute_vix_trend(self) -> str:
+        """Compute VIX trend from recent readings: 'RISING' | 'FALLING' | 'FLAT'."""
+        if len(self._vix_readings) < 3:
+            return "FLAT"
+        recent = [v for _, v in self._vix_readings[-6:]]
+        change_pct = (recent[-1] - recent[0]) / recent[0] * 100 if recent[0] > 0 else 0
+        if change_pct > 5:
+            return "RISING"
+        if change_pct < -5:
+            return "FALLING"
+        return "FLAT"
+
+    def _compute_price_trend_15min(
+        self, index_id: str, price_df: Optional[pd.DataFrame]
+    ) -> str:
+        """Compute 15-min price trend: 'UP' | 'DOWN' | 'SIDEWAYS'."""
+        try:
+            if price_df is None or len(price_df) < 3:
+                return "SIDEWAYS"
+            closes = price_df["close"].iloc[-3:].tolist()
+            if closes[0] <= 0:
+                return "SIDEWAYS"
+            chg_pct = (closes[-1] - closes[0]) / closes[0] * 100
+            if chg_pct >= 0.3:
+                return "UP"
+            if chg_pct <= -0.3:
+                return "DOWN"
+            return "SIDEWAYS"
+        except Exception:
+            return "SIDEWAYS"
+
+    @staticmethod
+    def _minutes_to_close() -> int:
+        """Return minutes until 3:30 PM IST."""
+        now = datetime.now(tz=_IST)
+        close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        delta = (close - now).total_seconds() / 60
+        return max(0, int(delta))
+
+    @staticmethod
+    def _default_is_expiry_day() -> bool:
+        """Fallback expiry check: Thursday = weekly F&O expiry day."""
+        return datetime.now(tz=_IST).weekday() == 3  # Thursday
 
     def _step_risk(
         self,
@@ -1512,8 +2152,7 @@ class DecisionEngine:
             risk_level=risk_level,
         )
 
-    @staticmethod
-    def _build_dashboard_summary(result: DecisionResult, current_price: float) -> dict:
+    def _build_dashboard_summary(self, result: DecisionResult, current_price: float) -> dict:
         sig = result.signal
         return {
             "index_id": result.index_id,
@@ -1538,6 +2177,7 @@ class DecisionEngine:
             "news_vote": result.news_vote.vote if result.news_vote else "NEUTRAL",
             "anomaly_vote": result.anomaly_vote.vote if result.anomaly_vote else "NEUTRAL",
             "warnings": getattr(sig, "warnings", []),
+            "vix_strategy_mode": self.health_status.get("vix_strategy_mode", "NEUTRAL"),
         }
 
     @staticmethod
@@ -1580,6 +2220,201 @@ class DecisionEngine:
         if vix < 25:
             return "ELEVATED"
         return "HIGH_VOL"
+
+    @staticmethod
+    def _select_optimal_strike(
+        direction: str,
+        spot_price: float,
+        chain,
+        strike_interval: float = 50.0,
+        target_delta_min: float = 0.35,
+        target_delta_max: float = 0.45,
+    ) -> tuple[float, float]:
+        """Select optimal strike based on delta target (0.35-0.45).
+
+        ATM is not always optimal. 0.35-0.45 delta strikes give the best
+        premium-to-probability ratio for directional trades.
+
+        Returns (optimal_strike, approximate_delta).
+        Falls back to ATM if no suitable strike found.
+        """
+        if chain is None or spot_price <= 0:
+            atm = round(spot_price / strike_interval) * strike_interval
+            return atm, 0.40
+
+        try:
+            # ATM baseline
+            atm = round(spot_price / strike_interval) * strike_interval
+
+            # For BUY_CALL: look at strikes from ATM to 2-3 strikes OTM
+            # For BUY_PUT: look at strikes from ATM to 2-3 strikes OTM (put side)
+            candidates = []
+            for strike in getattr(chain, 'strikes', []):
+                s = getattr(strike, 'strike_price', 0)
+                if direction == "BUY_CALL":
+                    # Calls: at or slightly OTM (strike >= spot - 1 interval)
+                    if spot_price - strike_interval <= s <= spot_price + 3 * strike_interval:
+                        # Approximate delta using moneyness
+                        moneyness = (spot_price - s) / spot_price
+                        approx_delta = 0.5 + moneyness * 5  # crude linear approx
+                        approx_delta = max(0.05, min(0.95, approx_delta))
+                        if target_delta_min <= approx_delta <= target_delta_max:
+                            candidates.append((s, approx_delta))
+                else:  # BUY_PUT
+                    # Puts: at or slightly OTM (strike <= spot + 1 interval)
+                    if spot_price - 3 * strike_interval <= s <= spot_price + strike_interval:
+                        moneyness = (s - spot_price) / spot_price
+                        approx_delta = 0.5 + moneyness * 5
+                        approx_delta = max(0.05, min(0.95, approx_delta))
+                        if target_delta_min <= approx_delta <= target_delta_max:
+                            candidates.append((s, approx_delta))
+
+            if candidates:
+                # Pick candidate closest to mid-delta (0.40)
+                best = min(candidates, key=lambda x: abs(x[1] - 0.40))
+                return best[0], best[1]
+
+            return atm, 0.40
+
+        except Exception:
+            return round(spot_price / strike_interval) * strike_interval, 0.40
+
+    @staticmethod
+    def _is_rollover_week(now: datetime) -> bool:
+        """Detect if we're in the last week of monthly F&O expiry.
+
+        During rollover week: OI interpretation flips to next month,
+        spreads widen, liquidity drops. Apply stricter filters.
+
+        Returns True if within 7 days of month's last Thursday.
+        """
+        import calendar
+        import datetime as dt_mod
+        today = now.date()
+        year, month = today.year, today.month
+
+        # Find last Thursday of current month
+        last_day = calendar.monthrange(year, month)[1]
+        last_thursday = None
+        for day in range(last_day, 0, -1):
+            d = dt_mod.date(year, month, day)
+            if d.weekday() == 3:  # Thursday
+                last_thursday = d
+                break
+
+        if last_thursday is None:
+            return False
+
+        days_to_expiry = (last_thursday - today).days
+        return 0 <= days_to_expiry <= 7
+
+    @staticmethod
+    def _get_gap_analysis(current_price: float, prev_close: float) -> dict:
+        """Classify opening gap and compute fill probability.
+
+        Returns dict with: gap_points, gap_type, fill_probability, wait_15min.
+        """
+        if prev_close <= 0:
+            return {"gap_points": 0.0, "gap_type": "FLAT", "fill_probability": 0.5, "wait_15min": False}
+
+        gap = current_price - prev_close
+        gap_abs = abs(gap)
+
+        if gap_abs < 30:
+            gap_type = "FLAT_OPEN"
+            fill_prob = 0.70
+            wait = False
+        elif gap_abs < 80:
+            gap_type = "MODERATE_GAP"
+            fill_prob = 0.55
+            wait = False
+        elif gap_abs < 100:
+            gap_type = "LARGE_GAP"
+            fill_prob = 0.45
+            wait = True
+        else:
+            gap_type = "EXTREME_GAP"
+            fill_prob = 0.35
+            wait = True
+
+        return {
+            "gap_points": round(gap, 1),
+            "gap_direction": "UP" if gap > 0 else "DOWN",
+            "gap_type": gap_type,
+            "fill_probability": fill_prob,
+            "wait_15min": wait,
+        }
+
+    def _update_orb_cache(self, index_id: str, now: datetime, current_bar: Optional[dict]) -> None:
+        """Track Opening Range (9:15-9:30 AM) high/low for ORB detection."""
+        if current_bar is None:
+            return
+        today = now.date().isoformat()
+        cache_key = f"{index_id}_{today}"
+
+        # Only capture during 9:15-9:30 window
+        if now.hour == 9 and 15 <= now.minute < 30:
+            if cache_key not in self._orb_cache:
+                self._orb_cache[cache_key] = {
+                    "high": float(current_bar.get("high", 0)),
+                    "low": float(current_bar.get("low", float("inf"))),
+                    "captured_at": now.isoformat(),
+                }
+            else:
+                orb = self._orb_cache[cache_key]
+                orb["high"] = max(orb["high"], float(current_bar.get("high", 0)))
+                orb["low"] = min(orb["low"], float(current_bar.get("low", float("inf"))))
+
+    def _get_orb(self, index_id: str, now: datetime) -> Optional[dict]:
+        """Get Opening Range for today if captured."""
+        today = now.date().isoformat()
+        cache_key = f"{index_id}_{today}"
+        orb = self._orb_cache.get(cache_key)
+        if orb and orb["high"] > 0 and orb["low"] < float("inf"):
+            return orb
+        return None
+
+    def _compute_banknifty_nifty_divergence(self) -> Optional[dict]:
+        """Check if BankNIFTY is diverging significantly from NIFTY50.
+
+        Divergence > 0.5% for 30 min = sector rotation signal.
+        BankNIFTY leading NIFTY = financial sector rotation in/out.
+        """
+        try:
+            nifty_row = self._db.fetch_one(
+                "SELECT close, open FROM price_data WHERE index_id = 'NIFTY50' ORDER BY timestamp DESC LIMIT 1",
+                ()
+            )
+            bank_row = self._db.fetch_one(
+                "SELECT close, open FROM price_data WHERE index_id = 'BANKNIFTY' ORDER BY timestamp DESC LIMIT 1",
+                ()
+            )
+            if not nifty_row or not bank_row:
+                return None
+
+            nifty_chg = (float(nifty_row["close"]) - float(nifty_row["open"])) / float(nifty_row["open"]) * 100
+            bank_chg = (float(bank_row["close"]) - float(bank_row["open"])) / float(bank_row["open"]) * 100
+
+            divergence = bank_chg - nifty_chg
+
+            if abs(divergence) < 0.3:
+                signal = "ALIGNED"
+            elif divergence > 0.5:
+                signal = "BANKNIFTY_LEADING_BULLISH"
+            elif divergence < -0.5:
+                signal = "BANKNIFTY_LAGGING_BEARISH"
+            else:
+                signal = "MILD_DIVERGENCE"
+
+            return {
+                "nifty_change_pct": round(nifty_chg, 3),
+                "banknifty_change_pct": round(bank_chg, 3),
+                "divergence_pct": round(divergence, 3),
+                "signal": signal,
+            }
+        except Exception as e:
+            logger.debug("BankNIFTY/NIFTY divergence computation failed: %s", e)
+            return None
 
     # ------------------------------------------------------------------
     # Overnight data overlay

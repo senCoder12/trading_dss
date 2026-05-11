@@ -25,6 +25,35 @@ logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Approximate sector mapping for top F&O stocks
+_SECTOR_MAP: dict[str, str] = {
+    # Banking
+    "HDFCBANK": "BANKING", "ICICIBANK": "BANKING", "AXISBANK": "BANKING",
+    "KOTAKBANK": "BANKING", "SBIN": "BANKING", "BANKBARODA": "BANKING",
+    "FEDERALBNK": "BANKING", "INDUSINDBK": "BANKING", "PNB": "BANKING",
+    # IT
+    "TCS": "IT", "INFY": "IT", "WIPRO": "IT", "HCLTECH": "IT",
+    "TECHM": "IT", "LTIM": "IT", "MPHASIS": "IT", "COFORGE": "IT",
+    # Energy/Oil
+    "RELIANCE": "ENERGY", "ONGC": "ENERGY", "BPCL": "ENERGY",
+    "IOC": "ENERGY", "GAIL": "ENERGY", "HINDPETRO": "ENERGY",
+    # FMCG
+    "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG",
+    "BRITANNIA": "FMCG", "DABUR": "FMCG", "MARICO": "FMCG",
+    # Auto
+    "MARUTI": "AUTO", "TATAMOTORS": "AUTO", "M&M": "AUTO",
+    "BAJAJ-AUTO": "AUTO", "EICHERMOT": "AUTO", "HEROMOTOCO": "AUTO",
+    # Pharma
+    "SUNPHARMA": "PHARMA", "DRREDDY": "PHARMA", "CIPLA": "PHARMA",
+    "DIVISLAB": "PHARMA", "APOLLOHOSP": "PHARMA", "AUROPHARMA": "PHARMA",
+    # Metals
+    "TATASTEEL": "METALS", "JSWSTEEL": "METALS", "HINDALCO": "METALS",
+    "VEDL": "METALS", "COALINDIA": "METALS", "NMDC": "METALS",
+    # Infra/Capital Goods
+    "LT": "INFRA", "ADANIPORTS": "INFRA", "POWERGRID": "INFRA",
+    "NTPC": "INFRA", "SIEMENS": "INFRA",
+}
+
 
 @dataclass
 class ScoringWeights:
@@ -215,16 +244,24 @@ class FOStockScorer:
             quote = quotes.get(sym)
             oi = oi_data.get(sym)
 
-            if not quote or not oi:
-                logger.warning(f"Missing data for {sym}: quote={quote is not None}, oi={oi is not None}")
+            if not quote:
+                logger.warning(f"Missing quote for {sym}")
                 continue
 
             symbols.append(sym)
-            oi_values.append(oi.total_ce_oi + oi.total_pe_oi)
-            oi_changes.append(oi.ce_oi_change + oi.pe_oi_change)
+            
+            # OI data is optional
+            if oi:
+                oi_values.append(oi.total_ce_oi + oi.total_pe_oi)
+                oi_changes.append(oi.ce_oi_change + oi.pe_oi_change)
+                iv_changes.append(oi.iv_change)
+            else:
+                oi_values.append(0)
+                oi_changes.append(0)
+                iv_changes.append(0)
+
             volume_ratios.append(quote.volume / quote.avg_volume_20d if quote.avg_volume_20d > 0 else 0)
             price_changes.append(quote.price_change_pct)
-            iv_changes.append(oi.iv_change)
             spreads.append(quote.bid_ask_spread_pct)
 
         if not symbols:
@@ -299,18 +336,74 @@ class FOStockScorer:
         """
         Apply sector boost from FII/DII activity (optional enhancement).
 
+        Groups stocks by sector, computes per-sector average composite score as
+        a momentum proxy, boosts top sectors by 1.10x and penalises bottom
+        sectors by 0.92x. Falls back gracefully when sector data is unavailable.
+
         Args:
             scores: Scored universe
             fii_sector_data: Sector → FII score (0–1, higher = buying pressure)
 
         Returns:
-            Modified scores with sector boost applied
+            Modified scores with sector boost applied (same ordering)
         """
-        # TODO: Add sector mapping from stock symbol to sector
-        # For now, this is a placeholder for the interface
-        # Will require fo_universe table lookup for sector classification
-        logger.info("Sector boost applied (placeholder)")
-        return scores
+        if not scores:
+            return scores
+
+        try:
+            # Group composite scores by sector
+            sector_scores: dict[str, list[float]] = {}
+            for s in scores:
+                sector = _SECTOR_MAP.get(s.symbol)
+                if sector:
+                    sector_scores.setdefault(sector, []).append(s.composite_score)
+
+            if not sector_scores:
+                # No mapped symbols — return unchanged
+                logger.debug("Sector boost: no mapped symbols, skipping")
+                return scores
+
+            # Per-sector average composite score (momentum proxy)
+            sector_avg: dict[str, float] = {
+                sec: sum(vals) / len(vals)
+                for sec, vals in sector_scores.items()
+            }
+
+            overall_avg = sum(sector_avg.values()) / len(sector_avg)
+
+            # Top 2 sectors (above-average composite score)
+            ranked_sectors = sorted(sector_avg, key=sector_avg.__getitem__, reverse=True)
+            top_sectors = set(ranked_sectors[:2])
+            bottom_sectors = set(ranked_sectors[-2:]) if len(ranked_sectors) > 2 else set()
+
+            # Apply multipliers
+            boosted: list[StockScore] = []
+            for s in scores:
+                sector = _SECTOR_MAP.get(s.symbol)
+                if sector in top_sectors:
+                    multiplier = 1.10
+                elif sector in bottom_sectors:
+                    multiplier = 0.92
+                else:
+                    multiplier = 1.0
+
+                if multiplier != 1.0:
+                    s.composite_score = round(
+                        min(s.composite_score * multiplier, 100.0), 4
+                    )
+
+                boosted.append(s)
+
+            logger.info(
+                "Sector boost applied: top=%s (1.10x), bottom=%s (0.92x)",
+                top_sectors,
+                bottom_sectors,
+            )
+            return boosted
+
+        except Exception as e:
+            logger.warning("Sector boost failed, returning original scores: %s", e)
+            return scores
 
     def save_scores_to_db(
         self,

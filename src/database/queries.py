@@ -909,3 +909,550 @@ SELECT * FROM fo_universe_snapshots ORDER BY date DESC LIMIT 1
 DELETE_FO_UNIVERSE_SNAPSHOT = """
 DELETE FROM fo_universe_snapshots WHERE date = ?
 """
+
+# ============================================================================
+# futures_basis — NIFTY futures LTP vs spot basis
+# ============================================================================
+
+CREATE_FUTURES_BASIS = """
+CREATE TABLE IF NOT EXISTS futures_basis (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    index_id TEXT NOT NULL,
+    spot_price REAL NOT NULL,
+    futures_ltp REAL NOT NULL,
+    basis REAL NOT NULL,
+    basis_pct REAL NOT NULL,
+    fair_value_basis REAL DEFAULT 0.0,
+    expiry_date TEXT,
+    days_to_expiry INTEGER DEFAULT 0,
+    basis_signal TEXT DEFAULT 'NEUTRAL',
+    UNIQUE(timestamp, index_id)
+)
+"""
+
+UPSERT_FUTURES_BASIS = """
+INSERT INTO futures_basis (timestamp, index_id, spot_price, futures_ltp, basis, basis_pct, fair_value_basis, expiry_date, days_to_expiry, basis_signal)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(timestamp, index_id) DO UPDATE SET
+    spot_price = excluded.spot_price,
+    futures_ltp = excluded.futures_ltp,
+    basis = excluded.basis,
+    basis_pct = excluded.basis_pct,
+    fair_value_basis = excluded.fair_value_basis,
+    basis_signal = excluded.basis_signal
+"""
+
+GET_LATEST_FUTURES_BASIS = """
+SELECT * FROM futures_basis WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1
+"""
+
+# ============================================================================
+# iv_history — ATM IV snapshots for IV percentile calculation
+# ============================================================================
+
+CREATE_IV_HISTORY = """
+CREATE TABLE IF NOT EXISTS iv_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    index_id TEXT NOT NULL,
+    atm_iv REAL NOT NULL,
+    atm_ce_iv REAL DEFAULT 0.0,
+    atm_pe_iv REAL DEFAULT 0.0,
+    pcr REAL DEFAULT 1.0,
+    put_call_skew REAL DEFAULT 0.0,
+    atm_straddle_price REAL DEFAULT 0.0,
+    UNIQUE(timestamp, index_id)
+)
+"""
+
+UPSERT_IV_HISTORY = """
+INSERT INTO iv_history (timestamp, index_id, atm_iv, atm_ce_iv, atm_pe_iv, pcr, put_call_skew, atm_straddle_price)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(timestamp, index_id) DO UPDATE SET
+    atm_iv = excluded.atm_iv,
+    atm_ce_iv = excluded.atm_ce_iv,
+    atm_pe_iv = excluded.atm_pe_iv,
+    pcr = excluded.pcr,
+    put_call_skew = excluded.put_call_skew,
+    atm_straddle_price = excluded.atm_straddle_price
+"""
+
+LIST_IV_HISTORY_30D = """
+SELECT atm_iv, timestamp FROM iv_history
+WHERE index_id = ? AND timestamp >= datetime('now', '-30 days')
+ORDER BY timestamp DESC
+"""
+
+# ============================================================================
+# market_breadth — Advance/Decline ratio snapshots
+# ============================================================================
+
+CREATE_MARKET_BREADTH = """
+CREATE TABLE IF NOT EXISTS market_breadth (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    index_id TEXT NOT NULL DEFAULT 'NIFTY50',
+    advances INTEGER DEFAULT 0,
+    declines INTEGER DEFAULT 0,
+    unchanged INTEGER DEFAULT 0,
+    ad_ratio REAL DEFAULT 1.0,
+    breadth_signal TEXT DEFAULT 'NEUTRAL',
+    UNIQUE(timestamp, index_id)
+)
+"""
+
+UPSERT_MARKET_BREADTH = """
+INSERT INTO market_breadth (timestamp, index_id, advances, declines, unchanged, ad_ratio, breadth_signal)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(timestamp, index_id) DO UPDATE SET
+    advances = excluded.advances,
+    declines = excluded.declines,
+    unchanged = excluded.unchanged,
+    ad_ratio = excluded.ad_ratio,
+    breadth_signal = excluded.breadth_signal
+"""
+
+GET_LATEST_MARKET_BREADTH = """
+SELECT * FROM market_breadth WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1
+"""
+
+# ============================================================================
+# gift_nifty — pre-market GIFT NIFTY snapshots
+# ============================================================================
+
+CREATE_GIFT_NIFTY = """
+CREATE TABLE IF NOT EXISTS gift_nifty (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    ltp REAL NOT NULL,
+    change_pts REAL DEFAULT 0.0,
+    change_pct REAL DEFAULT 0.0,
+    prev_nifty_close REAL DEFAULT 0.0,
+    implied_gap_pts REAL DEFAULT 0.0,
+    implied_gap_pct REAL DEFAULT 0.0,
+    gap_classification TEXT DEFAULT 'FLAT_OPEN',
+    wait_15min INTEGER DEFAULT 0,
+    UNIQUE(timestamp)
+)
+"""
+
+UPSERT_GIFT_NIFTY = """
+INSERT INTO gift_nifty (timestamp, ltp, change_pts, change_pct, prev_nifty_close, implied_gap_pts, implied_gap_pct, gap_classification, wait_15min)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(timestamp) DO UPDATE SET
+    ltp = excluded.ltp,
+    change_pts = excluded.change_pts,
+    implied_gap_pts = excluded.implied_gap_pts,
+    gap_classification = excluded.gap_classification
+"""
+
+GET_LATEST_GIFT_NIFTY = """
+SELECT * FROM gift_nifty ORDER BY timestamp DESC LIMIT 1
+"""
+
+# ── candle_cache (liquidity module) ─────────────────────────────────────────
+
+CREATE_CANDLE_CACHE = """
+CREATE TABLE IF NOT EXISTS candle_cache (
+    symbol      TEXT    NOT NULL,
+    timeframe   TEXT    NOT NULL,
+    timestamp   TEXT    NOT NULL,
+    open        REAL    NOT NULL,
+    high        REAL    NOT NULL,
+    low         REAL    NOT NULL,
+    close       REAL    NOT NULL,
+    volume      INTEGER NOT NULL,
+    PRIMARY KEY (symbol, timeframe, timestamp)
+)
+"""
+
+UPSERT_CANDLE_CACHE = """
+INSERT INTO candle_cache (symbol, timeframe, timestamp, open, high, low, close, volume)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(symbol, timeframe, timestamp) DO UPDATE SET
+    high   = MAX(candle_cache.high,   excluded.high),
+    low    = MIN(candle_cache.low,    excluded.low),
+    close  = excluded.close,
+    volume = excluded.volume
+"""
+
+LIST_CANDLE_CACHE = """
+SELECT symbol, timeframe, timestamp, open, high, low, close, volume
+FROM candle_cache
+WHERE symbol = ?
+  AND timeframe = ?
+  AND timestamp >= ?
+ORDER BY timestamp ASC
+LIMIT ?
+"""
+
+DELETE_CANDLE_CACHE_OLD = """
+DELETE FROM candle_cache WHERE timestamp < ?
+"""
+
+# ── liquidity_levels ─────────────────────────────────────────────────────────
+
+CREATE_LIQUIDITY_LEVELS = """
+CREATE TABLE IF NOT EXISTS liquidity_levels (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT    NOT NULL,
+    level_type      TEXT    NOT NULL,
+    price           REAL    NOT NULL,
+    price_key       INTEGER NOT NULL,
+    strength        INTEGER NOT NULL DEFAULT 1,
+    timeframe       TEXT    NOT NULL,
+    first_formed_at TEXT    NOT NULL,
+    last_touched_at TEXT    NOT NULL,
+    is_swept        INTEGER NOT NULL DEFAULT 0,
+    swept_at        TEXT,
+    wick_beyond     REAL    NOT NULL DEFAULT 0,
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    date            TEXT    NOT NULL,
+    UNIQUE(symbol, level_type, price_key, date)
+)
+"""
+
+CREATE_LIQUIDITY_LEVELS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_liq_levels_symbol_date
+ON liquidity_levels (symbol, date, is_active)
+"""
+
+UPSERT_LIQUIDITY_LEVEL = """
+INSERT INTO liquidity_levels
+    (symbol, level_type, price, price_key, strength, timeframe,
+     first_formed_at, last_touched_at, is_swept, swept_at, wick_beyond, is_active, date)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(symbol, level_type, price_key, date) DO UPDATE SET
+    price           = excluded.price,
+    strength        = MAX(liquidity_levels.strength, excluded.strength),
+    last_touched_at = excluded.last_touched_at,
+    is_active       = excluded.is_active
+"""
+
+UPDATE_LIQUIDITY_LEVEL_SWEPT = """
+UPDATE liquidity_levels
+SET is_swept  = 1,
+    swept_at  = ?,
+    wick_beyond = ?
+WHERE id = ?
+"""
+
+UPDATE_LIQUIDITY_LEVEL_INACTIVE = """
+UPDATE liquidity_levels SET is_active = 0
+WHERE symbol = ? AND date = ? AND is_swept = 0
+"""
+
+LIST_ACTIVE_LIQUIDITY_LEVELS = """
+SELECT id, symbol, level_type, price, price_key, strength, timeframe,
+       first_formed_at, last_touched_at, is_swept, swept_at, wick_beyond, is_active, date
+FROM liquidity_levels
+WHERE symbol = ? AND date = ? AND is_active = 1
+ORDER BY price ASC
+"""
+
+# ── level_touches ─────────────────────────────────────────────────────────────
+
+CREATE_LEVEL_TOUCHES = """
+CREATE TABLE IF NOT EXISTS level_touches (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    level_id   INTEGER NOT NULL REFERENCES liquidity_levels(id),
+    touch_price REAL   NOT NULL,
+    touch_time  TEXT   NOT NULL,
+    held        INTEGER NOT NULL DEFAULT 1
+)
+"""
+
+CREATE_LEVEL_TOUCHES_IDX = """
+CREATE INDEX IF NOT EXISTS idx_level_touches_level_id
+ON level_touches (level_id)
+"""
+
+INSERT_LEVEL_TOUCH = """
+INSERT INTO level_touches (level_id, touch_price, touch_time, held)
+VALUES (?, ?, ?, ?)
+"""
+
+LIST_LEVEL_TOUCHES = """
+SELECT id, level_id, touch_price, touch_time, held
+FROM level_touches
+WHERE level_id = ?
+ORDER BY touch_time ASC
+"""
+
+DELETE_LEVEL_TOUCHES_OLD = """
+DELETE FROM level_touches
+WHERE touch_time < ?
+"""
+
+# ── liquidity_sweeps ───────────────────────────────────────────────────────────
+
+CREATE_LIQUIDITY_SWEEPS = """
+CREATE TABLE IF NOT EXISTS liquidity_sweeps (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol               TEXT    NOT NULL,
+    timeframe            TEXT    NOT NULL,
+    sweep_type           TEXT    NOT NULL,
+    level_type           TEXT    NOT NULL,
+    level_price          REAL    NOT NULL,
+    sweep_candle_time    TEXT    NOT NULL,
+    sweep_high           REAL    NOT NULL,
+    sweep_low            REAL    NOT NULL,
+    wick_beyond_pct      REAL    NOT NULL,
+    signal_quality       TEXT    NOT NULL DEFAULT 'LOW',
+    reversion_confirmed  INTEGER NOT NULL DEFAULT 0,
+    reversion_candle_time TEXT,
+    oi_confirms          INTEGER NOT NULL DEFAULT 0,
+    futures_confirms     INTEGER NOT NULL DEFAULT 0,
+    date                 TEXT    NOT NULL
+)
+"""
+
+CREATE_LIQUIDITY_SWEEPS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_liq_sweeps_symbol_date
+ON liquidity_sweeps (symbol, date, sweep_candle_time)
+"""
+
+INSERT_LIQUIDITY_SWEEP = """
+INSERT INTO liquidity_sweeps
+    (symbol, timeframe, sweep_type, level_type, level_price,
+     sweep_candle_time, sweep_high, sweep_low, wick_beyond_pct,
+     signal_quality, reversion_confirmed, reversion_candle_time,
+     oi_confirms, futures_confirms, date)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+LIST_RECENT_SWEEPS = """
+SELECT id, symbol, timeframe, sweep_type, level_type, level_price,
+       sweep_candle_time, sweep_high, sweep_low, wick_beyond_pct,
+       signal_quality, reversion_confirmed, reversion_candle_time,
+       oi_confirms, futures_confirms, date
+FROM liquidity_sweeps
+WHERE symbol = ? AND sweep_candle_time >= ?
+ORDER BY sweep_candle_time DESC
+"""
+
+# ── fair_value_gaps ───────────────────────────────────────────────────────────
+
+CREATE_FAIR_VALUE_GAPS = """
+CREATE TABLE IF NOT EXISTS fair_value_gaps (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol          TEXT    NOT NULL,
+    timeframe       TEXT    NOT NULL,
+    gap_type        TEXT    NOT NULL,
+    gap_top         REAL    NOT NULL,
+    gap_bottom      REAL    NOT NULL,
+    gap_midpoint    REAL    NOT NULL,
+    gap_size_pct    REAL    NOT NULL,
+    formed_at       TEXT    NOT NULL,
+    is_filled       INTEGER NOT NULL DEFAULT 0,
+    fill_pct        REAL    NOT NULL DEFAULT 0.0,
+    is_mitigated    INTEGER NOT NULL DEFAULT 0,
+    date            TEXT    NOT NULL
+)
+"""
+
+CREATE_FAIR_VALUE_GAPS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_fvg_symbol_date
+ON fair_value_gaps (symbol, date, is_mitigated)
+"""
+
+INSERT_FAIR_VALUE_GAP = """
+INSERT INTO fair_value_gaps
+    (symbol, timeframe, gap_type, gap_top, gap_bottom, gap_midpoint,
+     gap_size_pct, formed_at, is_filled, fill_pct, is_mitigated, date)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+UPDATE_FAIR_VALUE_GAP_FILL = """
+UPDATE fair_value_gaps
+SET fill_pct     = ?,
+    is_filled    = ?,
+    is_mitigated = ?
+WHERE id = ?
+"""
+
+LIST_ACTIVE_FAIR_VALUE_GAPS = """
+SELECT id, symbol, timeframe, gap_type, gap_top, gap_bottom, gap_midpoint,
+       gap_size_pct, formed_at, is_filled, fill_pct, is_mitigated, date
+FROM fair_value_gaps
+WHERE symbol = ? AND date = ? AND is_mitigated = 0
+ORDER BY formed_at DESC
+"""
+
+# ── order_blocks ──────────────────────────────────────────────────────────────
+
+CREATE_ORDER_BLOCKS = """
+CREATE TABLE IF NOT EXISTS order_blocks (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol                TEXT    NOT NULL,
+    timeframe             TEXT    NOT NULL,
+    ob_type               TEXT    NOT NULL,
+    ob_high               REAL    NOT NULL,
+    ob_low                REAL    NOT NULL,
+    displacement_size_pct REAL    NOT NULL,
+    strength              TEXT    NOT NULL,
+    formed_at             TEXT    NOT NULL,
+    touch_count           INTEGER NOT NULL DEFAULT 0,
+    is_mitigated          INTEGER NOT NULL DEFAULT 0,
+    mitigated_at          TEXT,
+    date                  TEXT    NOT NULL
+)
+"""
+
+CREATE_ORDER_BLOCKS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_ob_symbol_date
+ON order_blocks (symbol, date, is_mitigated)
+"""
+
+INSERT_ORDER_BLOCK = """
+INSERT INTO order_blocks
+    (symbol, timeframe, ob_type, ob_high, ob_low, displacement_size_pct,
+     strength, formed_at, touch_count, is_mitigated, mitigated_at, date)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+UPDATE_ORDER_BLOCK_MITIGATED = """
+UPDATE order_blocks
+SET is_mitigated = 1,
+    mitigated_at = ?
+WHERE id = ?
+"""
+
+UPDATE_ORDER_BLOCK_TOUCH = """
+UPDATE order_blocks
+SET touch_count = touch_count + 1
+WHERE id = ?
+"""
+
+LIST_ACTIVE_ORDER_BLOCKS = """
+SELECT id, symbol, timeframe, ob_type, ob_high, ob_low, displacement_size_pct,
+       strength, formed_at, touch_count, is_mitigated, mitigated_at, date
+FROM order_blocks
+WHERE symbol = ? AND date = ? AND is_mitigated = 0
+ORDER BY formed_at DESC
+"""
+
+
+# ── volume_profiles ───────────────────────────────────────────────────────────
+
+CREATE_VOLUME_PROFILES = """
+CREATE TABLE IF NOT EXISTS volume_profiles (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol        TEXT    NOT NULL,
+    date          TEXT    NOT NULL,
+    poc           REAL    NOT NULL,
+    vah           REAL    NOT NULL,
+    val           REAL    NOT NULL,
+    total_volume  INTEGER NOT NULL,
+    calculated_at TEXT    NOT NULL,
+    UNIQUE (symbol, date)
+)
+"""
+
+CREATE_VOLUME_PROFILES_IDX = """
+CREATE INDEX IF NOT EXISTS idx_vp_symbol_date
+ON volume_profiles (symbol, date)
+"""
+
+CREATE_VOLUME_PROFILE_LEVELS = """
+CREATE TABLE IF NOT EXISTS volume_profile_levels (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id   INTEGER NOT NULL REFERENCES volume_profiles(id),
+    price        REAL    NOT NULL,
+    volume       INTEGER NOT NULL,
+    volume_pct   REAL    NOT NULL,
+    level_type   TEXT    NOT NULL,
+    is_value_area INTEGER NOT NULL DEFAULT 0
+)
+"""
+
+CREATE_VOLUME_PROFILE_LEVELS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_vpl_profile_id
+ON volume_profile_levels (profile_id)
+"""
+
+UPSERT_VOLUME_PROFILE = """
+INSERT OR REPLACE INTO volume_profiles
+    (symbol, date, poc, vah, val, total_volume, calculated_at)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?)
+"""
+
+SELECT_VOLUME_PROFILE = """
+SELECT id, symbol, date, poc, vah, val, total_volume, calculated_at
+FROM volume_profiles
+WHERE symbol = ? AND date = ?
+"""
+
+DELETE_VOLUME_PROFILE_LEVELS = """
+DELETE FROM volume_profile_levels WHERE profile_id = ?
+"""
+
+INSERT_VOLUME_PROFILE_LEVEL = """
+INSERT INTO volume_profile_levels
+    (profile_id, price, volume, volume_pct, level_type, is_value_area)
+VALUES
+    (?, ?, ?, ?, ?, ?)
+"""
+
+LIST_VOLUME_PROFILE_LEVELS = """
+SELECT price, volume, volume_pct, level_type, is_value_area
+FROM volume_profile_levels
+WHERE profile_id = ?
+ORDER BY price ASC
+"""
+
+# ── stop_hunts ────────────────────────────────────────────────────────────────
+
+CREATE_STOP_HUNTS = """
+CREATE TABLE IF NOT EXISTS stop_hunts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT    NOT NULL,
+    hunt_type           TEXT    NOT NULL,
+    level_type          TEXT    NOT NULL,
+    level_price         REAL    NOT NULL,
+    hunt_price          REAL    NOT NULL,
+    candle_time         TEXT    NOT NULL,
+    reversal_direction  TEXT    NOT NULL,
+    confidence          REAL    NOT NULL,
+    confidence_tier     TEXT    NOT NULL DEFAULT 'LOW',
+    oi_confirms         INTEGER NOT NULL DEFAULT 0,
+    futures_confirms    INTEGER NOT NULL DEFAULT 0,
+    suggested_signal    TEXT    NOT NULL,
+    entry_zone_low      REAL    NOT NULL,
+    entry_zone_high     REAL    NOT NULL,
+    target              REAL    NOT NULL,
+    stop                REAL    NOT NULL,
+    date                TEXT    NOT NULL
+)
+"""
+
+CREATE_STOP_HUNTS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_stop_hunts_symbol_date
+ON stop_hunts (symbol, date, candle_time)
+"""
+
+INSERT_STOP_HUNT = """
+INSERT INTO stop_hunts
+    (symbol, hunt_type, level_type, level_price, hunt_price, candle_time,
+     reversal_direction, confidence, confidence_tier,
+     oi_confirms, futures_confirms, suggested_signal,
+     entry_zone_low, entry_zone_high, target, stop, date)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+LIST_RECENT_STOP_HUNTS = """
+SELECT id, symbol, hunt_type, level_type, level_price, hunt_price, candle_time,
+       reversal_direction, confidence, confidence_tier,
+       oi_confirms, futures_confirms, suggested_signal,
+       entry_zone_low, entry_zone_high, target, stop, date
+FROM stop_hunts
+WHERE symbol = ? AND candle_time >= ?
+ORDER BY candle_time DESC
+"""

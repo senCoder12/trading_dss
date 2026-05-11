@@ -419,6 +419,38 @@ def _v15_fo_universe_snapshots_table(db: DatabaseManager) -> None:
             conn.execute(stmt)
 
 
+@migration(version=16, description="Add candle_cache table for liquidity module CandleStore")
+def _v16_candle_cache_table(db: DatabaseManager) -> None:
+    from src.database import queries as Q
+
+    db.execute(Q.CREATE_CANDLE_CACHE)
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_candle_cache_symbol_tf "
+        "ON candle_cache (symbol, timeframe, timestamp)"
+    )
+
+
+@migration(version=18, description="Add GEX tables: gex_snapshots, gex_strike_data, gex_wall_breaks")
+def _v18_gex_tables(db: DatabaseManager) -> None:
+    from src.database.models import TABLE_DDL
+
+    conn = db._conn()
+    with conn:
+        for table_name in ["gex_snapshots", "gex_strike_data", "gex_wall_breaks"]:
+            for stmt in TABLE_DDL[table_name]:
+                conn.execute(stmt)
+
+
+@migration(version=17, description="Add liquidity_levels and level_touches tables for SMC pool detector")
+def _v17_liquidity_tables(db: DatabaseManager) -> None:
+    from src.database import queries as Q
+
+    db.execute(Q.CREATE_LIQUIDITY_LEVELS)
+    db.execute(Q.CREATE_LIQUIDITY_LEVELS_IDX)
+    db.execute(Q.CREATE_LEVEL_TOUCHES)
+    db.execute(Q.CREATE_LEVEL_TOUCHES_IDX)
+
+
 # ---------------------------------------------------------------------------
 # Migration runner
 # ---------------------------------------------------------------------------

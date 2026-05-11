@@ -126,9 +126,10 @@ class OptionsChainFetcher:
     needing database round-trips.
     """
 
-    def __init__(self, scraper: Optional[NSEScraper] = None, bse_scraper=None) -> None:
+    def __init__(self, scraper: Optional[NSEScraper] = None, bse_scraper=None, broker_client=None) -> None:
         self._scraper = scraper or NSEScraper()
         self._bse_scraper = bse_scraper  # Optional[BSEScraper]
+        self._broker = broker_client  # Optional[SmartAPIClient]
         # Memory storage for last two snapshots per symbol/expiry to do quick comparisons.
         # Key format: f"{symbol}_{expiry.isoformat()}" -> list[OptionsChainData] (max 2 items)
         self._previous_chains: dict[str, list[OptionsChainData]] = {}
@@ -203,11 +204,16 @@ class OptionsChainFetcher:
         if not target_expiry and expiry_candidates:
             target_expiry = expiry_candidates[0]
 
-        # 2. Fetch using v3 with target expiry
+        # 2. Determine if it's an equity or index for NSE v3
+        INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+        is_index = option_symbol.upper() in INDEX_SYMBOLS
+        chain_type = "Indices" if is_index else "Equities"
+
+        # 3. Fetch using v3 with target expiry
         def fetch_v3(exp):
             cache_key = f"nse:option_chain_v3:{option_symbol.upper()}:{exp}"
             return self._scraper.get_option_chain_v3(
-                symbol=option_symbol, expiry=exp, cache_key=cache_key, cache_ttl=60
+                symbol=option_symbol, type=chain_type, expiry=exp, cache_key=cache_key, cache_ttl=60
             )
 
         raw = None
@@ -219,6 +225,10 @@ class OptionsChainFetcher:
             next_exp = expiry_candidates[1]
             logger.info("First expiry (%s) returned 0 data for %s, trying %s...", target_expiry, option_symbol, next_exp)
             raw = fetch_v3(next_exp)
+
+        if not raw or not raw.get("records", {}).get("data"):
+            raw_keys = list(raw.keys()) if raw else "None"
+            logger.warning("NSE chain empty for %s expiry=%s — response keys: %s", option_symbol, target_expiry, raw_keys)
 
         if raw:
             freshness_tracker.update("options_chain")
@@ -243,6 +253,14 @@ class OptionsChainFetcher:
                 target_expiry_str = expiry_date.strftime("%d-%b-%Y").lstrip("0")
 
         raw = self.fetch_raw_chain(option_symbol, expiry=target_expiry_str)
+        if not raw or not raw.get("records", {}).get("data"):
+            # Attempt broker fallback if primary scraper fails or returns no data
+            if self._broker:
+                logger.info(f"NSE chain empty for {option_symbol}; attempting broker fallback...")
+                broker_raw = self._fetch_from_broker(option_symbol, expiry_date)
+                if broker_raw:
+                    raw = broker_raw
+            
         if not raw:
             return None
 
@@ -584,3 +602,114 @@ class OptionsChainFetcher:
                 db.execute(Q.INSERT_OI_AGGREGATED, record)
             except Exception as e:
                 logger.error(f"Failed inserting oi_aggregated: {e}")
+
+    # ── Broker Fallback ───────────────────────────────────────────────────────
+
+    def _fetch_from_broker(self, option_symbol: str, target_date: Optional[date] = None) -> Optional[dict]:
+        """
+        Fetch options data from Angel One and format it to match NSE raw structure.
+        
+        This allows the existing parser to work with broker data seamlessly.
+        """
+        if not self._broker:
+            return None
+            
+        try:
+            from src.data.index_registry import get_registry
+            registry = get_registry()
+            idx = registry.get_index_by_option_symbol(option_symbol)
+            if not idx:
+                return None
+
+            # 1. Get spot price for ATM strike calculation
+            spot = None
+            if hasattr(self._broker, "get_ltp"):
+                from src.data.data_router import _INDEX_TOKENS
+                token_info = _INDEX_TOKENS.get(idx.id)
+                if token_info:
+                    spot = self._broker.get_ltp(idx.exchange, idx.nse_symbol or option_symbol, token_info[0])
+
+            if spot is None:
+                spot = 0.0
+
+            # 2. Resolve expiry string (e.g. "28APR2026")
+            expiry_str = ""
+            if target_date:
+                expiry_str = target_date.strftime("%d%b%Y").upper()
+            else:
+                # Get nearest from master contract
+                master = self._broker.get_master_contract("NFO")
+                if master is not None:
+                    import pandas as pd
+                    sym_df = master[master["name"] == option_symbol].copy()
+                    if not sym_df.empty:
+                        sym_df["expiry_dt"] = pd.to_datetime(sym_df["expiry"])
+                        sym_df = sym_df.sort_values("expiry_dt")
+                        expiry_str = sym_df["expiry"].iloc[0]
+            
+            if not expiry_str:
+                return None
+
+            # 3. Call SmartAPI optionGreek (returns whole chain around a strike)
+            anchor_strike = str(int(round(spot / 50) * 50)) if spot > 0 else "0"
+            broker_data = self._broker.get_option_chain(option_symbol, expiry_str, anchor_strike)
+            if not broker_data:
+                return None
+
+            # 4. Map to NSE-style "records" dict
+            nse_style_data = []
+            strikes_map = {}
+            
+            for item in broker_data:
+                try:
+                    strike = float(item.get("strikePrice", 0))
+                    if strike == 0: continue
+                    
+                    if strike not in strikes_map:
+                        strikes_map[strike] = {"strikePrice": strike}
+                    
+                    opt_type = item.get("optionType")
+                    if opt_type in ("CE", "PE"):
+                        strikes_map[strike][opt_type] = {
+                            "strikePrice": strike,
+                            "expiryDate": item.get("expiry"),
+                            "underlying": option_symbol,
+                            "identifier": f"{option_symbol}{item.get('expiry')}{opt_type}{strike}",
+                            "openInterest": int(float(item.get("openInterest", 0))),
+                            "changeinOpenInterest": int(float(item.get("openInterestChange", 0))),
+                            "pchangeinOpenInterest": float(item.get("openInterestChangePer", 0)),
+                            "totalTradedVolume": int(float(item.get("tradeVolume", 0))),
+                            "impliedVolatility": float(item.get("impliedVolatility", 0)),
+                            "lastPrice": float(item.get("ltp", item.get("lastPrice", 0.0))),
+                            "change": float(item.get("netChange", item.get("change", 0.0))),
+                            "pChange": float(item.get("percentChange", item.get("pChange", 0.0))),
+                            "bidQty": int(float(item.get("bidQty", 0))),
+                            "bidprice": float(item.get("bidPrice", 0.0)),
+                            "askQty": int(float(item.get("askQty", 0))),
+                            "askPrice": float(item.get("askPrice", 0.0)),
+                        }
+                except Exception:
+                    continue
+
+            for strike, combo in strikes_map.items():
+                if "CE" in combo or "PE" in combo:
+                    nse_style_data.append(combo)
+
+            return {
+                "records": {
+                    "data": nse_style_data,
+                    "underlyingValue": spot,
+                    "expiryDates": [expiry_str],
+                    "timestamp": datetime.now(tz=_IST).strftime("%d-%b-%Y %H:%M:%S")
+                },
+                "filtered": {
+                    "data": nse_style_data,
+                    "CE": {"totOI": 0, "totVol": 0},
+                    "PE": {"totOI": 0, "totVol": 0}
+                }
+            }
+
+        except Exception as exc:
+            logger.error(f"Broker fallback failed for {option_symbol}: {exc}")
+            return None
+

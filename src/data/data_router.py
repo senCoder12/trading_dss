@@ -100,6 +100,7 @@ class DataRouter:
         self._bars_lock = threading.Lock()
         # Throttle price_tick WS broadcasts to max 1/sec per index
         self._last_tick_broadcast: dict[str, float] = {}
+        self._last_tick_times: dict[str, float] = {}  # token → last tick monotonic time
 
         if settings.broker.use_broker_api and settings.broker.angel_one_api_key:
             self._init_broker()
@@ -144,14 +145,15 @@ class DataRouter:
     def _start_websocket_feed(self) -> None:
         """Load master contract, compute ATM option tokens, start WebSocket."""
         try:
-            # Load both NFO (NSE F&O) and BFO (BSE F&O) master contracts
+            # Load NSE (Equity), NFO (NSE F&O), and BFO (BSE F&O) master contracts
+            import pandas as pd  # noqa: PLC0415
             self._master_contract = self.broker_client.get_master_contract("NFO")
+            nse_contract = self.broker_client.get_master_contract("NSE")
             bfo_contract = self.broker_client.get_master_contract("BFO")
-            if bfo_contract is not None and self._master_contract is not None:
-                import pandas as pd  # noqa: PLC0415
-                self._master_contract = pd.concat(
-                    [self._master_contract, bfo_contract], ignore_index=True
-                )
+            
+            contracts = [c for c in [self._master_contract, nse_contract, bfo_contract] if c is not None]
+            if contracts:
+                self._master_contract = pd.concat(contracts, ignore_index=True)
 
             # Group index tokens by exchange type
             tokens_by_exchange: dict[int, list[str]] = {}
@@ -159,6 +161,28 @@ class DataRouter:
                 if exchange_type not in tokens_by_exchange:
                     tokens_by_exchange[exchange_type] = []
                 tokens_by_exchange[exchange_type].append(token)
+
+            # ── Dynamic Stock Tokens ──────────────────────────────────────────
+            # Add tokens for any active indices in the registry that are NOT
+            # in the hardcoded _INDEX_TOKENS (i.e. F&O stocks).
+            dynamic_token_map = {}
+            if self.registry:
+                for idx in self.registry.get_active_indices():
+                    if idx.id not in _INDEX_TOKENS:
+                        # Try to find equity token in NSE master
+                        mask = (self._master_contract["name"] == idx.id) & \
+                               (self._master_contract["exch_seg"] == "NSE") & \
+                               (self._master_contract["symbol"].str.endswith("-EQ"))
+                        res = self._master_contract[mask]
+                        if not res.empty:
+                            token = res["token"].iloc[0]
+                            dynamic_token_map[token] = idx.id
+                            if 1 not in tokens_by_exchange:
+                                tokens_by_exchange[1] = []
+                            tokens_by_exchange[1].append(token)
+            
+            # Store dynamic tokens for _handle_tick reverse lookup
+            self._dynamic_token_to_index = dynamic_token_map
 
             option_tokens_by_exchange = self._get_atm_option_tokens()
 
@@ -252,9 +276,15 @@ class DataRouter:
 
     def _handle_tick(self, tick: "LiveTick") -> None:
         """Aggregate raw ticks into 1-minute OHLCV bars; flush completed bars to DB."""
-        index_id = _TOKEN_TO_INDEX.get(tick.token)
+        # Check static index tokens first, then dynamic stock tokens
+        index_id = _TOKEN_TO_INDEX.get(tick.token) or \
+                   getattr(self, "_dynamic_token_to_index", {}).get(tick.token)
+        
         if not index_id:
             return
+
+        # Track per-token freshness
+        self._last_tick_times[tick.token] = time.monotonic()
 
         bar_minute = tick.timestamp.replace(second=0, microsecond=0)
 
@@ -266,7 +296,11 @@ class DataRouter:
                 current["high"] = max(current["high"], tick.ltp)
                 current["low"] = min(current["low"], tick.ltp)
                 current["close"] = tick.ltp
-                current["volume"] = tick.volume  # cumulative day volume replaces
+                # Accumulate VWAP components using volume delta (cumulative day volume)
+                vol_delta = max(0, tick.volume - current["volume"])
+                current["volume"] = tick.volume
+                current["cum_vol"] += vol_delta
+                current["cum_tp_vol"] += tick.ltp * vol_delta
             else:
                 # New minute — flush previous bar, start fresh
                 if current and not self.dry_run:
@@ -278,6 +312,8 @@ class DataRouter:
                     "low": tick.ltp,
                     "close": tick.ltp,
                     "volume": tick.volume,
+                    "cum_vol": tick.volume,
+                    "cum_tp_vol": tick.ltp * tick.volume,
                 }
 
         # Push live tick to frontend via WebSocket — throttled to 1/sec per index
@@ -311,7 +347,7 @@ class DataRouter:
                     bar["low"],
                     bar["close"],
                     float(bar["volume"]),
-                    0.0,            # vwap not available from tick
+                    bar["cum_tp_vol"] / bar["cum_vol"] if bar.get("cum_vol", 0) > 0 else 0.0,
                     "angel_one_ws",
                     "1m",
                 )],
@@ -417,6 +453,40 @@ class DataRouter:
             logger.debug("price_tick broadcast (scraper) failed: %s", exc)
 
         return all_data
+
+    def get_stale_tokens(self, max_age_seconds: float = 60.0) -> list[str]:
+        """Return list of token IDs that haven't received a tick in max_age_seconds.
+
+        Used for per-token stale detection — identifies individual dead feeds
+        that would be missed by a global stale check.
+        """
+        now = time.monotonic()
+        stale = []
+        for token, last_time in self._last_tick_times.items():
+            if now - last_time > max_age_seconds:
+                index_id = _TOKEN_TO_INDEX.get(token, token)
+                stale.append(index_id)
+        return stale
+
+    def check_feed_health(self) -> dict:
+        """Return per-token feed health summary.
+
+        Returns dict with: all_healthy (bool), stale_feeds (list), oldest_feed_age_sec.
+        """
+        if not self.ws_feed:
+            return {"all_healthy": True, "stale_feeds": [], "oldest_feed_age_sec": 0}
+
+        now = time.monotonic()
+        stale = self.get_stale_tokens(max_age_seconds=60.0)
+        ages = [(now - t) for t in self._last_tick_times.values()]
+        oldest = max(ages) if ages else 0.0
+
+        return {
+            "all_healthy": len(stale) == 0,
+            "stale_feeds": stale,
+            "oldest_feed_age_sec": round(oldest, 1),
+            "active_tokens": len(self._last_tick_times),
+        }
 
     def is_using_broker_api(self) -> bool:
         """True when broker API is active and WebSocket feed is running."""

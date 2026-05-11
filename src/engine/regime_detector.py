@@ -39,14 +39,17 @@ _DEFAULT_MAX_TRADES = 5
 
 @dataclass
 class SignalWeights:
-    """How much to trust each signal category.  All weights must sum to 1.0."""
+    """How much to trust each signal category.  All weights must sum to 1.0.
+
+    News engine is excluded from signal aggregation (adds lag, not edge).
+    Its weight (was 0.10) redistributed: +0.07 options (OI velocity), +0.03 smart_money (futures basis).
+    """
 
     trend_weight: float = 0.20
     momentum_weight: float = 0.15
-    options_weight: float = 0.25
+    options_weight: float = 0.32
     volume_weight: float = 0.15
-    news_weight: float = 0.10
-    smart_money_weight: float = 0.10
+    smart_money_weight: float = 0.13
     anomaly_weight: float = 0.05
 
     def validate(self) -> bool:
@@ -56,7 +59,6 @@ class SignalWeights:
             + self.momentum_weight
             + self.options_weight
             + self.volume_weight
-            + self.news_weight
             + self.smart_money_weight
             + self.anomaly_weight
         )
@@ -72,7 +74,6 @@ class SignalWeights:
             + self.momentum_weight
             + self.options_weight
             + self.volume_weight
-            + self.news_weight
             + self.smart_money_weight
             + self.anomaly_weight
         )
@@ -84,17 +85,14 @@ class SignalWeights:
         self.momentum_weight *= factor
         self.options_weight *= factor
         self.volume_weight *= factor
-        self.news_weight *= factor
         self.smart_money_weight *= factor
         self.anomaly_weight *= factor
 
-        # Validate result: ensure all weights are non-negative and sum to 1.0
         normalized_total = (
             self.trend_weight
             + self.momentum_weight
             + self.options_weight
             + self.volume_weight
-            + self.news_weight
             + self.smart_money_weight
             + self.anomaly_weight
         )
@@ -105,7 +103,6 @@ class SignalWeights:
             self.momentum_weight,
             self.options_weight,
             self.volume_weight,
-            self.news_weight,
             self.smart_money_weight,
             self.anomaly_weight,
         ]
@@ -195,6 +192,12 @@ class RegimeDetector:
         news_event_modifier: Optional[EventRegimeModifier] = None,
         anomaly_result: Optional[AnomalyDetectionResult] = None,
         vix_value: Optional[float] = None,
+        fii_futures_bias: Optional[str] = None,     # "BULLISH" / "BEARISH" / "NEUTRAL"
+        fii_net_position: Optional[float] = None,   # FII net contracts (positive = net long)
+        gex_regime: Optional[str] = None,           # "RANGEBOUND" / "TRENDING" / "NEUTRAL"
+        gex_value: Optional[float] = None,          # GEX scaled value
+        ad_ratio: Optional[float] = None,           # Advance/Decline ratio (>1 = more advances)
+        futures_basis: Optional[float] = None,      # NIFTY futures - spot (positive = contango)
     ) -> MarketRegime:
         """Classify the current market regime for *index_id*.
 
@@ -290,6 +293,20 @@ class RegimeDetector:
             vix_value=vix_value,
         )
 
+        # ── Step 4b: New Signal Adjustments ─────────────────────────────
+        primary_regime = self._apply_advanced_signal_adjustments(
+            regime=primary_regime,
+            trend_regime=trend_regime,
+            volatility_regime=volatility_regime,
+            gex_regime=gex_regime,
+            gex_value=gex_value,
+            fii_futures_bias=fii_futures_bias,
+            fii_net_position=fii_net_position,
+            ad_ratio=ad_ratio,
+            futures_basis=futures_basis,
+            warnings=warnings,
+        )
+
         # ── Step 5: Wyckoff Phase ──────────────────────────────────────
         market_phase = self._detect_wyckoff_phase(
             trend_regime, adx_val, plus_di, minus_di, technical_result,
@@ -302,15 +319,30 @@ class RegimeDetector:
             warnings.append(f"VIX elevated at {vix_value:.1f}")
         if anomaly_result and anomaly_result.risk_level in ("HIGH", "EXTREME"):
             warnings.append(f"Anomaly risk level: {anomaly_result.risk_level}")
+        if fii_futures_bias in ("BULLISH", "BEARISH"):
+            warnings.append(f"FII futures: {fii_futures_bias} (net={fii_net_position:.0f} contracts)")
+        if gex_regime in ("RANGEBOUND", "TRENDING"):
+            warnings.append(f"GEX regime: {gex_regime} (value={gex_value:.2f}) — {'expect rangebound day' if gex_regime == 'RANGEBOUND' else 'trending day possible'}")
+        if ad_ratio is not None and ad_ratio > 0:
+            adv_str = "strong breadth" if ad_ratio > 2.0 else ("weak breadth" if ad_ratio < 1.2 else "neutral breadth")
+            warnings.append(f"Advance-Decline ratio: {ad_ratio:.2f} ({adv_str})")
+        if futures_basis is not None and abs(futures_basis) > 30:
+            basis_dir = "contango (bullish)" if futures_basis > 0 else "backwardation (bearish)"
+            warnings.append(f"Futures basis: {futures_basis:+.1f} pts ({basis_dir})")
 
         # ── Weights & risk params ───────────────────────────────────────
         weights = self._weights_for_regime(primary_regime)
+        # Boost smart_money_weight when FII futures positioning is strong
+        if fii_futures_bias and fii_net_position is not None:
+            weights = self._apply_fii_weight_boost(weights, fii_futures_bias, fii_net_position)
         pos_mult, sl_mult, max_trades = self._risk_params_for_regime(primary_regime)
 
         # ── Confidence & duration ───────────────────────────────────────
         confidence = self._calculate_confidence(
             primary_regime, adx_val, volatility_regime, event_regime,
             vix_value, technical_result,
+            gex_regime=gex_regime,
+            trend_regime=trend_regime,
         )
         duration = self._estimate_duration(index_id, primary_regime)
         changing = self._detect_regime_change(
@@ -322,6 +354,12 @@ class RegimeDetector:
             primary_regime, trend_regime, volatility_regime,
             event_regime, market_phase,
         )
+        # Append VIX-based strategy mode recommendation
+        if vix_value is not None:
+            if vix_value < 14:
+                description += " | VIX LOW: options are cheap — BUY options preferred."
+            elif vix_value > 20:
+                description += f" | VIX HIGH ({vix_value:.1f}): options expensive — SELL PREMIUM strategies preferred."
 
         # ── Store in history ────────────────────────────────────────────
         self._store_regime(index_id, primary_regime, now)
@@ -428,12 +466,44 @@ class RegimeDetector:
         else:
             trend_regime = "FLAT"
 
-        # Confirm with EMA alignment
+        # Confirm with EMA alignment — soften override so intraday moves aren't buried
         ema_alignment = trend.ema_alignment  # BULLISH / BEARISH / MIXED
         if trend_regime in ("STRONG_UP", "UP") and ema_alignment == "BEARISH":
             trend_regime = "FLAT"  # contradictory — downgrade
-        if trend_regime in ("STRONG_DOWN", "DOWN") and ema_alignment == "BULLISH":
-            trend_regime = "FLAT"
+        if trend_regime == "STRONG_DOWN" and ema_alignment == "BULLISH":
+            trend_regime = "DOWN"  # lagging EMAs: one step down, not all the way to FLAT
+        # DOWN + BULLISH EMA: keep DOWN — intraday momentum wins over lagging EMA
+
+        # Intraday session override — corrects lagging indicator bias on significant moves.
+        # price_df may span 2 sessions (100 5-min bars ≈ 8h); filter to today only.
+        try:
+            if "timestamp" in price_df.columns and len(price_df) >= 3:
+                ts_col = pd.to_datetime(price_df["timestamp"])
+                today_date = ts_col.iloc[-1].date()
+                today_bars = price_df[ts_col.dt.date == today_date]
+                if len(today_bars) >= 3:
+                    session_open_price = float(today_bars["close"].iloc[0])
+                    session_latest = float(price_df["close"].iloc[-1])
+                    if session_open_price > 0:
+                        session_chg_pct = (
+                            (session_latest - session_open_price) / session_open_price * 100
+                        )
+                        # Significant intraday decline overrides bullish lagging indicators
+                        if session_chg_pct <= -2.5:
+                            trend_regime = "STRONG_DOWN"
+                        elif session_chg_pct <= -1.5 and trend_regime in (
+                            "STRONG_UP", "UP", "FLAT"
+                        ):
+                            trend_regime = "DOWN"
+                        # Significant intraday rally overrides bearish lagging indicators
+                        elif session_chg_pct >= 2.5:
+                            trend_regime = "STRONG_UP"
+                        elif session_chg_pct >= 1.5 and trend_regime in (
+                            "STRONG_DOWN", "DOWN", "FLAT"
+                        ):
+                            trend_regime = "UP"
+        except Exception:
+            logger.debug("Intraday session override failed; using indicator-based trend_regime.")
 
         return trend_regime, adx_val, plus_di, minus_di
 
@@ -481,6 +551,90 @@ class RegimeDetector:
             return atr_regime
         warnings.append("No volatility data — assuming NORMAL.")
         return "NORMAL"
+
+    def _apply_advanced_signal_adjustments(
+        self,
+        regime: str,
+        trend_regime: str,
+        volatility_regime: str,
+        gex_regime: Optional[str],
+        gex_value: Optional[float],
+        fii_futures_bias: Optional[str],
+        fii_net_position: Optional[float],
+        ad_ratio: Optional[float],
+        futures_basis: Optional[float],
+        warnings: list[str],
+    ) -> str:
+        """Apply GEX, FII futures, AD ratio, and futures basis adjustments to primary regime.
+
+        These are high-quality signals that can upgrade or confirm a regime:
+        - GEX positive + trend flat → keep RANGE_BOUND, not BREAKOUT
+        - GEX negative + trend emerging → upgrade from RANGE_BOUND to BREAKOUT
+        - FII strongly net long + bullish trend → keep/upgrade to TREND_UP
+        - AD ratio < 1.0 on up day → downgrade confidence (false breakout risk)
+        - Futures basis collapsing → bearish signal even in uptrend
+        """
+        adjusted = regime
+
+        # GEX regime overrides — handles both old (RANGEBOUND/TRENDING) and
+        # new (POSITIVE_GEX/NEGATIVE_GEX) regime strings from GEXRegimeDetector
+        _gex_is_positive = gex_regime in ("RANGEBOUND", "POSITIVE_GEX")
+        _gex_is_negative = gex_regime in ("TRENDING", "NEGATIVE_GEX")
+
+        if _gex_is_positive and regime == "BREAKOUT":
+            adjusted = "RANGE_BOUND"
+            warnings.append("GEX positive — market maker hedging dampens breakout; downgraded to RANGE_BOUND")
+        elif _gex_is_negative and regime == "RANGE_BOUND" and trend_regime in ("UP", "DOWN"):
+            adjusted = "BREAKOUT"
+            warnings.append("GEX negative + trend emerging — trending day likely; upgraded to BREAKOUT")
+        elif _gex_is_negative and trend_regime == "FLAT":
+            # NEGATIVE_GEX + sideways price → transitional (about to start trending)
+            adjusted = "BREAKOUT"
+            warnings.append("GEX negative + sideways price — transitional, watch for breakout")
+        elif _gex_is_positive and trend_regime in ("UP", "DOWN", "STRONG_UP", "STRONG_DOWN"):
+            # Positive GEX suppresses trend confidence — dealers pin the range
+            warnings.append("GEX positive + trend detected — possible false breakout, verify with volume")
+
+        # AD ratio breadth validation
+        if ad_ratio is not None:
+            if ad_ratio < 0.8 and regime in ("STRONG_TREND_UP", "TREND_UP"):
+                adjusted = "TREND_UP" if adjusted == "STRONG_TREND_UP" else adjusted
+                warnings.append(f"AD ratio {ad_ratio:.2f} < 0.8 — narrow rally, breadth weak. Downgraded strength.")
+            elif ad_ratio > 3.0 and regime == "RANGE_BOUND" and trend_regime == "UP":
+                adjusted = "TREND_UP"
+                warnings.append(f"AD ratio {ad_ratio:.2f} > 3.0 — broad institutional buying. Upgraded to TREND_UP.")
+
+        # Futures basis signal
+        if futures_basis is not None:
+            if futures_basis < -20 and regime in ("STRONG_TREND_UP", "TREND_UP"):
+                warnings.append(f"Futures basis negative ({futures_basis:+.1f}) — hedging/unwinding. Use caution on calls.")
+            elif futures_basis > 50:
+                warnings.append(f"Futures basis elevated ({futures_basis:+.1f}) — strong contango, institutional accumulation.")
+
+        return adjusted
+
+    def _apply_fii_weight_boost(
+        self,
+        weights: "SignalWeights",
+        fii_bias: str,
+        fii_net: float,
+    ) -> "SignalWeights":
+        """Boost smart_money_weight when FII futures positioning is strong.
+
+        FII net long >10000 contracts = institutional conviction. Boost their
+        weight and reduce anomaly weight slightly (smart money IS the signal).
+        """
+        import dataclasses
+        if abs(fii_net) < 5000:
+            return weights  # Not enough conviction to matter
+
+        boost = min(0.05, abs(fii_net) / 100000)  # Max 5% boost
+
+        new_weights = dataclasses.replace(weights)
+        new_weights.smart_money_weight = min(0.25, weights.smart_money_weight + boost)
+        new_weights.anomaly_weight = max(0.02, weights.anomaly_weight - boost * 0.5)
+        new_weights.normalise()
+        return new_weights
 
     # ------------------------------------------------------------------
     # Step 3 — Event Check
@@ -565,6 +719,20 @@ class RegimeDetector:
             return False
 
         drop_pct = (prev_close - current) / prev_close * 100
+
+        # Also measure full-session decline (avoids bar-to-bar noise from intraday 5-min data)
+        try:
+            if "timestamp" in price_df.columns:
+                ts_col = pd.to_datetime(price_df["timestamp"])
+                today_date = ts_col.iloc[-1].date()
+                today_bars = price_df[ts_col.dt.date == today_date]
+                if len(today_bars) >= 2:
+                    session_start = float(today_bars["close"].iloc[0])
+                    if session_start > 0:
+                        session_drop = (session_start - current) / session_start * 100
+                        drop_pct = max(drop_pct, session_drop)
+        except Exception:
+            pass
 
         vix_high = vix_value is not None and vix_value > self._VIX_HIGH
 
@@ -700,51 +868,46 @@ class RegimeDetector:
     @staticmethod
     def _weights_for_regime(regime: str) -> SignalWeights:
         """Return signal weights tuned for the given regime."""
+        # News engine removed from signal weights (adds lag, not edge).
+        # Former news weight redistributed: 70% → options (OI velocity), 30% → smart_money (futures basis).
         tables: dict[str, dict[str, float]] = {
             "STRONG_TREND_UP": dict(
-                trend_weight=0.30, momentum_weight=0.10, options_weight=0.20,
-                volume_weight=0.15, news_weight=0.10, smart_money_weight=0.10,
-                anomaly_weight=0.05,
+                trend_weight=0.30, momentum_weight=0.10, options_weight=0.27,
+                volume_weight=0.15, smart_money_weight=0.13, anomaly_weight=0.05,
             ),
             "STRONG_TREND_DOWN": dict(
-                trend_weight=0.30, momentum_weight=0.10, options_weight=0.20,
-                volume_weight=0.15, news_weight=0.10, smart_money_weight=0.10,
-                anomaly_weight=0.05,
+                trend_weight=0.30, momentum_weight=0.10, options_weight=0.27,
+                volume_weight=0.15, smart_money_weight=0.13, anomaly_weight=0.05,
             ),
             "TREND_UP": dict(
-                trend_weight=0.25, momentum_weight=0.15, options_weight=0.20,
-                volume_weight=0.15, news_weight=0.10, smart_money_weight=0.10,
-                anomaly_weight=0.05,
+                trend_weight=0.25, momentum_weight=0.15, options_weight=0.27,
+                volume_weight=0.15, smart_money_weight=0.13, anomaly_weight=0.05,
             ),
             "TREND_DOWN": dict(
-                trend_weight=0.25, momentum_weight=0.15, options_weight=0.20,
-                volume_weight=0.15, news_weight=0.10, smart_money_weight=0.10,
-                anomaly_weight=0.05,
+                trend_weight=0.25, momentum_weight=0.15, options_weight=0.27,
+                volume_weight=0.15, smart_money_weight=0.13, anomaly_weight=0.05,
             ),
             "RANGE_BOUND": dict(
-                trend_weight=0.10, momentum_weight=0.20, options_weight=0.25,
-                volume_weight=0.15, news_weight=0.10, smart_money_weight=0.15,
-                anomaly_weight=0.05,
+                trend_weight=0.10, momentum_weight=0.20, options_weight=0.32,
+                volume_weight=0.15, smart_money_weight=0.18, anomaly_weight=0.05,
             ),
             "EVENT_DRIVEN": dict(
-                trend_weight=0.10, momentum_weight=0.05, options_weight=0.20,
-                volume_weight=0.10, news_weight=0.35, smart_money_weight=0.10,
-                anomaly_weight=0.10,
+                # Former news=0.35 → options+0.25, smart_money+0.10 (OI/basis dominate event days)
+                trend_weight=0.10, momentum_weight=0.05, options_weight=0.45,
+                volume_weight=0.10, smart_money_weight=0.20, anomaly_weight=0.10,
             ),
             "VOLATILE_CHOPPY": dict(
-                trend_weight=0.15, momentum_weight=0.15, options_weight=0.20,
-                volume_weight=0.15, news_weight=0.15, smart_money_weight=0.10,
-                anomaly_weight=0.10,
+                trend_weight=0.15, momentum_weight=0.15, options_weight=0.31,
+                volume_weight=0.15, smart_money_weight=0.14, anomaly_weight=0.10,
             ),
             "CRASH": dict(
-                trend_weight=0.10, momentum_weight=0.05, options_weight=0.10,
-                volume_weight=0.10, news_weight=0.30, smart_money_weight=0.15,
-                anomaly_weight=0.20,
+                # Former news=0.30 → options+0.21, smart_money+0.09 (OI/basis most reliable in crash)
+                trend_weight=0.10, momentum_weight=0.05, options_weight=0.31,
+                volume_weight=0.10, smart_money_weight=0.24, anomaly_weight=0.20,
             ),
             "BREAKOUT": dict(
-                trend_weight=0.25, momentum_weight=0.10, options_weight=0.20,
-                volume_weight=0.25, news_weight=0.05, smart_money_weight=0.10,
-                anomaly_weight=0.05,
+                trend_weight=0.25, momentum_weight=0.10, options_weight=0.24,
+                volume_weight=0.25, smart_money_weight=0.11, anomaly_weight=0.05,
             ),
         }
         params = tables.get(regime, tables["RANGE_BOUND"])
@@ -792,6 +955,8 @@ class RegimeDetector:
         event_regime: str,
         vix_value: Optional[float],
         technical_result: TechnicalAnalysisResult,
+        gex_regime: Optional[str] = None,
+        trend_regime: Optional[str] = None,
     ) -> float:
         """Heuristic confidence in the regime classification (0–1)."""
         confidence = 0.5
@@ -811,6 +976,13 @@ class RegimeDetector:
             confidence = 0.65
         elif regime == "VOLATILE_CHOPPY":
             confidence = 0.55
+
+        # GEX confidence adjustments
+        _is_trending_regime = trend_regime in ("UP", "DOWN", "STRONG_UP", "STRONG_DOWN")
+        if gex_regime in ("TRENDING", "NEGATIVE_GEX") and _is_trending_regime:
+            confidence = min(1.0, confidence + 0.20)  # GEX amplifies moves → higher confidence
+        elif gex_regime in ("RANGEBOUND", "POSITIVE_GEX") and _is_trending_regime:
+            confidence = max(0.0, confidence - 0.30)  # GEX suppresses trend → lower confidence
 
         # EMA alignment confirmation boosts confidence
         if technical_result.trend.ema_alignment in ("BULLISH", "BEARISH"):

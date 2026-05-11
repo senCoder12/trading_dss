@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, time as dt_time
 from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
@@ -121,6 +121,45 @@ class FOBulkFetcher:
         # In-memory OI history: symbol → StockOIData
         self._oi_history: dict[str, StockOIData] = {}
         self._oi_history_lock = threading.Lock()
+        self._expiry_cache: dict[str, str] = {}
+        self._last_expiry_refresh: date = date.min
+        self._previous_oi: dict = {}
+
+        # Token mapping for SmartAPI
+        self._token_map: dict[str, str] = {}
+        self._reverse_token_map: dict[str, str] = {}
+        self._master_loaded_date: Optional[date] = None
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _ensure_token_map(self) -> None:
+        """Load and cache symbol-to-token mapping for NSE equities."""
+        today = datetime.now(tz=_IST).date()
+        if self._master_loaded_date == today and self._token_map:
+            return
+
+        logger.info("Building token map from NSE master contract...")
+        try:
+            df = self._smart_api.get_master_contract("NSE")
+            if df is not None and not df.empty:
+                # For NSE equities, symbol typically matches name
+                # Keep the main equity token, avoid derivatives if mixed
+                df_eq = df[df["symbol"].str.endswith("-EQ") | ~df["symbol"].str.contains("-")]
+                # Drop duplicates to keep primary token
+                df_eq = df_eq.drop_duplicates(subset=["name"])
+                
+                for _, row in df_eq.iterrows():
+                    symbol = str(row["name"]).upper()
+                    token = str(row["token"])
+                    self._token_map[symbol] = token
+                    self._reverse_token_map[token] = symbol
+                
+                self._master_loaded_date = today
+                logger.info("Loaded %d tokens into map", len(self._token_map))
+            else:
+                logger.error("Failed to load NSE master contract for tokens")
+        except Exception as e:
+            logger.error("Error building token map: %s", e)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -149,32 +188,47 @@ class FOBulkFetcher:
 
         logger.info("Fetching quotes for %d symbols in batches of %d", len(symbols), self._batch_size)
         start = time.time()
-
+        
         # Try both NSE and EQUITY exchange codes
         exchange_code = "NSE"
 
         quotes: dict[str, StockQuote] = {}
         failed: list[str] = []
+        null_batches: int = 0
+
+        self._ensure_token_map()
 
         # Split into batches
         for batch_idx in range(0, len(symbols), self._batch_size):
             batch = symbols[batch_idx : batch_idx + self._batch_size]
 
-            # Use symbol names directly as exchange_tokens (SmartAPI may accept this)
-            exchange_tokens = {"NSE": batch}
-            logger.info("DEBUG: batch %d symbols: %s (first 3: %s)",
-                       batch_idx // self._batch_size + 1, len(batch), batch[:3] if batch else [])
+            # Map symbols to tokens
+            tokens = []
+            for s in batch:
+                if s in self._token_map:
+                    tokens.append(self._token_map[s])
+                else:
+                    logger.warning("No token found for symbol %s", s)
+                    failed.append(s)
+
+            if not tokens:
+                continue
+
+            exchange_tokens = {"NSE": tokens}
+            logger.info("DEBUG: batch %d symbols: %s (mapped %d tokens)",
+                       batch_idx // self._batch_size + 1, len(batch), len(tokens))
 
             try:
                 logger.debug("Fetching batch %d", batch_idx // self._batch_size + 1)
-                # Try different modes: LTP (simplest) -> QUOTE -> SNAP_QUOTE
-                raw = self._smart_api.get_bulk_quotes("LTP", exchange_tokens)
+                # Try modes in order: SNAP_QUOTE -> QUOTE -> LTP
+                # Prioritize modes with volume data first
+                raw = self._smart_api.get_bulk_quotes("SNAP_QUOTE", exchange_tokens)
                 if not raw:
-                    logger.debug("LTP returned empty, trying QUOTE mode")
                     raw = self._smart_api.get_bulk_quotes("QUOTE", exchange_tokens)
                 if not raw:
-                    logger.debug("QUOTE returned empty, trying SNAP_QUOTE mode")
-                    raw = self._smart_api.get_bulk_quotes("SNAP_QUOTE", exchange_tokens)
+                    raw = self._smart_api.get_bulk_quotes("LTP", exchange_tokens)
+                if not raw:
+                    null_batches += 1
                 logger.info("DEBUG: batch raw response: fetched=%d, unfetched=%d, raw_keys=%s",
                             len(raw.get("fetched", [])) if raw else 0,
                             len(raw.get("unfetched", [])) if raw else 0,
@@ -192,7 +246,9 @@ class FOBulkFetcher:
 
                     # Track errors from API
                     for entry in raw.get("unfetched", []):
-                        failed.append(entry.get("symbol", "unknown"))
+                        token = entry.get("symbolToken", "")
+                        sym = self._reverse_token_map.get(token, "unknown")
+                        failed.append(sym)
 
                 # Rate limit: sleep between batches
                 if batch_idx + self._batch_size < len(symbols):
@@ -202,17 +258,34 @@ class FOBulkFetcher:
                 logger.error("Batch fetch failed: %s", e)
                 failed.extend(batch)
 
-        # Validate: fail if >30% lost
+        # Validate: fail if >30% lost OR if SmartAPI returned nothing at all
+        # Also fallback if we only got LTP (0 volume) during market hours
         fail_rate = len(failed) / len(symbols) if symbols else 0
-        if fail_rate > 0.3:
-            # Fallback to NSE scraper if SmartAPI failed
-            if self._nse_scraper and len(quotes) == 0:
+        total_batches = max(1, (len(symbols) + self._batch_size - 1) // self._batch_size)
+        all_batches_null = null_batches >= total_batches
+        
+        # Check for zero volume during market hours (indicates LTP-only mode or stale data)
+        avg_volume = sum(q.volume for q in quotes.values()) / len(quotes) if quotes else 0
+        now = datetime.now(_IST)
+        is_market_hours = now.weekday() < 5 and dt_time(9, 15) <= now.time() <= dt_time(15, 30)
+        
+        if fail_rate > 0.3 or (all_batches_null and len(quotes) == 0) or (is_market_hours and avg_volume == 0 and len(quotes) > 0):
+            # Fallback to NSE scraper if SmartAPI failed or returned incomplete data
+            if self._nse_scraper:
+                reason = "SmartAPI bulk quote fetch unavailable"
+                if is_market_hours and avg_volume == 0 and len(quotes) > 0:
+                    reason = "SmartAPI returned LTP-only data (no volume)"
+                
                 logger.warning(
-                    "SmartAPI quote fetch failed (%d%%). Falling back to NSE scraper.",
-                    int(fail_rate * 100)
+                    "%s (null_batches=%d/%d, fail_rate=%.0f%%). Falling back to NSE scraper.",
+                    reason, null_batches, total_batches, fail_rate * 100
                 )
                 return self._fallback_fetch_quotes_nse(symbols)
-            raise DataFetchError(f"Quote fetch failure rate {fail_rate:.1%} exceeds 30% threshold")
+            
+            raise DataFetchError(
+                f"Quote fetch failed: null_batches={null_batches}/{total_batches}, "
+                f"fail_rate={fail_rate:.1%}"
+            )
 
         elapsed = time.time() - start
         logger.info(
@@ -232,35 +305,33 @@ class FOBulkFetcher:
         start = time.time()
 
         try:
-            # Get all indices from scraper
-            indices = self._nse_scraper.get_all_indices()
-            quotes: dict[str, StockQuote] = {}
+            # Get all F&O stock quotes from scraper
+            stocks_data = self._nse_scraper.get_all_fno_quotes()
+            if not stocks_data:
+                logger.warning("NSE scraper returned no F&O quotes")
+                return {}
 
-            for idx_data in indices:
-                symbol = idx_data.get("symbol", "")
+            quotes: dict[str, StockQuote] = {}
+            for s_data in stocks_data:
+                symbol = s_data.get("symbol", "")
                 if symbol not in symbols:
                     continue
 
                 try:
                     quote = StockQuote(
                         symbol=symbol,
-                        ltp=float(idx_data.get("ltp", 0)),
-                        open=float(idx_data.get("open", 0)),
-                        high=float(idx_data.get("high", 0)),
-                        low=float(idx_data.get("low", 0)),
-                        close=float(idx_data.get("prev_close", 0)),
-                        volume=int(idx_data.get("volume", 0)),
+                        ltp=float(s_data.get("ltp", 0)),
+                        open=float(s_data.get("open", 0)),
+                        high=float(s_data.get("high", 0)),
+                        low=float(s_data.get("low", 0)),
+                        close=float(s_data.get("close", 0)),
+                        volume=int(s_data.get("volume", 0)),
                         avg_volume_20d=0.0,  # Will be fetched separately
-                        price_change_pct=float(idx_data.get("price_change_pct", 0)),
-                        bid=float(idx_data.get("bid", 0)),
-                        ask=float(idx_data.get("ask", 0)),
-                        bid_ask_spread=float(idx_data.get("ask", 0)) - float(idx_data.get("bid", 0)),
-                        bid_ask_spread_pct=(
-                            (float(idx_data.get("ask", 0)) - float(idx_data.get("bid", 0)))
-                            / float(idx_data.get("ltp", 1)) * 100
-                            if float(idx_data.get("ltp", 0)) > 0
-                            else 0
-                        ),
+                        price_change_pct=float(s_data.get("change_pct", 0)),
+                        bid=0.0,
+                        ask=0.0,
+                        bid_ask_spread=0.0,
+                        bid_ask_spread_pct=0.0,
                         timestamp=datetime.now(tz=_IST),
                     )
                     quotes[symbol] = quote
@@ -313,8 +384,6 @@ class FOBulkFetcher:
 
             # Fetch historical data
             try:
-                # TODO: Map symbol → token via master contract
-                # For now, placeholder — will need token lookup
                 token = self._get_token_for_symbol(symbol, "NSE")
                 if not token:
                     logger.warning("No token found for %s", symbol)
@@ -338,6 +407,9 @@ class FOBulkFetcher:
 
             except Exception as e:
                 logger.error("Historical fetch failed for %s: %s", symbol, e)
+            
+            # Sleep to respect rate limit of 3 req/sec
+            time.sleep(0.4)
 
         elapsed = time.time() - start
         logger.info("Average volumes fetched: %d/%d in %.1fs", len(result), len(symbols), elapsed)
@@ -361,16 +433,36 @@ class FOBulkFetcher:
         dict[str, StockOIData]:
             Map of symbol → StockOIData with OI changes vs previous snapshot.
         """
-        logger.info("Fetching OI data for %d symbols", len(symbols))
-        start = time.time()
+        if not symbols:
+            return {}
 
+        logger.info("Fetching OI data for %d symbols", len(symbols))
+        
+        # 1. Resolve current expiry (once per bulk run)
+        expiry = self._get_nearest_expiry(symbols[0])
+        if not expiry:
+            logger.error("Could not resolve nearest expiry for OI fetch")
+            return {}
+        
+        logger.info("Using expiry %s for OI fetch", expiry)
+        start = time.time()
         result: dict[str, StockOIData] = {}
 
         for idx, symbol in enumerate(symbols):
             try:
-                # TODO: Resolve nearest expiry, ATM strike from SmartAPI
-                # Placeholder call
-                chain = self._smart_api.get_option_chain(symbol, "18JAN2024", "0")
+                # 1. Try SmartAPI first
+                chain = self._smart_api.get_option_chain(symbol, expiry, "0")
+                
+                # 2. Fallback to NSE scraper if SmartAPI failed
+                chain_from_nse = False
+                if not chain and self._nse_scraper:
+                    logger.debug("SmartAPI OI fetch failed for %s, trying NSE scraper", symbol)
+                    # Convert "28APR2026" back to "28-Apr-2026" for NSE
+                    # (Though get_option_chain_v3 can often resolve it automatically if expiry is None)
+                    chain = self._nse_scraper.get_option_chain_v3(symbol)
+                    if chain:
+                        chain_from_nse = True
+                
                 if not chain:
                     logger.debug("No OI data for %s", symbol)
                     continue
@@ -393,8 +485,9 @@ class FOBulkFetcher:
 
                     result[symbol] = oi_data
 
-                # Rate limit between individual calls
-                if idx < len(symbols) - 1:
+                # Rate limit between individual calls (only if SmartAPI worked)
+                # NSEScraper has its own internal rate limiting
+                if not chain_from_nse and idx < len(symbols) - 1:
                     time.sleep(self._batch_delay)
 
             except Exception as e:
@@ -404,6 +497,29 @@ class FOBulkFetcher:
         logger.info("OI data fetched: %d/%d in %.1fs", len(result), len(symbols), elapsed)
 
         return result
+
+    def _get_nearest_expiry(self, symbol: str) -> Optional[str]:
+        """Resolve the nearest active expiry date for the given symbol."""
+        today = date.today()
+        
+        # Refresh cache daily or if empty
+        if self._last_expiry_refresh < today or symbol not in self._expiry_cache:
+            if not self._nse_scraper:
+                return None
+                
+            try:
+                meta = self._nse_scraper.get_option_chain_meta(symbol)
+                if meta and meta.get("expiryDates"):
+                    # NSE returns "28-Apr-2026", SmartAPI wants "28APR2026"
+                    raw_date = meta["expiryDates"][0]
+                    clean_date = raw_date.replace("-", "").upper()
+                    self._expiry_cache[symbol] = clean_date
+                    self._last_expiry_refresh = today
+                    logger.info("Resolved expiry for %s: %s", symbol, clean_date)
+            except Exception as e:
+                logger.warning("Failed to resolve expiry for %s: %s", symbol, e)
+                
+        return self._expiry_cache.get(symbol)
 
     def fetch_full_snapshot(
         self,
@@ -484,7 +600,13 @@ class FOBulkFetcher:
     def _parse_quote(self, entry: dict) -> Optional[StockQuote]:
         """Parse raw SmartAPI quote entry into StockQuote."""
         try:
-            symbol = entry.get("symbol", "").upper()
+            token = entry.get("symbolToken", "")
+            symbol = self._reverse_token_map.get(token)
+            
+            if not symbol:
+                ts = entry.get("tradingSymbol", entry.get("symbol", ""))
+                symbol = ts.split("-")[0].upper()
+            
             if not symbol:
                 return None
 
@@ -493,7 +615,7 @@ class FOBulkFetcher:
             high = float(entry.get("high", 0))
             low = float(entry.get("low", 0))
             close = float(entry.get("close", 0))
-            volume = int(entry.get("volume", 0))
+            volume = int(entry.get("volume", entry.get("tradedVolume", entry.get("totalTradedVolume", 0))))
             bid = float(entry.get("bid", 0))
             ask = float(entry.get("ask", 0))
 
@@ -523,43 +645,87 @@ class FOBulkFetcher:
             return None
 
     def _parse_oi_data(self, symbol: str, chain: dict) -> Optional[StockOIData]:
-        """Parse SmartAPI options chain into StockOIData."""
+        """Parse NSE option chain response into StockOIData."""
         try:
-            # TODO: Extract nearest expiry, ATM strike, CE/PE OI, IV from chain response
-            # Placeholder implementation — will need actual SmartAPI response structure
-            expiry_str = chain.get("expiry", "2024-01-18")
-            atm_strike = float(chain.get("atmStrike", 0))
+            records = chain.get("records", {})
+            filtered = chain.get("filtered", {})
 
-            total_ce_oi = int(chain.get("totalCeOi", 0))
-            total_pe_oi = int(chain.get("totalPeOi", 0))
+            # Get underlying spot price
+            underlying = float(records.get("underlyingValue", 0))
 
-            atm_ce_iv = float(chain.get("atmCeIv", 0))
-            atm_pe_iv = float(chain.get("atmPeIv", 0))
-            avg_iv = (atm_ce_iv + atm_pe_iv) / 2
+            # Get expiry dates - use nearest
+            expiry_dates = records.get("expiryDates", [])
+            if not expiry_dates:
+                return None
+            expiry_str = expiry_dates[0]
 
-            pcr = total_pe_oi / total_ce_oi if total_ce_oi else 0.0
-
-            # Parse expiry date
+            # Parse expiry date (format: "28-Nov-2024" or "2024-11-28")
             try:
-                expiry = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                if len(expiry_str) == 10 and expiry_str[4] == "-":
+                    expiry = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                else:
+                    expiry = datetime.strptime(expiry_str, "%d-%b-%Y").date()
             except ValueError:
                 expiry = datetime.now(tz=_IST).date()
 
-            return StockOIData(
+            # Use totals from filtered section if available
+            total_ce_oi = int(filtered.get("CE", {}).get("totOI", 0))
+            total_pe_oi = int(filtered.get("PE", {}).get("totOI", 0))
+
+            # Find ATM strike and IV from records data
+            chain_data = records.get("data", [])
+            nearest_expiry_data = [
+                row for row in chain_data
+                if row.get("expiryDate", "") == expiry_str
+            ]
+
+            atm_strike = 0.0
+            atm_ce_iv = 0.0
+            atm_pe_iv = 0.0
+
+            if underlying > 0 and nearest_expiry_data:
+                # Find ATM strike (closest to underlying)
+                strikes = [(float(row.get("strikePrice", 0)), row) for row in nearest_expiry_data]
+                if strikes:
+                    atm_strike, atm_row = min(strikes, key=lambda x: abs(x[0] - underlying))
+                    atm_ce_iv = float((atm_row.get("CE") or {}).get("impliedVolatility", 0) or 0)
+                    atm_pe_iv = float((atm_row.get("PE") or {}).get("impliedVolatility", 0) or 0)
+
+                # If totals not in filtered section, sum from data
+                if total_ce_oi == 0 and total_pe_oi == 0:
+                    for row in nearest_expiry_data:
+                        total_ce_oi += int((row.get("CE") or {}).get("openInterest", 0) or 0)
+                        total_pe_oi += int((row.get("PE") or {}).get("openInterest", 0) or 0)
+
+            avg_iv = (atm_ce_iv + atm_pe_iv) / 2 if (atm_ce_iv or atm_pe_iv) else 0.0
+            pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 0.0
+
+            # Calculate OI change from previous snapshot
+            prev = self._previous_oi.get(symbol)
+            ce_oi_change = total_ce_oi - prev.total_ce_oi if prev else 0
+            pe_oi_change = total_pe_oi - prev.total_pe_oi if prev else 0
+            iv_change = avg_iv - prev.avg_iv if prev else 0.0
+
+            result = StockOIData(
                 symbol=symbol,
                 expiry=expiry,
                 total_ce_oi=total_ce_oi,
                 total_pe_oi=total_pe_oi,
-                ce_oi_change=0,  # Will be calculated later
-                pe_oi_change=0,
-                pcr=pcr,
+                ce_oi_change=ce_oi_change,
+                pe_oi_change=pe_oi_change,
+                pcr=round(pcr, 4),
                 atm_strike=atm_strike,
                 atm_ce_iv=atm_ce_iv,
                 atm_pe_iv=atm_pe_iv,
-                avg_iv=avg_iv,
-                iv_change=0.0,  # Will be calculated later
+                avg_iv=round(avg_iv, 4),
+                iv_change=round(iv_change, 4),
                 timestamp=datetime.now(tz=_IST),
             )
+
+            # Store for next diff calculation
+            self._previous_oi[symbol] = result
+            return result
+
         except Exception as e:
             logger.warning("Failed to parse OI data for %s: %s", symbol, e)
             return None
@@ -567,9 +733,12 @@ class FOBulkFetcher:
     def _get_token_for_symbol(self, symbol: str, exchange: str = "NSE") -> Optional[str]:
         """
         Resolve Angel One token for a symbol.
-
-        TODO: Build master contract cache at startup to avoid repeated downloads.
         """
+        if exchange == "NSE":
+            self._ensure_token_map()
+            return self._token_map.get(symbol)
+        
+        # Fallback for other exchanges
         try:
             master_df = self._smart_api.get_master_contract(exchange)
             if master_df is not None and not master_df.empty:

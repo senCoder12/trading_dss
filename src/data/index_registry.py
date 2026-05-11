@@ -386,7 +386,7 @@ class IndexRegistry:
         fo_indices = self.get_indices_with_options()
 
         if major_only:
-            major_ids = {"NIFTY50", "BANKNIFTY", "FINNIFTY"}
+            major_ids = {"NIFTY50", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"}
             fo_indices = [i for i in fo_indices if i.id in major_ids]
 
         return sorted(fo_indices, key=lambda x: x.id)
@@ -503,6 +503,73 @@ class IndexRegistry:
             for i in self.get_all_indices(active_only=active_only)
             if i.yahoo_symbol
         }
+
+    # ── Dynamic Registration ──────────────────────────────────────────────────
+    
+    def register_stocks_as_indices(self, stocks: list[dict]) -> int:
+        """
+        Dynamically register a list of F&O stocks as indices.
+        
+        This allows the DecisionEngine and DataCollector to treat priority
+        stocks (e.g. RELIANCE, HDFCBANK) exactly like NIFTY50.
+        
+        Parameters
+        ----------
+        stocks:
+            List of dicts from fo_universe or fo_daily_scores tables.
+            Must contain: symbol, company_name, lot_size, sector.
+        """
+        registered = 0
+        with self._lock:
+            for s in stocks:
+                symbol = s["symbol"].upper()
+                # Use company_name if present, otherwise fallback to symbol
+                name = s.get("company_name") or symbol
+                sector = s.get("sector") or "equity"
+                
+                idx = Index(
+                    id=symbol,
+                    display_name=name,
+                    nse_symbol=symbol,
+                    yahoo_symbol=f"{symbol}.NS",
+                    exchange="NSE",
+                    lot_size=s["lot_size"],
+                    has_options=True,
+                    option_symbol=symbol,
+                    sector_category=sector,
+                    is_active=True,
+                    description=f"F&O Universe Stock: {name}"
+                )
+                self._indices[symbol] = idx
+                registered += 1
+        
+        if registered:
+            logger.info("IndexRegistry: dynamically registered %d stocks as indices", registered)
+        return registered
+
+    def remove_dynamic_indices(self) -> int:
+        """Remove all indices that are not in the source configuration file."""
+        if self._source_path is None:
+            return 0
+            
+        try:
+            raw_text = self._source_path.read_text(encoding="utf-8")
+            raw: list[dict] = json.loads(raw_text)
+            config_ids = {entry["id"].upper() for entry in raw if "id" in entry}
+        except Exception:
+            logger.exception("Failed to read config for removal")
+            return 0
+            
+        removed = 0
+        with self._lock:
+            ids_to_remove = [idx_id for idx_id in self._indices if idx_id not in config_ids]
+            for idx_id in ids_to_remove:
+                del self._indices[idx_id]
+                removed += 1
+        
+        if removed:
+            logger.info("IndexRegistry: removed %d dynamic indices", removed)
+        return removed
 
     # ── Meta ──────────────────────────────────────────────────────────────────
 

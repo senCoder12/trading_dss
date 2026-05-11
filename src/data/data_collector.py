@@ -40,7 +40,7 @@ from src.data.historical_data import HistoricalDataManager
 from src.data.index_registry import IndexRegistry
 from src.data.nse_scraper import NSEScraper
 from src.data.options_chain import OptionsChainFetcher
-from src.data.rate_limiter import GlobalRateLimiter, RateLimiter, create_nse_limiter
+from src.data.rate_limiter import GlobalCircuitBreaker, GlobalRateLimiter, RateLimiter, create_nse_limiter
 from src.data.vix_data import VIXTracker
 from src.database import queries as Q
 from src.database.db_manager import DatabaseManager
@@ -77,6 +77,7 @@ class DataCollector:
         registry: IndexRegistry,
         dry_run: bool = False,
         force_start: bool = False,
+        fo_manager: Optional[Any] = None,
     ) -> None:
         self.db = db
         self.registry = registry
@@ -93,7 +94,11 @@ class DataCollector:
         # DataRouter: uses Angel One WebSocket when configured, otherwise wraps nse_scraper
         self.data_router = DataRouter(db=self.db, registry=self.registry, dry_run=self.dry_run)
         logger.info("DataRouter source: %s", self.data_router.get_data_source())
-        self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper, bse_scraper=self.bse_scraper)
+        self.options_fetcher = OptionsChainFetcher(
+            scraper=self.nse_scraper,
+            bse_scraper=self.bse_scraper,
+            broker_client=self.data_router.broker_client
+        )
         self.historical_manager = HistoricalDataManager(registry=self.registry, db=self.db)
         self.fii_dii_fetcher = FIIDIIFetcher(scraper=self.nse_scraper)
         self.vix_tracker = VIXTracker(scraper=self.nse_scraper)
@@ -104,9 +109,23 @@ class DataCollector:
         self.overnight_engine: Any = None
         self.decision_engine: Any = None
         self.telegram_bot: Any = None
+        self.fo_manager: Optional[Any] = fo_manager
 
         self.scheduler = BackgroundScheduler(timezone=_IST)
         self._setup_jobs()
+
+        # Create new tables introduced after initial schema migration
+        try:
+            self.db.execute(Q.CREATE_FUTURES_BASIS)
+            self.db.execute(Q.CREATE_IV_HISTORY)
+            self.db.execute(Q.CREATE_MARKET_BREADTH)
+            self.db.execute(Q.CREATE_GIFT_NIFTY)
+        except Exception as e:
+            logger.warning("New table creation failed (may already exist): %s", e)
+
+        # If manager provided, do initial refresh
+        if self.fo_manager:
+            self.refresh_registry_with_stocks()
 
         # Health / failure tracking ─────────────────────────────────────────
         self._failures: Dict[str, int] = {
@@ -225,6 +244,22 @@ class DataCollector:
             name="Daily Database Cleanup",
         )
 
+        # ── F&O Stock Registry Sync ───────────────────────────────────────
+        # Keeps the IndexRegistry in sync with the Top 15 Priority Stocks
+        # so they can be processed by the DecisionEngine.
+        self.scheduler.add_job(
+            self.refresh_registry_with_stocks,
+            trigger=CronTrigger(hour=9, minute=1, timezone=_IST),
+            id="refresh_stock_registry",
+            name="Refresh Registry with Priority Stocks",
+        )
+        self.scheduler.add_job(
+            self.refresh_registry_with_stocks,
+            trigger=IntervalTrigger(minutes=15, timezone=_IST),
+            id="refresh_stock_registry_intraday",
+            name="Intraday Stock Registry Sync",
+        )
+
         # ── Overnight news pipeline (all times IST) ────────────────────────
         # These jobs run only when set_overnight_engine() has wired in an
         # OvernightNewsEngine instance. Until then, they are no-ops.
@@ -269,6 +304,57 @@ class DataCollector:
             trigger=CronTrigger(hour=8, minute=50, day_of_week="mon-fri", timezone=_IST),
             id="overnight_send_report",
             name="Overnight: Pre-Market Report Dispatch",
+        )
+
+        # ── New market data collection jobs ───────────────────────────────
+        # Futures basis collection — every 5 min during market hours
+        self.scheduler.add_job(
+            self.collect_futures_basis,
+            trigger=IntervalTrigger(seconds=300, timezone=_IST),
+            id="collect_futures_basis",
+            name="Collect NIFTY Futures Basis",
+            max_instances=1,
+            coalesce=True,
+        )
+        # IV history snapshot — every 5 min during market hours
+        self.scheduler.add_job(
+            self.collect_iv_history,
+            trigger=IntervalTrigger(seconds=300, timezone=_IST),
+            id="collect_iv_history",
+            name="Collect ATM IV History",
+            max_instances=1,
+            coalesce=True,
+        )
+        # FII futures intraday positions — every 30 min
+        self.scheduler.add_job(
+            self.collect_fii_futures_intraday,
+            trigger=IntervalTrigger(minutes=30, timezone=_IST),
+            id="collect_fii_futures",
+            name="Collect FII Futures Positions",
+            max_instances=1,
+            coalesce=True,
+        )
+        # Market breadth (AD ratio) — every 5 min during market hours
+        self.scheduler.add_job(
+            self.collect_market_breadth,
+            trigger=IntervalTrigger(seconds=300, timezone=_IST),
+            id="collect_market_breadth",
+            name="Collect Market Breadth AD Ratio",
+            max_instances=1,
+            coalesce=True,
+        )
+        # GIFT NIFTY pre-market — runs at 9:00 AM and 9:10 AM
+        self.scheduler.add_job(
+            self.collect_gift_nifty_premarket,
+            trigger=CronTrigger(hour=9, minute=0, timezone=_IST),
+            id="collect_gift_nifty_0900",
+            name="GIFT NIFTY Pre-market 9:00",
+        )
+        self.scheduler.add_job(
+            self.collect_gift_nifty_premarket,
+            trigger=CronTrigger(hour=9, minute=10, timezone=_IST),
+            id="collect_gift_nifty_0910",
+            name="GIFT NIFTY Pre-market 9:10",
         )
 
     # ── Overnight engine hooks ─────────────────────────────────────────────
@@ -505,6 +591,48 @@ class DataCollector:
     def _reset_failure(self, component: str) -> None:
         self._failures[component] = 0
 
+    def refresh_registry_with_stocks(self) -> None:
+        """Fetch priority stocks from FOUniverseManager and register them in IndexRegistry.
+        
+        This makes the Top 15 liquid F&O stocks visible to the collection jobs
+        (price, options) and the decision engine.
+        """
+        if not self.fo_manager:
+            return
+            
+        try:
+            symbols = self.fo_manager.get_priority_symbols()
+            if not symbols:
+                logger.debug("No priority symbols found to refresh registry")
+                return
+                
+            # Fetch stock details from fo_universe table
+            stocks = []
+            for sym in symbols:
+                s = self.db.fetch_one(Q.GET_FO_UNIVERSE_STOCK, (sym,))
+                if s:
+                    stocks.append(s)
+                    
+            if stocks:
+                # Remove old dynamic indices first to keep it clean
+                removed = self.registry.remove_dynamic_indices()
+                count = self.registry.register_stocks_as_indices(stocks)
+                
+                logger.info(
+                    "DataCollector: registry refreshed (%d removed, %d registered)",
+                    removed, count
+                )
+                
+                # Update DataRouter with the new registry view
+                self.data_router.registry = self.registry
+                
+                # If using broker API, we need to re-subscribe to include new stock tokens
+                if self.data_router.is_using_broker_api():
+                    logger.info("DataCollector: re-initializing WebSocket feed for new stocks")
+                    self.data_router._start_websocket_feed()
+        except Exception as exc:
+            logger.error("DataCollector: failed to refresh registry with stocks: %s", exc)
+
     # ── Market-hours guard ─────────────────────────────────────────────────
 
     def _should_run(self) -> bool:
@@ -522,6 +650,7 @@ class DataCollector:
         if status.get("is_holiday") or status.get("is_weekend"):
             logger.info("Skipping pre-market warm-up (holiday / weekend)")
             return
+        GlobalCircuitBreaker.reset_all()
         logger.info("Pre-market warm-up: seeding NSE/BSE sessions")
         try:
             self.nse_scraper.get_all_indices()
@@ -845,6 +974,270 @@ class DataCollector:
 
         except Exception as exc:
             logger.error("FII/DII collection failed: %s", exc)
+
+    def collect_futures_basis(self) -> None:
+        """Collect NIFTY futures LTP and compute basis vs spot price.
+
+        Basis = futures LTP - spot. Positive = contango (bullish).
+        Negative/collapsing = bearish. Stored every 5 minutes.
+        """
+        if not self._should_run():
+            return
+        try:
+            now = datetime.now(tz=_IST)
+            # NIFTY spot
+            spot_data = self.nse_scraper.get_index_quote("NIFTY 50")
+            if not spot_data:
+                return
+            spot = float(spot_data.get("ltp", 0))
+            if spot <= 0:
+                return
+
+            # NIFTY nearest futures (approximate from options chain meta)
+            # Get the nearest expiry futures price from NSE
+            # Try to get NIFTY FUT from equity_fno endpoint
+            fno_data = self.nse_scraper.get_all_fno_quotes()
+            futures_ltp = 0.0
+            expiry_str = ""
+
+            if fno_data:
+                for item in fno_data:
+                    sym = str(item.get("symbol", "")).upper()
+                    if "NIFTY" in sym and "FUT" in sym and "BANK" not in sym:
+                        futures_ltp = float(item.get("ltp", 0))
+                        expiry_str = item.get("expiryDate", "")
+                        if futures_ltp > 0:
+                            break
+
+            # Fallback: estimate futures from options chain (near-ATM CE - PE + spot)
+            if futures_ltp <= 0:
+                futures_ltp = spot  # neutral fallback
+
+            basis = futures_ltp - spot
+            basis_pct = basis / spot * 100 if spot > 0 else 0.0
+
+            # Fair value basis: spot × (1 + risk_free_rate × days_to_expiry/365)
+            # Approximate: risk_free_rate = 7%, find days to expiry
+            days_to_expiry = 7  # default weekly
+            fair_value_basis = spot * 0.07 * days_to_expiry / 365
+
+            # Signal: basis expanding = bullish, collapsing/negative = bearish
+            if basis > fair_value_basis * 1.5:
+                basis_signal = "STRONG_BULLISH"
+            elif basis > 0:
+                basis_signal = "BULLISH"
+            elif basis < -10:
+                basis_signal = "STRONG_BEARISH"
+            elif basis < 0:
+                basis_signal = "BEARISH"
+            else:
+                basis_signal = "NEUTRAL"
+
+            if not self.dry_run:
+                self.db.execute(Q.UPSERT_FUTURES_BASIS, (
+                    now.isoformat(), "NIFTY50",
+                    round(spot, 2), round(futures_ltp, 2),
+                    round(basis, 2), round(basis_pct, 4),
+                    round(fair_value_basis, 2), expiry_str,
+                    days_to_expiry, basis_signal,
+                ))
+            logger.debug("Futures basis: %.1f pts (%s) for NIFTY", basis, basis_signal)
+        except Exception as exc:
+            logger.warning("collect_futures_basis failed: %s", exc)
+
+    def collect_iv_history(self) -> None:
+        """Snapshot ATM IV from the latest options chain for IV percentile tracking.
+
+        Stored every 5 minutes. Used by options_analysis.calculate_iv_percentile().
+        """
+        if not self._should_run():
+            return
+        try:
+            now = datetime.now(tz=_IST)
+            for index_id in ("NIFTY50", "BANKNIFTY"):
+                try:
+                    # Get latest options chain from DB
+                    expiry_rows = self.db.fetch_all(
+                        "SELECT expiry_date FROM options_chain_snapshot WHERE index_id = ? GROUP BY expiry_date ORDER BY expiry_date LIMIT 1",
+                        (index_id,)
+                    )
+                    if not expiry_rows:
+                        continue
+                    expiry = expiry_rows[0]["expiry_date"]
+
+                    # Get ATM strikes
+                    spot_row = self.db.fetch_one(
+                        "SELECT close FROM price_data WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
+                        (index_id,)
+                    )
+                    if not spot_row:
+                        continue
+                    spot = float(spot_row["close"])
+                    interval = 100 if "BANK" in index_id else 50
+                    atm = round(spot / interval) * interval
+
+                    # Get ATM CE and PE IV
+                    rows = self.db.fetch_all(
+                        """SELECT option_type, iv, ltp, open_interest FROM options_chain_snapshot
+                           WHERE index_id = ? AND expiry_date = ? AND strike_price = ?
+                           ORDER BY timestamp DESC LIMIT 2""",
+                        (index_id, expiry, atm)
+                    )
+
+                    ce_iv = pe_iv = 0.0
+                    ce_ltp = pe_ltp = 0.0
+                    total_ce_oi = total_pe_oi = 1.0
+
+                    for row in rows:
+                        if row["option_type"] == "CE":
+                            ce_iv = float(row["iv"] or 0)
+                            ce_ltp = float(row["ltp"] or 0)
+                        else:
+                            pe_iv = float(row["iv"] or 0)
+                            pe_ltp = float(row["ltp"] or 0)
+
+                    atm_iv = (ce_iv + pe_iv) / 2 if (ce_iv or pe_iv) else 0.0
+                    if atm_iv <= 0:
+                        continue
+
+                    # Get total OI for PCR
+                    oi_row = self.db.fetch_one(
+                        "SELECT total_ce_oi, total_pe_oi FROM oi_aggregated WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
+                        (index_id,)
+                    )
+                    if oi_row:
+                        total_ce_oi = float(oi_row["total_ce_oi"] or 1)
+                        total_pe_oi = float(oi_row["total_pe_oi"] or 1)
+
+                    pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0
+                    skew = pe_iv - ce_iv
+                    straddle = ce_ltp + pe_ltp
+
+                    if not self.dry_run:
+                        self.db.execute(Q.UPSERT_IV_HISTORY, (
+                            now.isoformat(), index_id,
+                            round(atm_iv, 4), round(ce_iv, 4), round(pe_iv, 4),
+                            round(pcr, 4), round(skew, 4), round(straddle, 2),
+                        ))
+                    logger.debug("IV snapshot: %s ATM IV=%.1f PCR=%.2f", index_id, atm_iv, pcr)
+                except Exception as e:
+                    logger.debug("IV history snapshot failed for %s: %s", index_id, e)
+        except Exception as exc:
+            logger.warning("collect_iv_history failed: %s", exc)
+
+    def collect_fii_futures_intraday(self) -> None:
+        """Fetch FII net futures positions (intraday — published every 30 min by NSE)."""
+        if not self._should_run():
+            return
+        try:
+            positions = self.fii_dii_fetcher.fetch_futures_participant_positions()
+            if positions:
+                self.fii_dii_fetcher.save_futures_positions_to_db(positions, self.db)
+                logger.debug("FII futures: net=%s trend=%s",
+                           positions.get("fii_net_position"), positions.get("fii_fo_trend"))
+        except Exception as exc:
+            logger.warning("collect_fii_futures_intraday failed: %s", exc)
+
+    def collect_market_breadth(self) -> None:
+        """Collect Advance-Decline ratio from NSE allIndices response.
+
+        The advances/declines data is already in the NSE allIndices API.
+        This stores it separately for signal analysis.
+        """
+        if not self._should_run():
+            return
+        try:
+            now = datetime.now(tz=_IST)
+            raw = self.nse_scraper.get_all_indices()
+            if not raw:
+                return
+
+            # Find NIFTY 50 specifically for breadth (most representative)
+            for entry in raw:
+                sym = str(entry.get("index_name", "")).upper()
+                if sym in ("NIFTY 50", "NIFTY50"):
+                    advances = int(entry.get("advances", 0))
+                    declines = int(entry.get("declines", 0))
+                    unchanged = int(entry.get("unchanged", 0))
+
+                    if advances + declines == 0:
+                        continue
+
+                    ad_ratio = advances / declines if declines > 0 else float(advances)
+
+                    if ad_ratio > 2.5:
+                        breadth_signal = "STRONGLY_BULLISH"
+                    elif ad_ratio > 1.5:
+                        breadth_signal = "BULLISH"
+                    elif ad_ratio < 0.5:
+                        breadth_signal = "STRONGLY_BEARISH"
+                    elif ad_ratio < 0.8:
+                        breadth_signal = "BEARISH"
+                    else:
+                        breadth_signal = "NEUTRAL"
+
+                    if not self.dry_run:
+                        self.db.execute(Q.UPSERT_MARKET_BREADTH, (
+                            now.isoformat(), "NIFTY50",
+                            advances, declines, unchanged,
+                            round(ad_ratio, 4), breadth_signal,
+                        ))
+                    logger.debug("Market breadth: A/D=%.2f (%s)", ad_ratio, breadth_signal)
+                    break
+        except Exception as exc:
+            logger.warning("collect_market_breadth failed: %s", exc)
+
+    def collect_gift_nifty_premarket(self) -> None:
+        """Fetch GIFT NIFTY pre-market price and compute implied gap."""
+        try:
+            now = datetime.now(tz=_IST)
+            gift_data = self.nse_scraper.get_gift_nifty()
+            if not gift_data:
+                logger.info("GIFT NIFTY data not available pre-market")
+                return
+
+            gift_ltp = float(gift_data.get("ltp", 0))
+            if gift_ltp <= 0:
+                return
+
+            # Get previous NIFTY close
+            prev_close_row = self.db.fetch_one(
+                "SELECT close FROM price_data WHERE index_id = 'NIFTY50' AND timeframe = '1d' ORDER BY timestamp DESC LIMIT 1",
+                ()
+            )
+            prev_close = float(prev_close_row["close"]) if prev_close_row else 0.0
+
+            # Compute implied gap
+            implied_gap = gift_ltp - prev_close if prev_close > 0 else 0.0
+            implied_gap_pct = implied_gap / prev_close * 100 if prev_close > 0 else 0.0
+            gap_abs = abs(implied_gap)
+
+            if gap_abs < 30:
+                gap_class = "FLAT_OPEN"
+                wait_15min = 0
+            elif gap_abs < 80:
+                gap_class = "MODERATE_GAP"
+                wait_15min = 0
+            elif gap_abs < 100:
+                gap_class = "LARGE_GAP"
+                wait_15min = 1
+            else:
+                gap_class = "EXTREME_GAP"
+                wait_15min = 1
+
+            if not self.dry_run:
+                self.db.execute(Q.UPSERT_GIFT_NIFTY, (
+                    now.isoformat(), gift_ltp,
+                    round(gift_data.get("change", 0), 2),
+                    round(gift_data.get("change_pct", 0), 4),
+                    round(prev_close, 2),
+                    round(implied_gap, 2),
+                    round(implied_gap_pct, 4),
+                    gap_class, wait_15min,
+                ))
+            logger.info("GIFT NIFTY: %.0f (gap %+.0f pts, %s)", gift_ltp, implied_gap, gap_class)
+        except Exception as exc:
+            logger.warning("collect_gift_nifty_premarket failed: %s", exc)
 
     def update_historical(self) -> None:
         """18:30 IST — fill any gaps in daily candle data."""

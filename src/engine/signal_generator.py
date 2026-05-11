@@ -103,6 +103,11 @@ class TradingSignal:
     is_hero_zero: bool = False
     hero_zero_result: Optional[object] = None  # HeroZeroResult (avoid circular import)
 
+    # Strike selection (populated by DecisionEngine._select_optimal_strike)
+    recommended_strike: Optional[float] = None   # Optimal strike price (~0.4 delta)
+    recommended_delta: float = 0.0               # Approximate delta of recommended strike
+    recommended_expiry: Optional[str] = None     # Nearest expiry date string
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -152,12 +157,12 @@ _VOTE_NUMERIC: dict[str, float] = {
 }
 
 # Attribute name on SignalWeights for each component
+# News engine excluded: adds lag, not edge. Weight redistributed to options + smart_money.
 _WEIGHT_ATTR: dict[str, str] = {
     "trend": "trend_weight",
     "momentum": "momentum_weight",
     "options": "options_weight",
     "volume": "volume_weight",
-    "news": "news_weight",
     "smart_money": "smart_money_weight",
     "anomaly": "anomaly_weight",
 }
@@ -246,6 +251,7 @@ class SignalGenerator:
 
     def __init__(self, db: DatabaseManager) -> None:
         self._db = db
+        self._lock = threading.Lock()
 
         # Minimum confidence thresholds (could be loaded from settings)
         self._min_conf_high = _CONF_HIGH
@@ -257,8 +263,20 @@ class SignalGenerator:
         self._today_signals: dict[str, list[TradingSignal]] = {}
         self._today_date: Optional[str] = None  # "YYYY-MM-DD" IST
 
+        # Dynamic whitelist for F&O stocks (top priority symbols)
+        self._dynamic_allowed_symbols: set[str] = set()
+
         # Deduplication — suppress duplicate signals within a 5-minute window
         self.deduplicator = SignalDeduplicator(window_seconds=300)
+
+    def add_allowed_symbol(self, symbol: str) -> None:
+        """Dynamically whitelist a symbol for signal generation.
+        
+        This allows F&O stocks from the priority watchlist to pass the
+        safety gate that usually restricts signals to major indices.
+        """
+        with self._lock:
+            self._dynamic_allowed_symbols.add(symbol.upper())
 
     # ------------------------------------------------------------------
     # Public API
@@ -327,7 +345,9 @@ class SignalGenerator:
         votes = self._collect_votes(technical, news, anomaly, adj_weights)
 
         # ── Step 3: Weighted Score ─────────────────────────────────────
-        weighted_score = self._calculate_weighted_score(votes, regime)
+        tf_confluence = getattr(technical, "timeframe_confluence_score", 0.0) or 0.0
+        tf_agreement_val = getattr(technical, "tf_agreement", "UNKNOWN") or "UNKNOWN"
+        weighted_score = self._calculate_weighted_score(votes, regime, tf_confluence, tf_agreement_val)
 
         # ── Special overrides applied to the score ─────────────────────
         weighted_score, div_warns = self._apply_divergence_override(
@@ -336,6 +356,20 @@ class SignalGenerator:
         warnings.extend(div_warns)
 
         gap_score, gap_warns = self._apply_gap_fill_override(weighted_score, anomaly)
+
+        # Enhanced gap fill: strengthen bias when gap is large (> 50 pts = 70% fill probability)
+        if anomaly is not None:
+            msg = (anomaly.primary_alert_message or "").upper()
+            if "LARGE_GAP" in msg or "EXTREME_GAP" in msg:
+                # Large gaps have strong fill probability — apply additional bias
+                # Only when the gap_score is still below the strong-signal threshold
+                if abs(gap_score) < 1.0:
+                    if "GAP_UP" in msg or "GAP UP" in msg:
+                        gap_score -= 0.15  # Strong bearish fill bias for large gap up
+                        gap_warns.append("Large gap-up: strong gap fill bias (70%+ fill probability)")
+                    elif "GAP_DOWN" in msg or "GAP DOWN" in msg:
+                        gap_score += 0.15  # Strong bullish fill bias for large gap down
+                        gap_warns.append("Large gap-down: strong gap fill bias (70%+ fill probability)")
 
         # ── Step 4: Direction ──────────────────────────────────────────
         direction = self._determine_direction(weighted_score, regime.regime)
@@ -377,14 +411,14 @@ class SignalGenerator:
         warnings.extend(self._smart_money_warnings(direction, technical))
         warnings.extend(self._expiry_warnings(direction, technical, regime, now))
 
-        # Conflicting signals check disabled for backtesting
-        # if self._has_conflicting_strong_signals(votes):
-        #     return self._make_no_trade(
-        #         index_id, now,
-        #         "Conflicting strong signals detected — direction unclear",
-        #         regime, technical, news, anomaly, warnings,
-        #         weighted_score=weighted_score,
-        #     )
+        # Re-enabled: conflicting strong signals = direction unclear = NO_TRADE
+        if self._has_conflicting_strong_signals(votes):
+            return self._make_no_trade(
+                index_id, now,
+                "Conflicting strong signals detected — direction unclear",
+                regime, technical, news, anomaly, warnings,
+                weighted_score=weighted_score,
+            )
 
         # ── Cooldown: recent duplicate signal within 15 min ────────────
         self._check_cooldown(index_id, direction, now, warnings)
@@ -393,6 +427,17 @@ class SignalGenerator:
         entry_price, target_price, stop_loss, rr_ratio = self._calculate_levels(
             direction, current_spot_price, technical, regime, confidence_level,
         )
+
+        # ── R:R Gate — reject signals with insufficient risk/reward ────
+        min_rr = getattr(settings, 'signal', None)
+        min_rr_ratio = 1.3  # minimum 1:1.3
+        if rr_ratio < min_rr_ratio:
+            return self._make_no_trade(
+                index_id, now,
+                f"Insufficient R:R ({rr_ratio:.2f} < {min_rr_ratio:.2f} minimum) — skip",
+                regime, technical, news, anomaly, warnings,
+                weighted_score=weighted_score,
+            )
 
         # ── Position sizing ────────────────────────────────────────────
         pos_mod, lot_count, max_loss, max_profit = self._position_sizing(
@@ -436,6 +481,15 @@ class SignalGenerator:
             data_completeness=round(data_completeness, 4),
             signals_generated_today=today_count + 1,
         )
+
+        # Attach recommended expiry from options chain if available
+        if signal.signal_type in ("BUY_CALL", "BUY_PUT") and technical.options is not None:
+            try:
+                expiry = getattr(technical.options, "expiry_date", None)
+                if expiry:
+                    object.__setattr__(signal, "recommended_expiry", str(expiry))
+            except (AttributeError, TypeError):
+                pass
 
         # ── Deduplication check ───────────────────────────────────────
         if signal.signal_type != "NO_TRADE":
@@ -529,11 +583,15 @@ class SignalGenerator:
                 regime, technical, news, anomaly, warnings,
             )
 
-        # Whitelist top performers: BANKNIFTY (9.5%), NIFTY50 (6.3%)
-        allowed_indices = {"BANKNIFTY", "NIFTY50"}
+        # Whitelist top performers: BANKNIFTY, NIFTY50, FINNIFTY, MIDCPNIFTY
+        # Plus any dynamically allowed priority stocks from F&O Universe
+        allowed_indices = {"BANKNIFTY", "NIFTY50", "FINNIFTY", "MIDCPNIFTY"}
+        with self._lock:
+            allowed_indices.update(self._dynamic_allowed_symbols)
+
         if index_id not in allowed_indices:
             return self._make_no_trade(
-                index_id, now, f"Index {index_id} rejected — BANKNIFTY/NIFTY50 only",
+                index_id, now, f"Index {index_id} rejected — restricted universe only",
                 regime, technical, news, anomaly, warnings,
             )
 
@@ -565,6 +623,33 @@ class SignalGenerator:
                 regime, technical, news, anomaly, warnings,
             )
 
+        # Expiry day: no new long option positions after 2:30 PM (theta acceleration)
+        if self._is_expiry_day(now):
+            if now.hour > 14 or (now.hour == 14 and now.minute >= 30):
+                return self._make_no_trade(
+                    index_id, now,
+                    "Expiry day: no new entries after 14:30 — theta acceleration risk",
+                    regime, technical, news, anomaly, warnings,
+                )
+
+        # GIFT NIFTY large gap: enforce no-trade for first 15 min
+        if self._is_in_opening_window(now):
+            try:
+                gap_row = self._db.fetch_one(
+                    "SELECT wait_15min, gap_classification, implied_gap_pts FROM gift_nifty ORDER BY timestamp DESC LIMIT 1",
+                    ()
+                )
+                if gap_row and int(gap_row.get("wait_15min", 0)):
+                    gap_pts = gap_row.get("implied_gap_pts", 0)
+                    gap_cls = gap_row.get("gap_classification", "")
+                    return self._make_no_trade(
+                        index_id, now,
+                        f"Large gap open ({gap_cls}, {gap_pts:+.0f} pts) — wait 15 min before first entry",
+                        regime, technical, news, anomaly, warnings,
+                    )
+            except Exception:
+                pass  # Non-fatal — proceed without the gap check
+
         return None
 
     @staticmethod
@@ -573,6 +658,22 @@ class SignalGenerator:
         h, m = settings.market_hours.market_close.split(":")
         close = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
         return now >= close - timedelta(minutes=minutes)
+
+    @staticmethod
+    def _is_expiry_day(now: datetime) -> bool:
+        """Return True if today is a weekly options expiry day.
+
+        Checks NSE weekly expiry schedule: NIFTY=Thursday, BANKNIFTY=Wednesday,
+        FINNIFTY/SENSEX/MIDCPNIFTY=Tuesday. Returns True if any major index expires today.
+        """
+        weekday = now.weekday()  # 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday
+        # Any of Tuesday (1), Wednesday (2), or Thursday (3) can be expiry
+        return weekday in (1, 2, 3)
+
+    @staticmethod
+    def _is_in_opening_window(now: datetime) -> bool:
+        """Return True if within the first 15 minutes after market open (9:15–9:30)."""
+        return now.hour == 9 and 15 <= now.minute < 30
 
     # ------------------------------------------------------------------
     # Step 2 — Vote Collection
@@ -589,8 +690,6 @@ class SignalGenerator:
             available.add("options")
         if technical.smart_money is not None:
             available.add("smart_money")
-        if news is not None:
-            available.add("news")
         if anomaly is not None:
             available.add("anomaly")
         return available
@@ -635,12 +734,6 @@ class SignalGenerator:
                 technical.smart_money.confidence,
                 weights.smart_money_weight,
             )
-        if news is not None:
-            v["news"] = (
-                num(news.vote),
-                news.confidence,
-                weights.news_weight,
-            )
         if anomaly is not None:
             v["anomaly"] = (
                 num(anomaly.vote),
@@ -657,6 +750,8 @@ class SignalGenerator:
     def _calculate_weighted_score(
         votes: dict[str, tuple[float, float, float]],
         regime: MarketRegime,
+        tf_confluence_score: float = 0.0,
+        tf_agreement: str = "UNKNOWN",
     ) -> float:
         """Compute the regime-adjusted weighted score.
 
@@ -688,6 +783,15 @@ class SignalGenerator:
         if regime_name == "RANGE_BOUND" and abs(raw) > 1.5:
             raw = raw - 0.2 * (1.0 if raw > 0 else -1.0)
 
+        # Multi-timeframe confluence adjustment
+        # MIXED TFs dampen (conflicting signal), ALIGNED boost
+        if tf_agreement == "ALIGNED_BULL" and raw > 0:
+            raw = raw * 1.12  # 12% boost when higher TF confirms bullish
+        elif tf_agreement == "ALIGNED_BEAR" and raw < 0:
+            raw = raw * 1.12  # 12% boost when higher TF confirms bearish
+        elif tf_agreement == "MIXED" and abs(raw) > 0:
+            raw = raw * 0.75  # 25% dampen for conflicting timeframes
+
         return raw
 
     # ------------------------------------------------------------------
@@ -704,8 +808,14 @@ class SignalGenerator:
             call_thresh = _SCORE_CALL_THRESHOLD
             put_thresh = _SCORE_PUT_THRESHOLD
 
-        # Regime-aware direction: allow BUY_CALL in strong uptrends, otherwise PUT
-        if score >= call_thresh and regime in ("STRONG_TREND_UP", "TREND_UP"):
+        # Symmetric direction logic — both BUY_CALL and BUY_PUT apply in all regimes
+        # Exception: CRASH regime — only BUY_PUT allowed (never buy calls in a crash)
+        if regime == "CRASH":
+            if score <= put_thresh:
+                return "BUY_PUT"
+            return "NO_TRADE"
+
+        if score >= call_thresh:
             return "BUY_CALL"
         if score <= put_thresh:
             return "BUY_PUT"
@@ -862,6 +972,14 @@ class SignalGenerator:
         if news and news.active_article_count <= 2:
             adj -= 0.05
 
+        # BankNIFTY/NIFTY divergence: if they diverge strongly, reduce confidence
+        if any("BANKNIFTY_LAGGING" in w for w in (getattr(regime, "warnings", []) or [])):
+            if direction == "BUY_CALL":
+                adj -= 0.06  # BankNIFTY lagging while trying to call = weak rally
+        if any("BANKNIFTY_LEADING_BULL" in w for w in (getattr(regime, "warnings", []) or [])):
+            if direction == "BUY_CALL":
+                adj += 0.04  # BankNIFTY leading = strong financial sector = bullish confirmation
+
         # Penalty per missing data source — only count sources expected in this mode.
         # TECHNICAL_ONLY: options and news are intentionally absent, no penalty.
         # TECHNICAL_OPTIONS: news is intentionally absent; penalise missing options.
@@ -880,6 +998,34 @@ class SignalGenerator:
                 technical.smart_money is None,
             ])
         adj -= 0.05 * missing
+
+        # IV strategy bias: penalise buying options when IV is expensive
+        if technical.options is not None:
+            iv_bias = getattr(technical.options, "iv_strategy_bias", "NEUTRAL") or "NEUTRAL"
+            if iv_bias == "SELL_PREMIUM" and is_bullish is not None:
+                # IVP > 75%: options buyers face IV crush risk
+                adj -= 0.12
+                warnings.append(
+                    "IV expensive (IVP >75%) — buying options has IV crush risk; "
+                    "consider selling premium instead"
+                )
+            elif iv_bias == "BUY_OPTIONS":
+                # IVP < 25%: options are cheap, buying is favorable
+                adj += 0.05
+                warnings.append("IV cheap (IVP <25%) — low cost for option buyers")
+
+        # VIX regime strategy mode from regime description
+        regime_desc = getattr(regime, "description", "") or ""
+        if "SELL_PREMIUM" in regime_desc:
+            # VIX > 20: expensive options → penalise directional buying
+            adj -= 0.08
+            warnings.append(
+                "VIX elevated — sell premium strategies preferred; "
+                "directional buying confidence reduced"
+            )
+        elif "BUY options preferred" in regime_desc:
+            # VIX < 14: cheap options → slight boost for buyers
+            adj += 0.03
 
         score = max(_CONF_FLOOR, min(_CONF_CEILING, base + adj))
 
@@ -921,6 +1067,24 @@ class SignalGenerator:
             support = entry_price * 0.98   # fallback: 2% below entry
         if not resistance or not math.isfinite(resistance) or resistance <= 0:
             resistance = entry_price * 1.02  # fallback: 2% above entry
+
+        # Override S/R with OI walls when available — they are stronger levels
+        if technical.options is not None:
+            ce_wall = getattr(technical.options, "nearest_ce_wall", 0.0) or 0.0
+            pe_wall = getattr(technical.options, "nearest_pe_wall", 0.0) or 0.0
+
+            if direction == "BUY_CALL":
+                # Use PE wall as stop (strongest support), CE wall as target cap
+                if pe_wall > 0 and pe_wall < entry_price:
+                    support = max(support, pe_wall)  # Use the stronger of S/R and PE wall
+                if ce_wall > 0 and ce_wall > entry_price:
+                    resistance = min(resistance, ce_wall)  # Cap target at CE wall
+            else:  # BUY_PUT
+                # Use CE wall as stop (strongest resistance), PE wall as target cap
+                if ce_wall > 0 and ce_wall > entry_price:
+                    resistance = min(resistance, ce_wall)
+                if pe_wall > 0 and pe_wall < entry_price:
+                    support = max(support, pe_wall)
 
         # Use S/R directly with small buffer; ATR for target distance (profit taking)
         sr_buffer_pct = 0.002  # 0.2% buffer below support / above resistance
@@ -1065,6 +1229,23 @@ class SignalGenerator:
         ]
 
     @staticmethod
+    def _get_orb_context(
+        current_price: float,
+        technical: TechnicalAnalysisResult,
+    ) -> Optional[str]:
+        """Return ORB breakout context if available in technical result."""
+        # Check if technical result carries ORB data (populated by data layer)
+        orb_high = getattr(technical, 'orb_high', None)
+        orb_low = getattr(technical, 'orb_low', None)
+        if not orb_high or not orb_low:
+            return None
+        if current_price > orb_high:
+            return f"Price {current_price:.0f} above ORB high {orb_high:.0f} — breakout confirmed"
+        if current_price < orb_low:
+            return f"Price {current_price:.0f} below ORB low {orb_low:.0f} — breakdown confirmed"
+        return f"Price {current_price:.0f} inside ORB ({orb_low:.0f}–{orb_high:.0f}) — no breakout yet"
+
+    @staticmethod
     def _has_conflicting_strong_signals(
         votes: dict[str, tuple[float, float, float]],
     ) -> bool:
@@ -1119,7 +1300,6 @@ class SignalGenerator:
             momentum_weight=weights.momentum_weight if "momentum" in available_components else 0.0,
             options_weight=weights.options_weight if "options" in available_components else 0.0,
             volume_weight=weights.volume_weight if "volume" in available_components else 0.0,
-            news_weight=weights.news_weight if "news" in available_components else 0.0,
             smart_money_weight=(
                 weights.smart_money_weight if "smart_money" in available_components else 0.0
             ),

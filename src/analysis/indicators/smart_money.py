@@ -557,7 +557,7 @@ class SmartMoneyIndicators:
             historical_percentile=round(rank, 2)
         )
 
-    def calculate_smart_money_score(self, df: pd.DataFrame, oi_data: Optional[list[dict]] = None, support: Optional[float] = None, resistance: Optional[float] = None, rsi_data: Optional[pd.Series] = None) -> SmartMoneyScore:
+    def calculate_smart_money_score(self, df: pd.DataFrame, oi_data: Optional[list[dict]] = None, support: Optional[float] = None, resistance: Optional[float] = None, rsi_data: Optional[pd.Series] = None, fii_futures_net: Optional[float] = None) -> SmartMoneyScore:
         """Combine ALL custom indicators into one actionable score."""
         clean = _prepare_df(df)
         
@@ -617,8 +617,16 @@ class SmartMoneyIndicators:
             else: btd_comp = 0
         else: btd_comp = 0
         
-        # OIMI
+        # OIMI — base score from internal OI/price data
         oimi_comp = oimi_res.oimi if oimi_res else 0.0
+
+        # FII futures net position boost — the most reliable institutional signal
+        # FII is the dominant smart money in Indian markets. Net long > 10000 contracts
+        # = strong institutional conviction. Adjusts OIMI toward their positioning.
+        if fii_futures_net is not None and abs(fii_futures_net) >= 5000:
+            # Scale: 5000 contracts = ±15 pts, 20000 contracts = ±40 pts (capped)
+            fii_boost = min(40.0, abs(fii_futures_net) / 500.0) * (1 if fii_futures_net > 0 else -1)
+            oimi_comp = max(-100.0, min(100.0, oimi_comp + fii_boost))
         
         # LAI
         if lai_res.absorption_detected:
@@ -635,6 +643,7 @@ class SmartMoneyIndicators:
         if btd_res and btd_res.breakout_detected: data_count += 1
         if oimi_res and not oimi_res.oimi_series.empty: data_count += 1
         if not lai_res.lai.empty: data_count += 1
+        if fii_futures_net is not None: data_count += 1
         
         # Adjust weights if data is missing
         if oimi_res is None or oimi_res.oimi_series.empty:
@@ -685,7 +694,15 @@ class SmartMoneyIndicators:
         if lai_res.absorption_detected: findings.append(f"{lai_res.absorption_type.replace('_', ' ').lower()}")
         
         key_finding = ", ".join(findings) if findings else "Mixed institutional signals"
-        
+
+        # Append FII positioning context to key finding
+        if fii_futures_net is not None and abs(fii_futures_net) >= 5000:
+            fii_direction = "net long" if fii_futures_net > 0 else "net short"
+            key_finding = (
+                f"{key_finding}; FII futures {fii_direction} "
+                f"({abs(fii_futures_net):,.0f} contracts)"
+            )
+
         if final_score > 30: insight = "Favor CALL entries"
         elif final_score < -30: insight = "Favor PUT entries"
         else: insight = "Stay cautious"
@@ -704,6 +721,6 @@ class SmartMoneyIndicators:
             smart_money_bias=bias,
             key_finding=key_finding,
             actionable_insight=insight,
-            data_completeness=data_count / 5.0,
+            data_completeness=data_count / 6.0,
             confidence=confidence
         )

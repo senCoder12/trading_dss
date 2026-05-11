@@ -8,16 +8,15 @@ import { RefreshIndicator } from '../common/RefreshIndicator';
 import { FlashPrice } from '../common/FlashPrice';
 import { IndexDetail } from './IndexDetail';
 import { OptionsHeatmap } from './OptionsHeatmap';
-import { TechnicalView } from './TechnicalView';
+import PriceChart from '../chart/PriceChart';
+import ChartControls from '../chart/ChartControls';
 import { formatPrice, formatPercentage } from '../../utils/formatters';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
-
-const TF_OPTIONS = ['1m', '5m', '15m', '1h', '1d'];
-const HIST_DAYS = { '1m': 1, '5m': 3, '15m': 7, '1h': 14, '1d': 30 };
 
 export default function MarketPage() {
   const [selectedIndex, setSelectedIndex] = useState(null);
   const [tf, setTf] = useState('1d');
+  const [indicators, setIndicators] = useState(['ema20', 'ema50']);
 
   // Live prices from shared store (fed by WS ticks + 30s polling fallback)
   const { prices: { data, loading, error, lastUpdated } } = useDataStore();
@@ -77,23 +76,21 @@ export default function MarketPage() {
           </Card>
 
           <Card title={`${active} · Price Chart`} padding={false}>
-            <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
-              {TF_OPTIONS.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTf(t)}
-                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                    tf === t
-                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-            <div className="p-4">
-              <TechnicalView key={`${active}-${tf}`} indexId={active} days={HIST_DAYS[tf]} timeframe={tf} />
+            <ChartControls
+              timeframe={tf}
+              onTimeframeChange={setTf}
+              indicators={indicators}
+              onIndicatorsChange={setIndicators}
+            />
+            <div className="p-2">
+              <PriceChart
+                indexId={active}
+                height={360}
+                timeframe={tf}
+                indicators={indicators}
+                showVolume
+                showSignalMarkers
+              />
             </div>
           </Card>
         </div>

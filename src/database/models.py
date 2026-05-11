@@ -737,6 +737,64 @@ TABLE_DDL: dict[str, list[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS idx_fo_snapshots_date ON fo_universe_snapshots (date)",
     ],
+
+    # ── GEX snapshots ─────────────────────────────────────────────────────
+    "gex_snapshots": [
+        """
+        CREATE TABLE IF NOT EXISTS gex_snapshots (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol           TEXT    NOT NULL,
+            timestamp        TEXT    NOT NULL,
+            spot_price       REAL    NOT NULL,
+            net_gex          REAL    NOT NULL DEFAULT 0,
+            call_wall        REAL,
+            put_wall         REAL,
+            flip_point       REAL    NOT NULL DEFAULT 0,
+            regime           TEXT    NOT NULL DEFAULT 'NEUTRAL_GEX',
+            regime_strength  REAL    NOT NULL DEFAULT 0,
+            gex_change_30min REAL    NOT NULL DEFAULT 0,
+            date             TEXT    NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_gex_snap_sym_ts ON gex_snapshots (symbol, timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_gex_snap_date   ON gex_snapshots (date)",
+    ],
+
+    # ── GEX per-strike data ───────────────────────────────────────────────
+    "gex_strike_data": [
+        """
+        CREATE TABLE IF NOT EXISTS gex_strike_data (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL REFERENCES gex_snapshots(id) ON DELETE CASCADE,
+            strike      REAL    NOT NULL,
+            expiry      TEXT    NOT NULL,
+            ce_oi       INTEGER NOT NULL DEFAULT 0,
+            ce_iv       REAL    NOT NULL DEFAULT 0,
+            ce_gex      REAL    NOT NULL DEFAULT 0,
+            pe_oi       INTEGER NOT NULL DEFAULT 0,
+            pe_iv       REAL    NOT NULL DEFAULT 0,
+            pe_gex      REAL    NOT NULL DEFAULT 0,
+            net_gex     REAL    NOT NULL DEFAULT 0
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_gex_strike_snap ON gex_strike_data (snapshot_id)",
+    ],
+
+    # ── GEX wall breaks ───────────────────────────────────────────────────
+    "gex_wall_breaks": [
+        """
+        CREATE TABLE IF NOT EXISTS gex_wall_breaks (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol           TEXT    NOT NULL,
+            wall_type        TEXT    NOT NULL,
+            wall_price       REAL    NOT NULL,
+            break_time       TEXT    NOT NULL,
+            volume_confirmed INTEGER NOT NULL DEFAULT 0,
+            date             TEXT    NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_gex_wb_sym_date ON gex_wall_breaks (symbol, date)",
+    ],
 }
 
 # Ordered list of table names to ensure FK-safe creation order
@@ -759,6 +817,9 @@ TABLE_CREATION_ORDER: list[str] = [
     "fo_avg_volumes",
     "fo_daily_scores",
     "fo_universe_snapshots",
+    "gex_snapshots",
+    "gex_strike_data",
+    "gex_wall_breaks",
 ]
 
 
@@ -869,5 +930,21 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
         "price_move_score": "REAL", "iv_change_score": "REAL",
         "spread_score": "REAL", "total_oi": "INTEGER",
         "volume_ratio": "REAL", "timestamp": "TEXT",
+    },
+    "gex_snapshots": {
+        "id": "INTEGER", "symbol": "TEXT", "timestamp": "TEXT",
+        "spot_price": "REAL", "net_gex": "REAL", "call_wall": "REAL",
+        "put_wall": "REAL", "flip_point": "REAL", "regime": "TEXT",
+        "regime_strength": "REAL", "gex_change_30min": "REAL", "date": "TEXT",
+    },
+    "gex_strike_data": {
+        "id": "INTEGER", "snapshot_id": "INTEGER", "strike": "REAL",
+        "expiry": "TEXT", "ce_oi": "INTEGER", "ce_iv": "REAL", "ce_gex": "REAL",
+        "pe_oi": "INTEGER", "pe_iv": "REAL", "pe_gex": "REAL", "net_gex": "REAL",
+    },
+    "gex_wall_breaks": {
+        "id": "INTEGER", "symbol": "TEXT", "wall_type": "TEXT",
+        "wall_price": "REAL", "break_time": "TEXT",
+        "volume_confirmed": "INTEGER", "date": "TEXT",
     },
 }

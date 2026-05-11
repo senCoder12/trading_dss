@@ -216,6 +216,23 @@ class OptionsSummary:
     # Warnings / notes
     warnings: list[str] = field(default_factory=list)
 
+    # Advanced analytics (from run_advanced_options_analytics)
+    gex: float = 0.0
+    gex_regime: str = "NEUTRAL"           # "RANGEBOUND" / "TRENDING" / "NEUTRAL"
+    iv_percentile: float = 50.0
+    iv_rank: float = 50.0
+    iv_strategy_bias: str = "NEUTRAL"     # "BUY_OPTIONS" / "SELL_PREMIUM" / "NEUTRAL"
+    atm_straddle_price: float = 0.0
+    expected_daily_move_pct: float = 0.0
+    uoa_direction: str = "NONE"           # "BULLISH" / "BEARISH" / "MIXED" / "NONE"
+    uoa_strikes: list = field(default_factory=list)
+    nearest_ce_wall: float = 0.0          # Nearest massive CE OI resistance above spot
+    nearest_pe_wall: float = 0.0          # Nearest massive PE OI support below spot
+    ce_wall_strikes: list = field(default_factory=list)
+    pe_wall_strikes: list = field(default_factory=list)
+    put_call_skew: float = 0.0            # ATM PE IV - CE IV (positive = put skew)
+    skew_regime: str = "BALANCED"         # "PUT_SKEW" / "CALL_SKEW" / "BALANCED"
+
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -797,6 +814,7 @@ class OptionsIndicators:
         chain,
         iv_history: Optional[list[float]] = None,
         previous_max_pain: Optional[float] = None,
+        advanced_metrics=None,   # AdvancedOptionsMetrics from options_analysis.py
     ) -> Optional[OptionsSummary]:
         """Produce a composite options summary from all sub-indicators.
 
@@ -851,15 +869,46 @@ class OptionsIndicators:
 
         # IV Rank (optional)
         iv_regime: Optional[str] = None
+        iv_rank_pct = 50.0
+        iv_percentile_from_rank = 50.0
         if iv_history is not None:
             iv_rank_result = self.calculate_iv_rank(iv_analysis.atm_iv, iv_history)
             if iv_rank_result is not None:
                 iv_regime = iv_rank_result.iv_regime
+                iv_rank_pct = iv_rank_result.iv_rank
+                iv_percentile_from_rank = iv_rank_result.iv_percentile
         else:
             warnings_list.append("No IV history provided — IV regime unavailable.")
 
         # --- Days to expiry ---
         days_to_expiry = _calculate_days_to_expiry(chain.expiry_date)
+
+        # --- Advanced metrics defaults (initialised before voting so they are
+        #     always available for the return statement regardless of branch) ---
+        adv_gex = 0.0
+        adv_gex_regime = "NEUTRAL"
+        adv_iv_percentile = 50.0
+        adv_iv_rank = 50.0
+        adv_iv_strategy_bias = "NEUTRAL"
+        adv_straddle = 0.0
+        adv_expected_move_pct = 0.0
+        adv_uoa_direction = "NONE"
+        adv_uoa_strikes: list = []
+        adv_nearest_ce_wall = 0.0
+        adv_nearest_pe_wall = 0.0
+        adv_ce_walls: list = []
+        adv_pe_walls: list = []
+        adv_put_call_skew = 0.0
+        adv_skew_regime = "BALANCED"
+
+        # Seed IV rank/percentile from iv_history if advanced_metrics is absent
+        if advanced_metrics is None and iv_history is not None:
+            adv_iv_percentile = iv_percentile_from_rank
+            adv_iv_rank = iv_rank_pct
+            if adv_iv_percentile >= 75:
+                adv_iv_strategy_bias = "SELL_PREMIUM"
+            elif adv_iv_percentile <= 25:
+                adv_iv_strategy_bias = "BUY_OPTIONS"
 
         # --- Voting ---
         score = 0.0
@@ -909,6 +958,72 @@ class OptionsIndicators:
             score += 0.5
             warnings_list.append("High IV skew: puts are expensive — contrarian bullish signal.")
 
+        # ── Advanced Metrics Votes (when available) ────────────────────────
+        if advanced_metrics is not None:
+            try:
+                adv_gex = float(getattr(advanced_metrics, "gex", 0.0) or 0.0)
+                adv_gex_regime = getattr(advanced_metrics, "gex_regime", "NEUTRAL") or "NEUTRAL"
+                adv_iv_percentile = float(getattr(advanced_metrics, "iv_percentile", 50.0) or 50.0)
+                adv_iv_rank = float(getattr(advanced_metrics, "iv_rank", 50.0) or 50.0)
+                adv_iv_strategy_bias = getattr(advanced_metrics, "iv_strategy_bias", "NEUTRAL") or "NEUTRAL"
+                adv_straddle = float(getattr(advanced_metrics, "atm_straddle_price", 0.0) or 0.0)
+                adv_expected_move_pct = float(getattr(advanced_metrics, "expected_daily_move", 0.0) or 0.0)
+                adv_uoa_direction = getattr(advanced_metrics, "uoa_direction", "NONE") or "NONE"
+                adv_uoa_strikes = list(getattr(advanced_metrics, "uoa_strikes", []) or [])
+                adv_nearest_ce_wall = float(getattr(advanced_metrics, "nearest_ce_wall", 0.0) or 0.0)
+                adv_nearest_pe_wall = float(getattr(advanced_metrics, "nearest_pe_wall", 0.0) or 0.0)
+                adv_ce_walls = list(getattr(advanced_metrics, "ce_wall_strikes", []) or [])
+                adv_pe_walls = list(getattr(advanced_metrics, "pe_wall_strikes", []) or [])
+                adv_put_call_skew = float(getattr(advanced_metrics, "put_call_skew", 0.0) or 0.0)
+                adv_skew_regime = getattr(advanced_metrics, "skew_regime", "BALANCED") or "BALANCED"
+
+                # GEX regime vote: positive GEX = rangebound = dampen directional signal
+                if adv_gex_regime == "RANGEBOUND":
+                    score *= 0.7  # Dampen existing score — market makers will pin price
+                    warnings_list.append("GEX positive (rangebound) — dealer hedging dampens directional move")
+                elif adv_gex_regime == "TRENDING":
+                    score *= 1.15  # Amplify — GEX negative means dealers amplify moves
+                    warnings_list.append("GEX negative (trending) — dealer flow amplifies directional move")
+
+                # UOA: unusual options activity
+                if adv_uoa_direction == "BULLISH":
+                    score += 1.0
+                    warnings_list.append(f"UOA: unusual bullish activity at {len(adv_uoa_strikes)} strikes")
+                elif adv_uoa_direction == "BEARISH":
+                    score -= 1.0
+                    warnings_list.append(f"UOA: unusual bearish activity at {len(adv_uoa_strikes)} strikes")
+
+                # OI walls: proximity adjustment
+                if spot_price > 0:
+                    if adv_nearest_ce_wall > 0:
+                        dist_to_ce_wall = (adv_nearest_ce_wall - spot_price) / spot_price * 100
+                        if 0 < dist_to_ce_wall < 0.5:
+                            score -= 0.5  # Hitting resistance wall = bearish friction
+                            warnings_list.append(f"CE wall at {adv_nearest_ce_wall:.0f} — {dist_to_ce_wall:.2f}% above spot, resistance likely")
+                    if adv_nearest_pe_wall > 0:
+                        dist_to_pe_wall = (spot_price - adv_nearest_pe_wall) / spot_price * 100
+                        if 0 < dist_to_pe_wall < 0.5:
+                            score += 0.5  # Resting on support wall = bullish
+                            warnings_list.append(f"PE wall at {adv_nearest_pe_wall:.0f} — support {dist_to_pe_wall:.2f}% below spot")
+
+                # IV percentile: adjust confidence direction
+                # High IVP = options expensive = mean reversion risk for buyers
+                if adv_iv_percentile >= 75:
+                    warnings_list.append(f"IV Percentile {adv_iv_percentile:.0f}% — options expensive, buyers face IV crush risk")
+                elif adv_iv_percentile <= 25:
+                    warnings_list.append(f"IV Percentile {adv_iv_percentile:.0f}% — options cheap, low risk for option buyers")
+
+                # Put-call skew: deep put skew = institutional hedging = usually pre-crash
+                if adv_skew_regime == "PUT_SKEW" and adv_put_call_skew > 3.0:
+                    score -= 0.5
+                    warnings_list.append(f"Strong put skew ({adv_put_call_skew:.1f}) — institutional downside hedging")
+                elif adv_skew_regime == "CALL_SKEW" and adv_put_call_skew < -3.0:
+                    score += 0.5
+                    warnings_list.append(f"Unusual call skew ({adv_put_call_skew:.1f}) — institutional upside positioning")
+
+            except Exception as _adv_e:
+                logger.debug("Advanced metrics integration failed: %s", _adv_e)
+
         # --- Vote mapping ---
         if score >= 3.0:
             options_vote, base_confidence = "STRONG_BULLISH", 0.85
@@ -943,4 +1058,19 @@ class OptionsIndicators:
             options_vote=options_vote,
             options_confidence=options_confidence,
             warnings=warnings_list,
+            gex=adv_gex,
+            gex_regime=adv_gex_regime,
+            iv_percentile=adv_iv_percentile,
+            iv_rank=adv_iv_rank,
+            iv_strategy_bias=adv_iv_strategy_bias,
+            atm_straddle_price=adv_straddle,
+            expected_daily_move_pct=adv_expected_move_pct,
+            uoa_direction=adv_uoa_direction,
+            uoa_strikes=adv_uoa_strikes,
+            nearest_ce_wall=adv_nearest_ce_wall,
+            nearest_pe_wall=adv_nearest_pe_wall,
+            ce_wall_strikes=adv_ce_walls,
+            pe_wall_strikes=adv_pe_walls,
+            put_call_skew=adv_put_call_skew,
+            skew_regime=adv_skew_regime,
         )

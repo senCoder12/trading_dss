@@ -55,6 +55,18 @@ MONTHLY_EXPIRY_INDICES: Final[frozenset[str]] = frozenset({
 # Futures expiry → last Thursday of month
 FUTURES_EXPIRY_DAY: Final[int] = 3  # Thursday (weekday index 0=Monday)
 
+# Per-index weekly expiry weekday (0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday)
+INDEX_WEEKLY_EXPIRY_DAY: Final[dict[str, int]] = {
+    "NIFTY": 3,          # Thursday
+    "NIFTY50": 3,        # Thursday
+    "BANKNIFTY": 2,      # Wednesday
+    "FINNIFTY": 1,       # Tuesday
+    "MIDCPNIFTY": 1,     # Tuesday
+    "SENSEX": 1,         # Tuesday
+    "BANKEX": 1,         # Tuesday
+}
+DEFAULT_WEEKLY_EXPIRY_DAY: Final[int] = 3  # Thursday fallback
+
 # ── NSE/BSE HTTP scraping headers ───────────────────────────────────────────
 NSE_BASE_URL: Final[str] = "https://www.nseindia.com"
 BSE_BASE_URL: Final[str] = "https://www.bseindia.com"
@@ -191,3 +203,30 @@ CONFIDENCE_VERY_HIGH: Final[float] = 0.9
 
 # ── Max Pain calculation ────────────────────────────────────────────────────
 MAX_PAIN_STRIKE_RANGE_PERCENT: Final[float] = 0.10  # ±10% from ATM
+
+# ── Signal quality gates ─────────────────────────────────────────────────────
+MIN_RISK_REWARD_RATIO: Final[float] = 1.3       # Reject signals with R:R < 1:1.3
+MIN_CONFIDENCE_THRESHOLD: Final[float] = 0.45   # Minimum confidence to emit signal
+VIX_NO_TRADE_THRESHOLD: Final[float] = 35.0     # VIX above this = no directional trades
+VIX_PREFER_SELL_THRESHOLD: Final[float] = 20.0  # VIX above this = prefer selling premium
+VIX_CHEAP_OPTIONS_THRESHOLD: Final[float] = 14.0 # VIX below this = options are cheap, buy
+
+# ── Intraday time windows ─────────────────────────────────────────────────────
+OPENING_RANGE_MINUTES: Final[int] = 15           # 9:15–9:30 is opening range
+NO_NEW_LONG_OPTIONS_EXPIRY_HOUR: Final[int] = 14  # After 2:30 PM on expiry day
+NO_NEW_LONG_OPTIONS_EXPIRY_MINUTE: Final[int] = 30
+
+# ── Gap classification thresholds (NIFTY points) ─────────────────────────────
+GAP_SMALL_THRESHOLD: Final[float] = 30.0         # < 30 pts = flat open
+GAP_MEDIUM_THRESHOLD: Final[float] = 80.0        # 30–80 pts = moderate gap
+GAP_LARGE_THRESHOLD: Final[float] = 100.0        # > 100 pts = large gap, wait 15 min
+GAP_FILL_PROBABILITY_SMALL: Final[float] = 0.70  # < 50pt gaps fill ~70% of time
+
+# ── OI analysis ───────────────────────────────────────────────────────────────
+OI_WALL_MULTIPLIER: Final[float] = 2.5           # Strike with OI > 2.5x average = wall
+OI_VELOCITY_WINDOW_MINUTES: Final[int] = 5       # OI change velocity window
+UOA_VOLUME_SPIKE_MULTIPLIER: Final[float] = 5.0  # Volume > 5x avg = unusual activity
+
+# ── Delta targets for strike selection ───────────────────────────────────────
+OPTIMAL_DELTA_MIN: Final[float] = 0.35           # Minimum delta for strike selection
+OPTIMAL_DELTA_MAX: Final[float] = 0.45           # Maximum delta for strike selection

@@ -46,7 +46,7 @@ def main():
             if df.index.tz is None: df.index = df.index.tz_localize("UTC").tz_convert(IST_TIMEZONE)
             else: df.index = df.index.tz_convert(IST_TIMEZONE)
             df = df.reset_index()
-            today_str = "2026-04-21"
+            today_str = date.today().strftime('%Y-%m-%d')
             df_today = df[df['timestamp'].dt.strftime('%Y-%m-%d') == today_str]
             if not df_today.empty:
                 manager._save_dataframe_to_db(idx_id, df_today, timeframe="1m")

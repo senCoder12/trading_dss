@@ -146,7 +146,12 @@ class AngelOneClient:
         """
         self.ensure_authenticated()
         try:
-            data = self._get_smart_api().optionGreeks(name, expiry, strike_price)
+            params = {
+                "name": name,
+                "expirydate": expiry,
+                "strikeprice": strike_price
+            }
+            data = self._get_smart_api().optionGreek(params)
             if data["status"]:
                 return data["data"]
         except Exception as exc:

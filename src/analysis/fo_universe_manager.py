@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace as dc_replace
 from datetime import datetime, date, time
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -99,8 +99,8 @@ class FOUniverseManager:
         self.fo_bulk_fetcher = FOBulkFetcher(
             db, smart_api, self.fo_universe_fetcher, nse_scraper=nse_scraper
         )
-        self.liquidity_filter = LiquidityFilter(db)
-        self.scorer = FOStockScorer(db)
+        self.liquidity_filter = LiquidityFilter()
+        self.scorer = FOStockScorer()
 
         # Load schedule settings
         schedule_cfg = getattr(settings, "fo_universe", {})
@@ -194,11 +194,14 @@ class FOUniverseManager:
             quotes = self.fo_bulk_fetcher.fetch_all_quotes()
             logger.info("Fetched quotes for %d symbols", len(quotes))
 
-            # 3. Fetch 20-day averages (cached)
+            # 3. Fetch 20-day averages (cached) and inject into quotes
             avg_vols = self.fo_bulk_fetcher.fetch_avg_volumes(list(quotes.keys()))
+            for sym, q in quotes.items():
+                if sym in avg_vols and avg_vols[sym] > 0:
+                    quotes[sym] = dc_replace(q, avg_volume_20d=avg_vols[sym])
 
-            # 4. Liquidity filter
-            liquid_symbols = self.liquidity_filter.get_liquid_symbols(quotes, avg_vols)
+            # 4. Liquidity filter (OI data empty here; fetched for liquid stocks in step 5)
+            liquid_symbols = self.liquidity_filter.get_liquid_symbols(quotes, {})
             filter_stats = FilterResult(
                 total_input=len(quotes),
                 passed=len(liquid_symbols),
@@ -206,8 +209,9 @@ class FOUniverseManager:
             )
             logger.info("Liquidity filter: %d → %d", len(quotes), len(liquid_symbols))
 
-            # 5. Fetch OI for liquid stocks
-            oi_data = self.fo_bulk_fetcher.fetch_oi_for_symbols(liquid_symbols)
+            # 5. Fetch OI for liquid stocks (limit to top 40 for speed)
+            oi_candidates = liquid_symbols[:40]
+            oi_data = self.fo_bulk_fetcher.fetch_oi_for_symbols(oi_candidates)
 
             # 6. Score universe
             scores = self.scorer.score_universe(
@@ -458,8 +462,13 @@ class FOUniverseManager:
         try:
             if self.fo_universe_fetcher.refresh_if_stale():
                 logger.info("F&O universe refreshed")
-            self.fo_bulk_fetcher.fetch_avg_volumes()
-            logger.info("20-day average volumes refreshed")
+            # Get current F&O symbol list before fetching volumes
+            symbols = self.fo_universe_fetcher.get_fo_symbols()
+            if symbols:
+                self.fo_bulk_fetcher.fetch_avg_volumes(symbols)
+                logger.info("20-day average volumes refreshed for %d symbols", len(symbols))
+            else:
+                logger.warning("No F&O symbols available for volume refresh")
         except Exception as e:
             logger.error("Pre-market refresh failed: %s", e, exc_info=True)
 

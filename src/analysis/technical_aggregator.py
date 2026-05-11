@@ -98,6 +98,17 @@ class TechnicalAnalysisResult:
     data_completeness: float = 1.0
     warnings: list[str] = field(default_factory=list)
 
+    # Multi-timeframe confluence
+    timeframe_confluence_score: float = 0.0   # -1.0 to 1.0 (agreement across TFs)
+    tf_agreement: str = "UNKNOWN"              # "ALIGNED_BULL" / "ALIGNED_BEAR" / "MIXED" / "UNKNOWN"
+    higher_tf_signal: str = "NEUTRAL"          # Signal on 15m/1h (directional bias)
+    lower_tf_signal: str = "NEUTRAL"           # Signal on 1m/5m (entry timing)
+
+    # Opening Range Breakout data (populated if ORB available)
+    orb_high: float = 0.0
+    orb_low: float = 0.0
+    orb_captured: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Vote conversion helpers
@@ -197,6 +208,12 @@ class TechnicalAggregator:
         vix_value: Optional[float] = None,
         benchmark_df: Optional[pd.DataFrame] = None,
         timeframe: str = "1d",
+        htf_df: Optional[pd.DataFrame] = None,      # Higher timeframe (15m or 1h)
+        ltf_df: Optional[pd.DataFrame] = None,      # Lower timeframe (1m)
+        orb_data: Optional[dict] = None,            # Opening Range {"high": x, "low": y}
+        iv_history: Optional[list[float]] = None,   # 30-day ATM IV list for IV rank
+        advanced_opts=None,                          # AdvancedOptionsMetrics from options_analysis
+        fii_futures_net: Optional[float] = None,   # FII net futures contracts (from DB)
     ) -> TechnicalAnalysisResult:
         """Run every indicator category and aggregate into a single result.
 
@@ -276,7 +293,11 @@ class TechnicalAggregator:
         if options_chain is not None:
             opts_ind = OptionsIndicators()
             try:
-                options = opts_ind.get_options_summary(options_chain)
+                options = opts_ind.get_options_summary(
+                    options_chain,
+                    iv_history=iv_history,
+                    advanced_metrics=advanced_opts,
+                )
                 if options is not None:
                     categories_available += 1
                     logger.debug("Options vote: %s (confidence %.2f)", options.options_vote, options.options_confidence)
@@ -313,6 +334,7 @@ class TechnicalAggregator:
                 oi_data=oi_history,
                 support=sm_support,
                 resistance=sm_resistance,
+                fii_futures_net=fii_futures_net,
             )
             if smart_money is not None and smart_money.data_completeness > 0.3:
                 categories_available += 1
@@ -408,6 +430,64 @@ class TechnicalAggregator:
             vix_value=vix_value,
         )
 
+        # ── Multi-Timeframe Confluence ─────────────────────────────────
+        tf_confluence = 0.0
+        tf_agreement = "UNKNOWN"
+        higher_tf_signal = "NEUTRAL"
+        lower_tf_signal = "NEUTRAL"
+
+        if htf_df is not None and len(htf_df) >= 20:
+            try:
+                htf_trend_ind = TrendIndicators()
+                htf_trend = htf_trend_ind.get_trend_summary(htf_df, index_id=index_id, timeframe="htf")
+                higher_tf_signal = htf_trend.trend_vote  # BULLISH / BEARISH / NEUTRAL
+                htf_numeric = {"STRONG_BULLISH": 2, "BULLISH": 1, "NEUTRAL": 0,
+                               "BEARISH": -1, "STRONG_BEARISH": -2}.get(higher_tf_signal, 0)
+                # Current TF numeric
+                cur_numeric = {"STRONG_BUY": 2, "BUY": 1, "NEUTRAL": 0,
+                               "SELL": -1, "STRONG_SELL": -2}.get(overall_signal, 0)
+                # Confluence: both point same direction = stronger signal
+                if htf_numeric > 0 and cur_numeric > 0:
+                    tf_agreement = "ALIGNED_BULL"
+                    tf_confluence = min(1.0, (htf_numeric + cur_numeric) / 4.0)
+                elif htf_numeric < 0 and cur_numeric < 0:
+                    tf_agreement = "ALIGNED_BEAR"
+                    tf_confluence = max(-1.0, (htf_numeric + cur_numeric) / 4.0)
+                elif htf_numeric != 0 and cur_numeric != 0:
+                    tf_agreement = "MIXED"
+                    tf_confluence = cur_numeric * 0.3  # discount conflicted signal
+                else:
+                    tf_agreement = "NEUTRAL"
+            except Exception as e:
+                logger.debug("Higher TF confluence failed: %s", e)
+
+        if ltf_df is not None and len(ltf_df) >= 10:
+            try:
+                ltf_trend_ind = TrendIndicators()
+                ltf_trend = ltf_trend_ind.get_trend_summary(ltf_df, index_id=index_id, timeframe="ltf")
+                lower_tf_signal = ltf_trend.trend_vote
+            except Exception as e:
+                logger.debug("Lower TF confluence failed: %s", e)
+
+        # ── ORB data attachment ────────────────────────────────────────
+        orb_high = 0.0
+        orb_low = 0.0
+        orb_captured = False
+        if orb_data:
+            orb_high = float(orb_data.get("high", 0))
+            orb_low = float(orb_data.get("low", 0))
+            orb_captured = orb_high > 0 and orb_low > 0
+
+        # Boost confidence when higher TF aligns with current TF signal
+        if tf_agreement == "ALIGNED_BULL" and overall_signal in ("BUY", "STRONG_BUY"):
+            overall_confidence = min(1.0, overall_confidence + 0.08)
+        elif tf_agreement == "ALIGNED_BEAR" and overall_signal in ("SELL", "STRONG_SELL"):
+            overall_confidence = min(1.0, overall_confidence + 0.08)
+        elif tf_agreement == "MIXED":
+            # Conflicting TFs: reduce confidence
+            overall_confidence = max(0.0, overall_confidence - 0.12)
+            warnings.append(f"Multi-TF conflict: {higher_tf_signal} on higher TF vs {overall_signal} on current")
+
         # ── Build result ───────────────────────────────────────────────
         result = TechnicalAnalysisResult(
             index_id=index_id,
@@ -436,6 +516,13 @@ class TechnicalAggregator:
             alerts=alerts,
             data_completeness=data_completeness,
             warnings=warnings,
+            timeframe_confluence_score=round(tf_confluence, 4),
+            tf_agreement=tf_agreement,
+            higher_tf_signal=higher_tf_signal,
+            lower_tf_signal=lower_tf_signal,
+            orb_high=orb_high,
+            orb_low=orb_low,
+            orb_captured=orb_captured,
         )
 
         # Generate reasoning last (needs the full result)

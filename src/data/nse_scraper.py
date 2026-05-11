@@ -65,11 +65,16 @@ _MAX_RESPONSE_TIMES: int = 100      # Rolling window for avg-response-time calc
 _ENDPOINTS = {
     "all_indices": "/api/allIndices",
     "market_status": "/api/marketStatus",
-    "option_chain_old": "/api/option-chain-indices",
+    "option_chain_indices": "/api/option-chain-indices",
+    "option_chain_equities": "/api/option-chain-equities",
     "option_chain_v3": "/api/option-chain-v3",
     "option_chain_meta": "/api/option-chain-contract-info",
     "equity_quote": "/api/quote-equity",
+    "equity_fno": "/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O",
     "fii_dii": "/api/fiidiiTradeReact",
+    "fii_futures_stats": "/api/fiiDiiData",
+    "participant_oi": "/api/fiiStatsData",
+    "gift_nifty": "/api/liveEquity-derivatives?index=GIFT%20NIFTY",
 }
 
 
@@ -129,6 +134,7 @@ class NSEScraper:
         self._cache: TTLCache = cache or TTLCache(default_ttl=_CACHE_TTL_PRICE)
         self._warmed_up: bool = False
         self._session_created_at: float = 0.0
+        self._ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         # Health tracking
         self._total_requests: int = 0
@@ -146,7 +152,7 @@ class NSEScraper:
         age = time.monotonic() - self._session_created_at
         return age < _SESSION_TTL
 
-    def _build_headers(self, for_api: bool = False) -> dict[str, str]:
+    def _build_headers(self, for_api: bool = False, symbol: Optional[str] = None) -> dict[str, str]:
         """Return NSE headers with a randomly chosen User-Agent.
 
         Parameters
@@ -156,7 +162,7 @@ class NSEScraper:
             call (same-site fetch) rather than a top-level page navigation.
         """
         headers = dict(NSE_HEADERS)
-        headers["User-Agent"] = random.choice(USER_AGENT_ROTATION)
+        headers["User-Agent"] = self._ua
         if for_api:
             headers["Accept"] = "*/*"
             headers["Sec-Fetch-Dest"] = "empty"
@@ -164,22 +170,27 @@ class NSEScraper:
             headers["Sec-Fetch-Site"] = "same-origin"
             headers.pop("Sec-Fetch-User", None)
             headers.pop("Upgrade-Insecure-Requests", None)
-            headers["Referer"] = "https://www.nseindia.com/"
+            
+            # Browser-like hints
+            headers["Sec-Ch-Ua"] = '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"'
+            headers["Sec-Ch-Ua-Mobile"] = "?0"
+            headers["Sec-Ch-Ua-Platform"] = '"macOS"'
+            
+            if symbol:
+                headers["Referer"] = f"https://www.nseindia.com/option-chain?symbol={symbol.upper()}"
+            else:
+                headers["Referer"] = "https://www.nseindia.com/option-chain"
+                
             headers["X-Requested-With"] = "XMLHttpRequest"
         return headers
 
     # ── Session management ────────────────────────────────────────────────────
 
-    def _warm_up_internal(self) -> None:
+    def _warm_up_internal(self, symbol: Optional[str] = None) -> None:
         """
-        Hit the NSE homepage to obtain session cookies.
-
-        Raises
-        ------
-        NSEScraperError:
-            On any network or HTTP failure during warm-up.
+        Actually perform the navigation to get cookies.
         """
-        headers = self._build_headers(for_api=False)
+        headers = self._build_headers(for_api=False, symbol=symbol)
         try:
             # 1. Main homepage
             resp = self._session.get(NSE_BASE_URL, headers=headers, timeout=15)
@@ -187,7 +198,14 @@ class NSEScraper:
             
             # 2. Option chain landing page (sets required cookies for v3 API)
             oc_url = f"{NSE_BASE_URL}/option-chain"
+            if symbol:
+                oc_url += f"?symbol={symbol.upper()}"
             resp = self._session.get(oc_url, headers=headers, timeout=15)
+            resp.raise_for_status()
+
+            # 3. Symbol-specific page (optional but helps with cookies)
+            sym_url = f"{NSE_BASE_URL}/get-quotes/derivatives?symbol=NIFTY"
+            resp = self._session.get(sym_url, headers=headers, timeout=15)
             resp.raise_for_status()
         except Exception as exc:
             raise NSEScraperError(f"NSE warm-up failed: {exc}") from exc
@@ -195,19 +213,20 @@ class NSEScraper:
         self._warmed_up = True
         self._session_created_at = time.monotonic()
         logger.info(
-            "NSE session warmed up (cookies: %d, UA: %s…)",
+            "NSE session warmed up (cookies: %d, items: %s, UA: %s…)",
             len(self._session.cookies),
-            headers["User-Agent"][:40],
+            list(self._session.cookies.keys()),
+            headers.get("User-Agent", "Browser Default")[:40],
         )
 
-    def warm_up(self) -> None:
+    def warm_up(self, symbol: Optional[str] = None) -> None:
         """
         Seed the session with NSE cookies (public method).
 
         NSE requires a real browser visit before the JSON APIs respond.
         Called automatically by :meth:`_get` if the session is not valid.
         """
-        self._warm_up_internal()
+        self._warm_up_internal(symbol=symbol)
 
     def _refresh_session(self) -> None:
         """Close the current session and open a fresh one, then warm it up."""
@@ -232,6 +251,7 @@ class NSEScraper:
         params: Optional[dict] = None,
         cache_key: Optional[str] = None,
         cache_ttl: Optional[int] = None,
+        symbol: Optional[str] = None,
     ) -> Any:
         """
         Rate-limited, cached, retrying GET.
@@ -250,6 +270,8 @@ class NSEScraper:
             If provided, return cached result when available and store on success.
         cache_ttl:
             Override default TTL for this cache entry.
+        symbol:
+            Optional symbol to use for Referer header.
 
         Returns
         -------
@@ -269,15 +291,17 @@ class NSEScraper:
                 return cached
 
         if not self._is_session_valid():
-            self._warm_up_internal()
+            self._warm_up_internal(symbol=symbol)
 
         url = NSE_BASE_URL + endpoint
-        headers = self._build_headers(for_api=True)
+        logger.debug("NSE Request: %s", url)
+        headers = self._build_headers(for_api=True, symbol=symbol)
         self._rate_limiter.wait_and_acquire()
 
         t0 = time.monotonic()
         try:
-            resp = self._session.get(url, headers=headers, params=params, timeout=10)
+            resp = self._session.get(url, params=params, headers=headers, timeout=30)
+            logger.info("NSE API Response: %d | URL: %s", resp.status_code, resp.url)
         except Exception as exc:
             # curl_cffi raises its own exception types for timeouts/connection errors
             exc_name = type(exc).__name__.lower()
@@ -301,6 +325,8 @@ class NSEScraper:
             raise _NSETransientError("NSE rate limit exceeded (429)")
 
         if resp.status_code >= 400:
+            logger.error("NSE API failure: HTTP %d | URL: %s | Response: %s", 
+                         resp.status_code, url, resp.text[:500])
             raise NSEScraperError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
         try:
@@ -324,6 +350,7 @@ class NSEScraper:
         params: Optional[dict] = None,
         cache_key: Optional[str] = None,
         cache_ttl: Optional[int] = None,
+        symbol: Optional[str] = None,
     ) -> Optional[Any]:
         """
         Wrapper around :meth:`_get` that tracks health stats, honours the
@@ -338,7 +365,7 @@ class NSEScraper:
         self._total_requests += 1
         try:
             result = self._get(
-                endpoint, params=params, cache_key=cache_key, cache_ttl=cache_ttl
+                endpoint, params=params, cache_key=cache_key, cache_ttl=cache_ttl, symbol=symbol
             )
             self._successful += 1
             self._consecutive_failures = 0
@@ -388,6 +415,23 @@ class NSEScraper:
             "timestamp": datetime.now(tz=_IST).isoformat(),
         }
 
+    def _normalize_stock_entry(self, entry: dict) -> dict:
+        """Convert a raw NSE equity entry to a standard dict."""
+        f = self._float
+        return {
+            "symbol": entry.get("symbol", ""),
+            "ltp": f(entry.get("lastPrice")),
+            "open": f(entry.get("open")),
+            "high": f(entry.get("dayHigh")),
+            "low": f(entry.get("dayLow")),
+            "close": f(entry.get("previousClose")),
+            "change": f(entry.get("change")),
+            "change_pct": f(entry.get("pChange")),
+            "volume": f(entry.get("totalTradedVolume")),
+            "value": f(entry.get("totalTradedValue")),
+            "timestamp": datetime.now(tz=_IST).isoformat(),
+        }
+
     # ── Public data methods ───────────────────────────────────────────────────
 
     def get_all_indices(self) -> Optional[list[dict[str, Any]]]:
@@ -415,6 +459,23 @@ class NSEScraper:
         if result:
             freshness_tracker.update("index_prices")
         return result
+
+    def get_all_fno_quotes(self) -> Optional[list[dict[str, Any]]]:
+        """
+        Fetch live quotes for all F&O securities in a single API call.
+        
+        Returns
+        -------
+        list[dict] or None:
+            Normalized stock entries, or None on failure.
+        """
+        raw = self._call(
+            _ENDPOINTS["equity_fno"],
+            cache_key="nse:equity_fno",
+        )
+        if raw is None:
+            return None
+        return [self._normalize_stock_entry(e) for e in raw.get("data", [])]
 
     def get_index_quote(self, nse_symbol: str) -> Optional[dict[str, Any]]:
         """
@@ -515,19 +576,20 @@ class NSEScraper:
             cache_ttl=_CACHE_TTL_STATUS,
         )
 
-    def get_option_chain(self, symbol: str) -> Optional[dict[str, Any]]:
-        """
-        Fetch the full options chain for *symbol* (e.g. ``"NIFTY"``).
+    def get_option_chain(self, symbol: str, instrument_type: str = "Indices") -> Optional[dict[str, Any]]:
+        """Fetch the full options chain for *symbol* (e.g. ``"NIFTY"``).
 
-        Returns
-        -------
-        dict or None:
-            Raw NSE option chain response, or ``None`` on failure.
+        Uses option_chain_indices for indices, option_chain_equities for stocks.
         """
-        # Legacy fallback - usually returns {} now
+        endpoint = (
+            _ENDPOINTS["option_chain_indices"]
+            if instrument_type.lower() in ("indices", "index")
+            else _ENDPOINTS["option_chain_equities"]
+        )
         return self._call(
-            _ENDPOINTS["option_chain_old"],
+            endpoint,
             params={"symbol": symbol},
+            symbol=symbol,
         )
 
     def get_option_chain_v3(
@@ -544,15 +606,20 @@ class NSEScraper:
         Requires an 'expiry' date (format: dd-MMM-yyyy) to return full data.
         If expiry is None, this might return empty or metadata depending on NSE state.
         """
-        params = {"symbol": symbol, "type": type}
+        params = {"symbol": symbol}
         if expiry:
             params["expiry"] = expiry
 
+        endpoint = _ENDPOINTS["option_chain_indices"]
+        if type.lower() == "equities":
+            endpoint = _ENDPOINTS["option_chain_equities"]
+
         return self._call(
-            _ENDPOINTS["option_chain_v3"],
+            endpoint,
             params=params,
             cache_key=cache_key,
             cache_ttl=cache_ttl,
+            symbol=symbol,
         )
 
     def get_option_chain_meta(
@@ -571,6 +638,48 @@ class NSEScraper:
             cache_key=cache_key,
             cache_ttl=cache_ttl,
         )
+
+    def get_fii_futures_positions(self) -> Optional[dict]:
+        """Fetch FII/DII participant-wise F&O trading data (index futures net positions).
+
+        NSE publishes this every 30 minutes during market hours.
+        Returns dict with FII net long/short in index futures.
+        """
+        result = self._call(_ENDPOINTS["participant_oi"], cache_key="nse:participant_oi", cache_ttl=300)
+        if result:
+            freshness_tracker.update("fii_futures")
+        return result
+
+    def get_gift_nifty(self) -> Optional[dict]:
+        """Fetch GIFT NIFTY (SGX Nifty replacement) pre-market price.
+
+        Used before 9:15 AM for gap prediction. Returns latest GIFT NIFTY price.
+        """
+        raw = self._call(_ENDPOINTS["gift_nifty"], cache_key="nse:gift_nifty", cache_ttl=60)
+        if raw is None:
+            return None
+        # Parse response - GIFT NIFTY appears in derivatives data
+        f = self._float
+        data = raw.get("data", []) if isinstance(raw, dict) else []
+        for entry in data:
+            sym = str(entry.get("symbol", "") or entry.get("indexSymbol", "")).upper()
+            if "GIFT" in sym or "SGX" in sym:
+                return {
+                    "ltp": f(entry.get("lastPrice") or entry.get("last")),
+                    "change": f(entry.get("change") or entry.get("variation")),
+                    "change_pct": f(entry.get("pChange") or entry.get("percentChange")),
+                    "timestamp": datetime.now(tz=_IST).isoformat(),
+                }
+        # Fallback: return first entry if available (some endpoints return single value)
+        if data:
+            entry = data[0]
+            return {
+                "ltp": f(entry.get("lastPrice") or entry.get("last") or entry.get("ltp", 0)),
+                "change": f(entry.get("change") or entry.get("variation", 0)),
+                "change_pct": f(entry.get("pChange") or entry.get("percentChange", 0)),
+                "timestamp": datetime.now(tz=_IST).isoformat(),
+            }
+        return None
 
     def get_fii_dii_activity(self) -> Optional[list[dict[str, Any]]]:
         """

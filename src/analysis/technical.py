@@ -162,6 +162,145 @@ def pivot_points(df: pd.DataFrame) -> pd.DataFrame:
     }])
 
 
+def supertrend(
+    df: pd.DataFrame,
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> pd.DataFrame:
+    """
+    Compute Supertrend indicator.
+
+    Effective for Indian markets as a trailing stop and trend indicator.
+
+    Parameters
+    ----------
+    df:
+        OHLCV DataFrame with ``high``, ``low``, ``close`` columns.
+    period:
+        ATR period (default 10).
+    multiplier:
+        ATR multiplier for band calculation (default 3.0).
+
+    Returns
+    -------
+    pd.DataFrame:
+        Columns: ``supertrend``, ``supertrend_direction`` (1=bullish, -1=bearish),
+        ``supertrend_upper``, ``supertrend_lower``.
+    """
+    atr_series = atr(df, period)
+    hl2 = (df["high"] + df["low"]) / 2
+
+    upper_band = hl2 + multiplier * atr_series
+    lower_band = hl2 - multiplier * atr_series
+
+    supertrend_vals = pd.Series(index=df.index, dtype=float)
+    direction = pd.Series(index=df.index, dtype=int)
+
+    for i in range(len(df)):
+        if i < period:
+            supertrend_vals.iloc[i] = upper_band.iloc[i]
+            direction.iloc[i] = -1
+            continue
+
+        prev_st = supertrend_vals.iloc[i - 1]
+        prev_dir = direction.iloc[i - 1]
+        close = df["close"].iloc[i]
+        prev_close = df["close"].iloc[i - 1]
+
+        # Adjust bands: only move in trend direction
+        ub = upper_band.iloc[i]
+        lb = lower_band.iloc[i]
+
+        if prev_dir == 1:
+            lb = max(lb, supertrend_vals.iloc[i - 1])
+        else:
+            ub = min(ub, supertrend_vals.iloc[i - 1])
+
+        # Determine direction
+        if prev_dir == -1 and close > prev_st:
+            direction.iloc[i] = 1
+            supertrend_vals.iloc[i] = lb
+        elif prev_dir == 1 and close < prev_st:
+            direction.iloc[i] = -1
+            supertrend_vals.iloc[i] = ub
+        else:
+            direction.iloc[i] = prev_dir
+            supertrend_vals.iloc[i] = lb if prev_dir == 1 else ub
+
+    return pd.DataFrame({
+        "supertrend": supertrend_vals,
+        "supertrend_direction": direction,
+        "supertrend_upper": upper_band,
+        "supertrend_lower": lower_band,
+    })
+
+
+def stochastic(
+    df: pd.DataFrame,
+    k_period: int = 14,
+    d_period: int = 3,
+    smooth_k: int = 3,
+) -> pd.DataFrame:
+    """
+    Compute Stochastic Oscillator (%K and %D).
+
+    Complements RSI for overbought/oversold detection in ranging markets.
+
+    Parameters
+    ----------
+    df:
+        OHLCV DataFrame with ``high``, ``low``, ``close`` columns.
+    k_period:
+        Lookback period for %K (default 14).
+    d_period:
+        Smoothing period for %D signal line (default 3).
+    smooth_k:
+        Smoothing period for %K (default 3; set to 1 for fast stochastic).
+
+    Returns
+    -------
+    pd.DataFrame:
+        Columns: ``stoch_k`` (smoothed %K), ``stoch_d`` (%D signal),
+        ``stoch_raw_k`` (raw %K before smoothing).
+    """
+    low_min = df["low"].rolling(k_period).min()
+    high_max = df["high"].rolling(k_period).max()
+    denom = high_max - low_min
+    raw_k = 100 * (df["close"] - low_min) / denom.replace(0, np.nan)
+    smooth_k_series = raw_k.rolling(smooth_k).mean()
+    d_series = smooth_k_series.rolling(d_period).mean()
+    return pd.DataFrame({
+        "stoch_k": smooth_k_series,
+        "stoch_d": d_series,
+        "stoch_raw_k": raw_k,
+    })
+
+
+def oi_change_velocity(
+    oi_series: pd.Series,
+    window_minutes: int = 5,
+) -> pd.Series:
+    """
+    Compute OI change velocity over a rolling window.
+
+    Returns rate of OI change per minute — much more informative than
+    raw OI change vs day-open baseline.
+
+    Parameters
+    ----------
+    oi_series:
+        Time-indexed OI series (one observation per minute or per snapshot).
+    window_minutes:
+        Rolling window in number of observations (default 5).
+
+    Returns
+    -------
+    pd.Series:
+        OI velocity (change per period).
+    """
+    return oi_series.diff(window_minutes)
+
+
 def support_resistance_levels(
     series: pd.Series,
     window: int = 20,

@@ -284,6 +284,197 @@ class TradingSettings(BaseSettings):
     model_config = {"env_prefix": "TRADING_", "extra": "ignore"}
 
 
+class LiquiditySettings(BaseSettings):
+    """SMC / liquidity pool detector configuration."""
+
+    equal_high_low_tolerance_pct: float = Field(
+        default=0.05,
+        ge=0.001, le=1.0,
+        description="Two swing highs/lows within this % are considered equal (0.05 = 0.05%)",
+    )
+    min_level_strength: int = Field(
+        default=2, ge=1,
+        description="Minimum touch count for a level to be tracked",
+    )
+    max_levels_per_side: int = Field(
+        default=5, ge=1, le=20,
+        description="Max BSL and SSL levels kept per symbol",
+    )
+    level_expiry_hours: int = Field(
+        default=48, ge=1,
+        description="Levels older than this many hours are pruned",
+    )
+    round_number_increments: list[int] = Field(
+        default_factory=lambda: [50, 100, 500, 1000],
+        description="Round number increments to scan (e.g. NIFTY multiples)",
+    )
+    round_number_range_pct: float = Field(
+        default=3.0, ge=0.5, le=10.0,
+        description="Scan round numbers within this % above/below current price",
+    )
+    multi_touch_tolerance_pct: float = Field(
+        default=0.1, ge=0.01, le=2.0,
+        description="Tolerance for multi-touch level clustering (0.1 = 0.1%)",
+    )
+    bias_proximity_ratio: float = Field(
+        default=0.6, ge=0.1, le=0.9,
+        description="If distance_to_ssl < distance_to_bsl * ratio → BEARISH bias (and vice versa)",
+    )
+
+    model_config = {"env_prefix": "LIQUIDITY_", "extra": "ignore"}
+
+
+class SweepSettings(BaseSettings):
+    """Liquidity sweep detector configuration."""
+
+    sweep_confirmation_candles: int = Field(
+        default=3, ge=1, le=10,
+        description="Candles to wait for reversal confirmation after potential sweep",
+    )
+    min_wick_beyond_pct: float = Field(
+        default=0.03, ge=0.001, le=1.0,
+        description="Minimum wick beyond level to qualify as sweep (% of price)",
+    )
+    max_wick_beyond_pct: float = Field(
+        default=0.5, ge=0.05, le=5.0,
+        description="If wick exceeds this %, likely a real breakout not a sweep",
+    )
+    reversion_close_threshold_pct: float = Field(
+        default=0.1, ge=0.01, le=1.0,
+        description="Candle must close back inside level by at least this % to confirm sweep",
+    )
+    volume_spike_ratio: float = Field(
+        default=1.5, ge=1.0, le=10.0,
+        description="Sweep candle volume must exceed this multiple of recent average",
+    )
+    min_reversal_body_pct: float = Field(
+        default=0.3, ge=0.1, le=0.9,
+        description="Reversal candle body must be >= this fraction of its total range",
+    )
+
+    model_config = {"env_prefix": "SWEEP_", "extra": "ignore"}
+
+
+class StopHuntSettings(BaseSettings):
+    """Stop hunt detector configuration."""
+
+    stop_hunt_window_candles: int = Field(
+        default=5, ge=1, le=20,
+        description="Candles to watch after potential hunt for reversal confirmation",
+    )
+    min_reversal_strength_pct: float = Field(
+        default=0.2, ge=0.01, le=2.0,
+        description="Reversal must recover at least this % from the hunt extreme",
+    )
+    widely_watched_level_min_strength: int = Field(
+        default=3, ge=1, le=5,
+        description="Level strength threshold — only hunt levels retail is watching",
+    )
+    futures_basis_change_threshold: float = Field(
+        default=2.0, ge=0.1, le=20.0,
+        description="Futures basis change in points that signals institutional intent",
+    )
+
+    model_config = {"env_prefix": "STOP_HUNT_", "extra": "ignore"}
+
+
+class ImbalanceSettings(BaseSettings):
+    """FVG and Order Block detector configuration."""
+
+    min_fvg_size_pct: float = Field(
+        default=0.05, ge=0.001, le=5.0,
+        description="FVG must be at least this % of price to be meaningful",
+    )
+    max_fvg_age_hours: int = Field(
+        default=24, ge=1, le=168,
+        description="FVGs older than this many hours are ignored",
+    )
+    min_ob_displacement_pct: float = Field(
+        default=0.3, ge=0.05, le=5.0,
+        description="Combined displacement after OB candle must be >= this % of price",
+    )
+    max_ob_age_hours: int = Field(
+        default=48, ge=1, le=336,
+        description="Order blocks older than this many hours are ignored",
+    )
+    fvg_fill_threshold_pct: float = Field(
+        default=50.0, ge=1.0, le=100.0,
+        description="Price entered this % of gap = partial fill",
+    )
+    ob_mitigation_threshold_pct: float = Field(
+        default=100.0, ge=50.0, le=100.0,
+        description="Price must trade through this % of OB to mitigate it",
+    )
+
+    model_config = {"env_prefix": "IMBALANCE_", "extra": "ignore"}
+
+
+class VolumeProfileSettings(BaseSettings):
+    """Intraday volume profile configuration."""
+
+    tick_size: float = Field(
+        default=0.05, ge=0.01, le=1.0,
+        description="Minimum price increment (NSE default = 0.05)",
+    )
+    profile_bucket_size: int = Field(
+        default=10, ge=1, le=100,
+        description="Price bucket size in points (10 = 10-point buckets for NIFTY)",
+    )
+    value_area_pct: float = Field(
+        default=0.70, ge=0.5, le=0.95,
+        description="Fraction of total volume defining the value area (0.70 = 70%)",
+    )
+    hvn_threshold_pct: float = Field(
+        default=1.5, ge=1.0, le=5.0,
+        description="Bucket volume > this multiple of average = High Volume Node",
+    )
+    lvn_threshold_pct: float = Field(
+        default=0.4, ge=0.01, le=0.9,
+        description="Bucket volume < this multiple of average = Low Volume Node",
+    )
+    min_candles_for_profile: int = Field(
+        default=30, ge=5, le=390,
+        description="Minimum 1-min candles before calculating a profile",
+    )
+
+    model_config = {"env_prefix": "VP_", "extra": "ignore"}
+
+
+class GEXSettings(BaseSettings):
+    """Gamma Exposure (GEX) calculator configuration."""
+
+    gex_strikes_range: int = Field(
+        default=20, ge=5, le=50,
+        description="Analyze ±N strikes from ATM (NIFTY 50-pt spacing → ±1000 pts)",
+    )
+    gex_expiries_to_include: int = Field(
+        default=2, ge=1, le=4,
+        description="Number of weekly expiries to include (nearest gets full weight)",
+    )
+    gex_refresh_minutes: int = Field(
+        default=5, ge=1, le=30,
+        description="GEX recalculation interval during market hours (minutes)",
+    )
+    near_expiry_weight: float = Field(
+        default=1.0, ge=0.1, le=1.0,
+        description="Weight applied to current-week expiry GEX",
+    )
+    next_expiry_weight: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Weight applied to next-week expiry GEX",
+    )
+    atm_threshold_pct: float = Field(
+        default=0.5, ge=0.1, le=2.0,
+        description="Strikes within this %% of spot are classified as ATM",
+    )
+    call_wall_min_gex_cr: float = Field(
+        default=50.0, ge=1.0,
+        description="Minimum CE GEX (crore rupees) for a strike to qualify as call wall",
+    )
+
+    model_config = {"env_prefix": "GEX_", "extra": "ignore"}
+
+
 class BrokerSettings(BaseSettings):
     """Broker API configuration. Credentials loaded from .env without any prefix."""
 
@@ -350,6 +541,12 @@ class Settings(BaseSettings):
     def sentiment_keywords_path(self) -> Path:
         return self.config_dir / "sentiment_keywords.json"
 
+    # ── Feature flags ───────────────────────────────────────────────────────
+    # News engine fetches RSS/events and drives regime event_modifier, but its
+    # sentiment vote is NOT wired into signal weights (adds lag, not edge).
+    # Set True only to re-evaluate after validating news signal quality.
+    news_signal_enabled: bool = Field(default=False, description="Wire news vote into signal weight aggregation")
+
     # ── Nested settings ─────────────────────────────────────────────────────
     market_hours: MarketHoursSettings = Field(default_factory=MarketHoursSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -359,7 +556,13 @@ class Settings(BaseSettings):
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     trading: TradingSettings = Field(default_factory=TradingSettings)
+    liquidity: LiquiditySettings = Field(default_factory=LiquiditySettings)
+    sweep: SweepSettings = Field(default_factory=SweepSettings)
+    stop_hunt: StopHuntSettings = Field(default_factory=StopHuntSettings)
+    imbalance: ImbalanceSettings = Field(default_factory=ImbalanceSettings)
+    volume_profile: VolumeProfileSettings = Field(default_factory=VolumeProfileSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
+    gex: GEXSettings = Field(default_factory=GEXSettings)
 
     model_config = {
         "env_file": str(PROJECT_ROOT / ".env"),

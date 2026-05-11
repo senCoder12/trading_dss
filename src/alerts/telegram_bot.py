@@ -1401,6 +1401,89 @@ class TelegramBot:
         return self._running
 
     # ------------------------------------------------------------------
+    # GEX-specific proactive alerts
+    # ------------------------------------------------------------------
+
+    def send_morning_gex_brief(self, symbol: str, daily_plan: dict) -> bool:
+        """Send GEX morning brief for *symbol* at market open."""
+        if not self._configured:
+            return False
+
+        net_gex_cr = daily_plan.get("net_gex_cr", 0.0)
+        regime = daily_plan.get("regime", "NEUTRAL_GEX")
+        day_type = daily_plan.get("day_type", "TRANSITIONAL")
+        key_levels = daily_plan.get("key_levels_for_day", {})
+        strategy = daily_plan.get("recommended_strategy", "")
+        size_mult = daily_plan.get("position_size_multiplier", 1.0)
+        strikes = daily_plan.get("preferred_strikes", "ATM")
+        hold = daily_plan.get("max_holding_minutes", 45)
+        avoid = daily_plan.get("avoid_conditions", [])
+
+        sep = "━" * 26
+        call_wall = key_levels.get("call_wall")
+        put_wall = key_levels.get("put_wall")
+        flip = key_levels.get("flip_point")
+        call_str = f"  Call wall:  {call_wall:,.0f}" if call_wall else ""
+        put_str = f"  Put wall:   {put_wall:,.0f}" if put_wall else ""
+        flip_str = f"  Flip point: {flip:,.0f}" if flip else ""
+        levels_block = "\n".join(line for line in [call_str, put_str, flip_str] if line)
+
+        msg = (
+            f"\U0001f4ca GEX Morning Brief — {symbol}\n"
+            f"{sep}\n"
+            f"Day type: {day_type}\n"
+            f"Net GEX:  {net_gex_cr:+.0f} Cr\n"
+            f"Regime:   {regime.replace('_', ' ')}\n"
+            f"\n\U0001f3af Key levels:\n{levels_block}\n"
+            f"\n\U0001f4cb Today's approach:\n"
+            f"{strategy}\n"
+            f"Position size: {size_mult:.0%} of normal\n"
+            f"Preferred strikes: {strikes}\n"
+            f"Max hold: {hold} min\n"
+        )
+        if avoid:
+            msg += f"\n⚠️ Avoid: {', '.join(avoid)}"
+
+        return self.send_message(msg)
+
+    def send_wall_break_alert(self, symbol: str, wall_break_event: dict) -> bool:
+        """Send alert when price breaks through a GEX call/put wall."""
+        if not self._configured:
+            return False
+
+        wall_type = wall_break_event.get("wall_type", "WALL")
+        wall_price = wall_break_event.get("wall_price", 0.0)
+        signal = wall_break_event.get("signal", "")
+        volume_confirmed = bool(wall_break_event.get("volume_confirmed", False))
+        significance = wall_break_event.get("significance", "")
+
+        msg = (
+            f"\U0001f6a8 GEX WALL BREAK — {symbol}\n"
+            f"{wall_type}: {wall_price:,.0f} BROKEN\n"
+            f"Signal: {signal}\n"
+            f"Volume confirmed: {'✅' if volume_confirmed else '❌'}\n"
+            f"Significance: {significance}\n"
+            f"\nThis is a GAMMA SQUEEZE setup.\n"
+            f"Dealers must hedge aggressively."
+        )
+        return self.send_message(msg)
+
+    def send_regime_change_alert(
+        self, symbol: str, old_regime: str, new_regime: str, confidence: float
+    ) -> bool:
+        """Send alert on confirmed GEX regime change."""
+        if not self._configured:
+            return False
+
+        msg = (
+            f"⚡ GEX REGIME CHANGE — {symbol}\n"
+            f"{old_regime.replace('_', ' ')} → {new_regime.replace('_', ' ')}\n"
+            f"Confidence: {confidence:.0f}%\n"
+            f"\nAdjust strategy accordingly."
+        )
+        return self.send_message(msg)
+
+    # ------------------------------------------------------------------
     # Signal formatting for proactive alerts
     # ------------------------------------------------------------------
 
