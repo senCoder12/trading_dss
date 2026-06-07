@@ -16,7 +16,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from tenacity import retry, stop_after_attempt, wait_fixed, before_sleep_log
@@ -275,7 +275,7 @@ class FOUniverseFetcher:
 
     def _merge_and_parse(
         self,
-        primary: dict,
+        primary: Any,
         lot_sizes: dict[str, int],
     ) -> list[FOUniverseStock]:
         """
@@ -292,7 +292,9 @@ class FOUniverseFetcher:
         stocks = []
         now = datetime.now(tz=_IST).isoformat()
 
-        for entry in primary.get("data", []):
+        # NSE endpoint returns {"data": [...]} normally; sometimes a raw list
+        entries = primary.get("data", []) if isinstance(primary, dict) else primary
+        for entry in entries:
             try:
                 symbol = (entry.get("symbol") or "").upper()
                 if not symbol:
