@@ -560,7 +560,10 @@ class SignalGenerator:
 
         # Data freshness: reject if technical input > 10 min old
         if technical and technical.timestamp:
-            age_secs = (now - technical.timestamp).total_seconds()
+            ts = technical.timestamp
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_IST)
+            age_secs = (now - ts).total_seconds()
             if age_secs > 600:  # 10 minutes
                 return self._make_no_trade(
                     index_id, now,

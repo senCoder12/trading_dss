@@ -1413,7 +1413,7 @@ class DecisionEngine:
             if chain is None:
                 return None
 
-            idx = self._registry.get_index(index_id)
+            idx = self.registry.get_index(index_id)
             lot_size = (idx.lot_size or 25) if idx else 25
             vol_ratio = self._compute_volume_ratio(intraday_rows)
             current_now = now or datetime.now(tz=_IST)
