@@ -1336,6 +1336,15 @@ class DataCollector:
         logger.info("Starting DataCollector scheduler")
         self.scheduler.start()
 
+        # FII/DII cash data is published once a day after the close, and NSE
+        # serves only the latest day, so a missed 18:00 run loses that day for
+        # good. Fetch once on every start. This is scheduled only now that the
+        # scheduler is running: a next_run_time set at add_job() time is
+        # dropped as a misfire (default grace 1 s) when start() comes later.
+        # The --force-start path below already runs it synchronously.
+        if not self.force_start:
+            self.scheduler.modify_job("collect_fii_dii", next_run_time=datetime.now(tz=_IST))
+
         # When launched outside market hours with --force-start, cron-gated
         # jobs (FII/DII at 18:00, historical update at 18:30) won't fire
         # until the next day. Trigger them once on startup so the DB is
