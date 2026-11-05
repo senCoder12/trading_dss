@@ -197,20 +197,25 @@ class SignalTracker:
     # Public API — signal recording
     # ------------------------------------------------------------------
 
-    def record_signal(self, signal) -> None:
+    def record_signal(self, signal, is_actionable: Optional[bool] = None) -> None:
         """
         Persist a TradingSignal or RefinedSignal to the ``trading_signals`` table.
 
-        NO_TRADE signals are recorded for traceability but marked with outcome=None.
-        Actionable signals get outcome='OPEN'.
+        Only a *taken* trade gets outcome='OPEN'.  NO_TRADE signals and BUY_*
+        signals rejected by the risk manager are recorded for audit with
+        outcome=None — otherwise a restart reloads rejected signals as live
+        positions and they consume the daily trade cap.
 
         Parameters
         ----------
         signal:
             A ``TradingSignal`` or ``RefinedSignal`` from the engine.
+        is_actionable:
+            The engine's final verdict.  When omitted it is inferred: a BUY_*
+            signal is actionable unless it carries ``is_valid=False``.
         """
         with self._lock:
-            self._do_record_signal(signal)
+            self._do_record_signal(signal, is_actionable)
 
     def record_outcome(
         self,
@@ -631,13 +636,31 @@ class SignalTracker:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _do_record_signal(self, signal) -> None:
+    def _do_record_signal(self, signal, is_actionable: Optional[bool] = None) -> None:
         """Insert signal into DB.  Caller must hold ``_lock``."""
-        now_ist = datetime.now(tz=_IST).isoformat()
+        # Store the signal's own decision time (replays pass historical
+        # times; RiskManager also matches rows on this exact value).
+        gen_at = getattr(signal, "generated_at", None)
+        if isinstance(gen_at, datetime):
+            if gen_at.tzinfo is None:
+                gen_at = gen_at.replace(tzinfo=_IST)
+            now_ist = gen_at.isoformat()
+        else:
+            now_ist = datetime.now(tz=_IST).isoformat()
 
         signal_type = getattr(signal, "signal_type", "NO_TRADE")
-        is_actionable = signal_type in ("BUY_CALL", "BUY_PUT")
+        is_directional = signal_type in ("BUY_CALL", "BUY_PUT")
+        if is_actionable is None:
+            is_actionable = is_directional and getattr(signal, "is_valid", True) is not False
+        is_actionable = bool(is_actionable) and is_directional
         outcome = "OPEN" if is_actionable else None
+
+        # Persist the levels the trade is actually managed with: refined
+        # (risk-adjusted) levels when present, else the raw signal levels.
+        # Restart recovery reloads positions from these columns.
+        entry_px = getattr(signal, "refined_entry", 0) or getattr(signal, "entry_price", 0) or 0
+        target_px = getattr(signal, "refined_target", 0) or getattr(signal, "target_price", 0) or 0
+        stop_px = getattr(signal, "refined_stop_loss", 0) or getattr(signal, "stop_loss", 0) or 0
 
         # Extract component votes from vote_breakdown if present
         vb = getattr(signal, "vote_breakdown", {}) or {}
@@ -708,9 +731,9 @@ class SignalTracker:
                     now_ist,
                     signal_type,
                     getattr(signal, "confidence_level", "LOW"),
-                    float(getattr(signal, "entry_price", 0) or 0),
-                    float(getattr(signal, "target_price", 0) or 0),
-                    float(getattr(signal, "stop_loss", 0) or 0),
+                    float(entry_px),
+                    float(target_px),
+                    float(stop_px),
                     float(getattr(signal, "risk_reward_ratio", 0) or 0),
                     db_regime,
                     str(tech_vote),
@@ -766,16 +789,19 @@ class SignalTracker:
         if cached:
             return cached.get("id")
 
-        # Search recent rows (reasoning contains signal_id as JSON field)
-        since = (datetime.now(tz=_IST) - timedelta(days=7)).isoformat()
+        # Direct lookup on the signal_id inside the reasoning JSON.  (A scan of
+        # "the last 1000 rows of the last 7 days" lost morning positions on
+        # busy days — ~20 symbols × 75 cycles — and every replayed signal.)
+        if not signal_id:
+            return None
         rows = self._db.fetch_all(
             """
             SELECT id, reasoning FROM trading_signals
-            WHERE generated_at >= ?
-            ORDER BY generated_at DESC
-            LIMIT 1000
+            WHERE reasoning LIKE ?
+            ORDER BY id DESC
+            LIMIT 5
             """,
-            (since,),
+            (f'%"signal_id": "{signal_id}"%',),
         )
         for row in rows:
             try:

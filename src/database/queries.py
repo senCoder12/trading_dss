@@ -204,6 +204,17 @@ WHERE index_id = ?
 ORDER BY expiry_date ASC
 """
 
+# Expiries still tradeable on/after a date (param 2: 'YYYY-MM-DD').
+# Use this — not LIST_EXPIRY_DATES — whenever the *current* contract is
+# needed: the snapshot table keeps every expiry ever stored, so the first
+# row of LIST_EXPIRY_DATES is usually a long-expired contract.
+LIST_ACTIVE_EXPIRY_DATES = """
+SELECT DISTINCT expiry_date
+FROM options_chain_snapshot
+WHERE index_id = ? AND expiry_date >= ?
+ORDER BY expiry_date ASC
+"""
+
 GET_OPTIONS_CHAIN_LATEST_TS = """
 SELECT MAX(timestamp) AS latest_ts
 FROM options_chain_snapshot
@@ -565,12 +576,15 @@ GROUP BY index_id, signal_type, confidence_level
 ORDER BY total DESC
 """
 
+# Counts *taken* trades only.  Signals rejected by the risk manager are stored
+# with outcome NULL and must not use up the regime's daily trade budget.
 COUNT_SIGNALS_TODAY = """
 SELECT COUNT(*) AS count
 FROM trading_signals
 WHERE index_id = ?
   AND DATE(generated_at) = DATE(?)
   AND signal_type IN ('BUY_CALL', 'BUY_PUT')
+  AND outcome IS NOT NULL
 """
 
 # ============================================================================
@@ -981,6 +995,13 @@ ON CONFLICT(timestamp, index_id) DO UPDATE SET
 LIST_IV_HISTORY_30D = """
 SELECT atm_iv, timestamp FROM iv_history
 WHERE index_id = ? AND timestamp >= datetime('now', '-30 days')
+ORDER BY timestamp DESC
+"""
+
+# Point-in-time variant: params (index_id, window_start_iso, as_of_iso).
+LIST_IV_HISTORY_WINDOW = """
+SELECT atm_iv, timestamp FROM iv_history
+WHERE index_id = ? AND timestamp >= ? AND timestamp <= ?
 ORDER BY timestamp DESC
 """
 

@@ -5,6 +5,7 @@ Shared pytest fixtures for the trading_dss test suite.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
@@ -15,6 +16,10 @@ import pytest
 
 from src.data.index_registry import IndexRegistry
 from src.data.rate_limiter import GlobalCircuitBreaker, GlobalRateLimiter
+
+# Test results must never depend on the network or on a contract-master cache
+# file in data/cache — lot sizes come from the fixtures/config instead.
+os.environ.setdefault("TRADING_DSS_CONTRACT_MASTER_DISABLED", "1")
 
 
 # ── Reset global singletons between tests ────────────────────────────────────

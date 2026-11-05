@@ -23,7 +23,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -123,6 +123,25 @@ _CONF_CEILING: float = 0.92  # absolute maximum (never return 1)
 # Weighted-score → direction thresholds
 _SCORE_CALL_THRESHOLD: float = 0.25
 _SCORE_PUT_THRESHOLD: float = -0.25
+
+# Bar staleness: a bar may be at most this many intervals old (plus a fixed
+# allowance for collection latency) before the decision is refused.
+_TIMEFRAME_SECONDS: dict[str, int] = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "1h": 3600}
+_STALE_BAR_INTERVALS: int = 2
+_STALE_MIN_SECONDS: int = 600
+
+
+def _max_bar_age_seconds(timeframe: str) -> float:
+    """Maximum acceptable age of the newest bar for an intraday decision.
+
+    Unknown / daily timeframes get the fixed floor, so a daily bar (stamped
+    at midnight) is always stale intraday — daily ATR/levels must not drive
+    an intraday option entry.
+    """
+    tf_secs = _TIMEFRAME_SECONDS.get((timeframe or "").lower())
+    if tf_secs is None:
+        return float(_STALE_MIN_SECONDS)
+    return float(max(_STALE_MIN_SECONDS, _STALE_BAR_INTERVALS * tf_secs))
 
 # Map MarketRegime.regime → DB regime CHECK constraint values
 _REGIME_TO_DB: dict[str, str] = {
@@ -342,7 +361,7 @@ class SignalGenerator:
         # ── Step 2: Collect All Votes ──────────────────────────────────
         available = self._available_components(technical, news, anomaly)
         adj_weights = self._redistribute_weights(regime.weight_adjustments, available)
-        votes = self._collect_votes(technical, news, anomaly, adj_weights)
+        votes = self._collect_votes(technical, news, anomaly, adj_weights, available)
 
         # ── Step 3: Weighted Score ─────────────────────────────────────
         tf_confluence = getattr(technical, "timeframe_confluence_score", 0.0) or 0.0
@@ -524,13 +543,28 @@ class SignalGenerator:
         return list(self._today_signals.get(index_id, []))
 
     def _get_signals_today_count(self, index_id: str, timestamp: datetime) -> int:
-        """Query DB for actionable signal count generated today."""
+        """Taken-trade count for *index_id* on *timestamp*'s date (display use).
+
+        Never raises; returns 0 if the count cannot be read.  The daily-cap
+        safety check uses :meth:`_count_taken_trades_today`, which fails closed.
+        """
+        count = self._count_taken_trades_today(index_id, timestamp)
+        return count if count is not None else 0
+
+    def _count_taken_trades_today(self, index_id: str, timestamp: datetime) -> Optional[int]:
+        """Taken-trade count, or ``None`` when the DB cannot be read.
+
+        ``fetch_one`` returns a dict; the old ``result[0]`` raised KeyError on
+        every call, was swallowed, and returned 0 — so the per-regime daily
+        trade cap was never enforced.
+        """
         try:
-            result = self._db.fetch_one(Q.COUNT_SIGNALS_TODAY, (index_id, timestamp))
-            return result[0] if result else 0
-        except Exception as e:
-            logger.warning(f"Failed to fetch today's signal count for {index_id}: {e}")
-            return 0
+            ts = timestamp.isoformat() if isinstance(timestamp, datetime) else str(timestamp)
+            result = self._db.fetch_one(Q.COUNT_SIGNALS_TODAY, (index_id, ts))
+            return int(result["count"]) if result else 0
+        except Exception:
+            logger.exception("Failed to count today's trades for %s", index_id)
+            return None
 
     def get_all_active_signals(self) -> list[TradingSignal]:
         """Return all open signals across all indices."""
@@ -558,16 +592,20 @@ class SignalGenerator:
     ) -> Optional[TradingSignal]:
         """Return a NO_TRADE signal on failure, or ``None`` if all checks pass."""
 
-        # Data freshness: reject if technical input > 10 min old
+        # Data freshness: technical.timestamp is the newest *bar* time.  Reject
+        # when that bar is older than allowed for its timeframe (a daily bar
+        # is always stale for an intraday decision).
         if technical and technical.timestamp:
             ts = technical.timestamp
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=_IST)
             age_secs = (now - ts).total_seconds()
-            if age_secs > 600:  # 10 minutes
+            max_age = _max_bar_age_seconds(getattr(technical, "timeframe", ""))
+            if age_secs > max_age:
                 return self._make_no_trade(
                     index_id, now,
-                    f"Data stale: technical {age_secs:.0f}s old (> 10 min)",
+                    f"Data stale: last {getattr(technical, 'timeframe', '?')} bar "
+                    f"{age_secs:.0f}s old (> {max_age:.0f}s)",
                     regime, technical, news, anomaly, warnings,
                 )
 
@@ -598,8 +636,14 @@ class SignalGenerator:
                 regime, technical, news, anomaly, warnings,
             )
 
-        # Daily signal cap (query DB instead of in-memory cache)
-        today_count = self._get_signals_today_count(index_id, now)
+        # Daily signal cap (query DB instead of in-memory cache).  Fails
+        # closed: if the count cannot be read, the cap cannot be verified.
+        today_count = self._count_taken_trades_today(index_id, now)
+        if today_count is None:
+            return self._make_no_trade(
+                index_id, now, "Cannot verify today's trade count (DB error) — no new entries",
+                regime, technical, news, anomaly, warnings,
+            )
         if today_count >= regime.max_trades_today:
             return self._make_no_trade(
                 index_id, now,
@@ -627,7 +671,7 @@ class SignalGenerator:
             )
 
         # Expiry day: no new long option positions after 2:30 PM (theta acceleration)
-        if self._is_expiry_day(now):
+        if self._is_expiry_day(index_id, now, technical):
             if now.hour > 14 or (now.hour == 14 and now.minute >= 30):
                 return self._make_no_trade(
                     index_id, now,
@@ -663,15 +707,38 @@ class SignalGenerator:
         return now >= close - timedelta(minutes=minutes)
 
     @staticmethod
-    def _is_expiry_day(now: datetime) -> bool:
-        """Return True if today is a weekly options expiry day.
+    def _is_expiry_day(
+        index_id: str,
+        now: datetime,
+        technical: Optional[TechnicalAnalysisResult] = None,
+    ) -> bool:
+        """Return True if *index_id*'s nearest option contract expires today.
 
-        Checks NSE weekly expiry schedule: NIFTY=Thursday, BANKNIFTY=Wednesday,
-        FINNIFTY/SENSEX/MIDCPNIFTY=Tuesday. Returns True if any major index expires today.
+        Expiry weekdays change by exchange circular and holidays shift
+        individual expiries, so this never uses a weekday rule.  Sources, in
+        order: the loaded options chain's expiry, then the contract master.
+        Unknown → False (the chain-based theta rules simply do not apply).
         """
-        weekday = now.weekday()  # 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday
-        # Any of Tuesday (1), Wednesday (2), or Thursday (3) can be expiry
-        return weekday in (1, 2, 3)
+        opts = getattr(technical, "options", None) if technical is not None else None
+        expiry = getattr(opts, "expiry_date", None) if opts is not None else None
+        if expiry is not None:
+            try:
+                expiry_day = expiry.date() if isinstance(expiry, datetime) else expiry
+                if not isinstance(expiry_day, date):
+                    expiry_day = date.fromisoformat(str(expiry_day)[:10])
+                return expiry_day == now.date()
+            except (TypeError, ValueError):
+                pass
+        try:
+            from src.data.contract_master import get_contract_master  # noqa: PLC0415
+            from src.data.index_registry import get_registry  # noqa: PLC0415
+
+            idx = get_registry().get_index(index_id)
+            symbol = (idx.option_symbol if idx and idx.option_symbol else index_id)
+            return bool(get_contract_master().is_expiry_day(symbol, now.date()))
+        except Exception:
+            logger.debug("Expiry-day lookup failed for %s", index_id, exc_info=True)
+            return False
 
     @staticmethod
     def _is_in_opening_window(now: datetime) -> bool:
@@ -688,10 +755,18 @@ class SignalGenerator:
         news: Optional[NewsVote],
         anomaly: Optional[AnomalyVote],
     ) -> set[str]:
-        available = {"trend", "momentum", "volume"}
+        available = {"trend", "momentum"}
+        # Without real volume (NSE spot indices) the volume layer and the
+        # smart-money composite carry no information: volume terms are zero
+        # and OI history is not supplied, leaving only a candle-wick
+        # oscillator.  Mark them unavailable so their weight is redistributed
+        # instead of letting noise (or a forced NEUTRAL) vote.
+        has_volume = getattr(technical, "volume_available", True)
+        if has_volume:
+            available.add("volume")
         if technical.options is not None:
             available.add("options")
-        if technical.smart_money is not None:
+        if technical.smart_money is not None and has_volume:
             available.add("smart_money")
         if anomaly is not None:
             available.add("anomaly")
@@ -703,12 +778,20 @@ class SignalGenerator:
         news: Optional[NewsVote],
         anomaly: Optional[AnomalyVote],
         weights: SignalWeights,
+        available: Optional[set[str]] = None,
     ) -> dict[str, tuple[float, float, float]]:
-        """Return ``{component: (numeric_score, confidence, weight)}``."""
+        """Return ``{component: (numeric_score, confidence, weight)}``.
+
+        Components outside *available* are omitted entirely, so they cannot
+        count towards agreement or conflict checks either.
+        """
         v: dict[str, tuple[float, float, float]] = {}
 
         def num(s: str) -> float:
             return _VOTE_NUMERIC.get((s or "NEUTRAL").upper(), 0.0)
+
+        def ok(component: str) -> bool:
+            return available is None or component in available
 
         v["trend"] = (
             num(technical.trend.trend_vote),
@@ -720,18 +803,19 @@ class SignalGenerator:
             technical.momentum.momentum_confidence,
             weights.momentum_weight,
         )
-        v["volume"] = (
-            num(technical.volume.volume_vote),
-            technical.volume.volume_confidence,
-            weights.volume_weight,
-        )
+        if ok("volume"):
+            v["volume"] = (
+                num(technical.volume.volume_vote),
+                technical.volume.volume_confidence,
+                weights.volume_weight,
+            )
         if technical.options is not None:
             v["options"] = (
                 num(technical.options.options_vote),
                 technical.options.options_confidence,
                 weights.options_weight,
             )
-        if technical.smart_money is not None:
+        if technical.smart_money is not None and ok("smart_money"):
             v["smart_money"] = (
                 num(technical.smart_money.smart_money_bias),
                 technical.smart_money.confidence,

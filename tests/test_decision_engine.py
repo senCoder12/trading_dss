@@ -524,6 +524,12 @@ def engine(tmp_db: DatabaseManager, tmp_path: Path) -> DecisionEngine:
 
         eng = DecisionEngine(tmp_db, risk_config=RiskConfig(total_capital=100_000.0))
 
+    # Inputs are fresh unless a test says otherwise: the stale-data penalty
+    # now applies before risk/alerting and would otherwise veto every trade.
+    from src.data.rate_limiter import freshness_tracker
+    for _dtype in ("index_prices", "options_chain", "vix"):
+        freshness_tracker.update(_dtype)
+
     # Attach mocks for inspection in tests
     eng._mock_ta  = mock_ta
     eng._mock_ne  = mock_ne

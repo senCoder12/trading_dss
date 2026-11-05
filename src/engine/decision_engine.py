@@ -51,6 +51,7 @@ import pandas as pd
 
 from config.constants import IST_TIMEZONE
 from config.settings import KILL_SWITCH_FILE
+from src.data.contract_master import ContractMaster, get_contract_master, sync_registry_lot_sizes
 from src.data.index_registry import get_registry
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
@@ -80,6 +81,18 @@ _NEWS_STALE_SECONDS: int = 180   # 3 minutes
 # Minimum daily bars needed before analysis is meaningful
 _MIN_DAILY_BARS: int = 50
 _MIN_BARS_FALLBACK: int = 5     # absolute floor — below this, return NO_TRADE
+# An options-chain snapshot older than this (vs the decision time) is not
+# used: PCR/OI walls/IV from a stale chain priced against a live spot are
+# worse than no options view at all.
+_MAX_CHAIN_AGE_SECONDS: int = 900
+# VIX is collected every 60 s; older than this is not "current VIX".
+_MAX_VIX_AGE_SECONDS: int = 900
+# Position monitor: a price older than this is not acted on.
+_MAX_MONITOR_PRICE_AGE_SECONDS: int = 600
+# Consecutive monitor cycles without a usable price before alerting.
+_MISSING_PRICE_ALERT_CYCLES: int = 2
+# Options stop trading at 15:30 IST — after that today's expiry is dead.
+_OPTIONS_CLOSE_HOUR, _OPTIONS_CLOSE_MINUTE = 15, 30
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +206,7 @@ class DecisionEngine:
         candle_store=None,
         smart_api=None,
         options_analyzer=None,
+        contract_master: Optional[ContractMaster] = None,
     ) -> None:
         self._db = db
         self._lock = threading.Lock()
@@ -200,6 +214,12 @@ class DecisionEngine:
 
         # ── Sub-components ────────────────────────────────────────────
         self.registry = get_registry()
+        # Exchange contract facts (lot sizes, expiry calendar).  Lazy: no I/O
+        # until the first cycle of each trading day.
+        self.contract_master = contract_master or get_contract_master()
+        self._contract_facts_date = None
+        # Position monitor: consecutive cycles without a usable price.
+        self._missing_price_cycles: dict[str, int] = {}
 
         self.tech_aggregator = TechnicalAggregator()
         self.news_engine = NewsEngine(db)
@@ -275,6 +295,72 @@ class DecisionEngine:
         self._gex_brief_date: Optional[str] = None  # date string for dedup
 
         logger.info("DecisionEngine initialised — all sub-components ready")
+
+    # ------------------------------------------------------------------
+    # Time / contract helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _as_ist(ts: datetime) -> datetime:
+        """Aware IST datetime (naive timestamps are taken to be IST)."""
+        return ts.replace(tzinfo=_IST) if ts.tzinfo is None else ts.astimezone(_IST)
+
+    def _refresh_contract_facts(self, now: datetime) -> None:
+        """Once per trading day: pull exchange lot sizes into the registry.
+
+        Every ₹ figure (risk, sizing, P&L, GEX) multiplies by lot size, and
+        exchanges revise lot sizes twice a year — config values are only a
+        fallback.
+        """
+        day = now.date()
+        if self._contract_facts_date == day:
+            return
+        self._contract_facts_date = day
+        try:
+            changed = sync_registry_lot_sizes(self.registry, self.contract_master, as_of=now)
+            if changed:
+                logger.warning(
+                    "DecisionEngine: lot sizes updated from contract master "
+                    "(config/indices.json is stale): %s", changed,
+                )
+        except Exception:
+            logger.exception("DecisionEngine: contract-fact refresh failed — using config lot sizes")
+
+    def _apply_stale_penalty(
+        self,
+        index_id: str,
+        signal: TradingSignal,
+        regime: MarketRegime,
+        penalty: float,
+    ) -> TradingSignal:
+        """Reduce confidence for stale inputs; drop the trade below MEDIUM."""
+        if getattr(signal, "signal_type", "NO_TRADE") not in ("BUY_CALL", "BUY_PUT"):
+            return signal
+        original = float(getattr(signal, "confidence_score", 0.0) or 0.0)
+        penalized = max(0.0, original - penalty)
+        min_conf = getattr(self.signal_generator, "_min_conf_medium", None)
+        if not isinstance(min_conf, (int, float)):
+            min_conf = 0.45
+        min_high = getattr(self.signal_generator, "_min_conf_high", None)
+        if not isinstance(min_high, (int, float)):
+            min_high = 0.65
+        logger.info(
+            "DecisionEngine [%s]: confidence %.2f → %.2f (stale data penalty %.2f)",
+            index_id, original, penalized, penalty,
+        )
+        if penalized < min_conf:
+            return self._make_no_trade_signal(
+                index_id, regime,
+                f"Stale data: confidence {original:.2f} → {penalized:.2f} "
+                f"(< {min_conf:.2f} after stale-data penalty)",
+            )
+        try:
+            object.__setattr__(signal, "confidence_score", round(penalized, 4))
+            if penalized < min_high:
+                object.__setattr__(signal, "confidence_level", "MEDIUM")
+        except (AttributeError, TypeError):
+            pass
+        return signal
 
     def set_fo_universe_manager(self, manager: Any) -> None:
         """Wire the F&O Universe Manager for priority stock signal generation."""
@@ -418,8 +504,18 @@ class DecisionEngine:
             return self._kill_switch_no_trade(index_id)
 
         cycle_start = time.monotonic()
-        now = datetime.now(tz=_IST)
+        # Decision time: the replay timestamp when given, else the wall clock.
+        # Every time-of-day rule and every DB read below is bounded by it, so
+        # a replay never sees data (or a clock) from after `as_of`.
+        if as_of is not None:
+            as_of = self._as_ist(as_of)
+        now = as_of if as_of is not None else datetime.now(tz=_IST)
         step_timings: dict[str, int] = {}
+
+        # Live only: the contract master lists *current* contracts, so in a
+        # replay it would stamp today's lot sizes onto historical dates.
+        if as_of is None:
+            self._refresh_contract_facts(now)
 
         logger.info("DecisionEngine: starting cycle for %s", index_id)
 
@@ -446,7 +542,14 @@ class DecisionEngine:
         # ── Stale-data check (non-blocking — adds warnings) ──────────
         stale_warnings: list[str] = []
         _stale_confidence_penalty = 0.0
-        for dtype, max_age in (("index_prices", 300), ("options_chain", 600), ("vix", 480)):
+        # The tracker measures wall-clock fetch age of *this process*, which
+        # is meaningless in a replay — there, every read is bounded by as_of
+        # and the chain/bar timestamps are validated against it instead.
+        live_freshness_checks = (
+            (("index_prices", 300), ("options_chain", 600), ("vix", 480))
+            if as_of is None else ()
+        )
+        for dtype, max_age in live_freshness_checks:
             if freshness_tracker.is_stale(dtype, max_age_seconds=max_age):
                 age = freshness_tracker.get_age_seconds(dtype)
                 age_str = f"{age:.0f}s" if age is not None else "never fetched"
@@ -454,6 +557,15 @@ class DecisionEngine:
                 stale_warnings.append(msg)
                 logger.warning("DecisionEngine [%s]: %s", index_id, msg)
                 _stale_confidence_penalty += 0.1  # 0.1 per stale source
+
+        # The global freshness tracker only says *some* chain was fetched
+        # recently; validate the snapshot actually loaded for this index.
+        options_chain, oi_summary, chain_warning = self._validate_options_chain(
+            index_id, options_chain, oi_summary, now,
+        )
+        if chain_warning:
+            stale_warnings.append(chain_warning)
+            logger.warning("DecisionEngine [%s]: %s", index_id, chain_warning)
 
         # ── Step 2b: Advanced Options Analytics ───────────────────────
         # Run before Step 2 so advanced_opts is available for TechnicalAggregator
@@ -515,11 +627,16 @@ class DecisionEngine:
 
         # ── Step 3: News Assessment ────────────────────────────────────
         t0 = time.monotonic()
-        news_vote, event_modifier = self._step_news(index_id)
+        if as_of is None:
+            news_vote, event_modifier = self._step_news(index_id)
+        else:
+            # No point-in-time news archive exists: the news engine fetches
+            # live RSS, which would leak today's headlines into a replay.
+            news_vote, event_modifier = None, None
         step_timings["3_news"] = int((time.monotonic() - t0) * 1000)
 
         # ── Step 3b: Overnight data overlay ────────────────────────────
-        overnight = self._load_overnight_snapshot()
+        overnight = self._load_overnight_snapshot(now)
         overnight_weight = self._overnight_decay_weight(now)
         if overnight and overnight_weight > 0:
             news_vote = self._apply_overnight_to_news_vote(
@@ -530,8 +647,9 @@ class DecisionEngine:
         if overnight_weight > 0.4:  # Only effective before 10:00 AM
             try:
                 gift_row = self._db.fetch_one(
-                    "SELECT implied_gap_pts, gap_classification FROM gift_nifty ORDER BY timestamp DESC LIMIT 1",
-                    ()
+                    "SELECT implied_gap_pts, gap_classification FROM gift_nifty "
+                    "WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+                    (now.isoformat(),)
                 )
                 if gift_row and gift_row.get("implied_gap_pts"):
                     gap_pts = float(gift_row["implied_gap_pts"])
@@ -554,13 +672,13 @@ class DecisionEngine:
         t0 = time.monotonic()
         regime = self._step_regime(
             index_id, price_df, technical_result, event_modifier, anomaly_result, vix_value,
-            advanced_opts=advanced_opts,
+            advanced_opts=advanced_opts, now=now,
         )
         step_timings["5_regime"] = int((time.monotonic() - t0) * 1000)
 
         # ── Step 5c: BankNIFTY/NIFTY Divergence → inject into regime ──
         try:
-            div_result = self._compute_banknifty_nifty_divergence()
+            div_result = self._compute_banknifty_nifty_divergence(now)
             if div_result and div_result.get("signal") not in ("ALIGNED", None):
                 regime.warnings.append(div_result["signal"])
                 div_pct = div_result.get("divergence_pct", 0)
@@ -573,7 +691,7 @@ class DecisionEngine:
 
         # ── Step 5b: Hero Zero Detection ───────────────────────────────
         t0 = time.monotonic()
-        hz_result = self._step_hero_zero(index_id, options_chain, intraday_rows, as_of)
+        hz_result = self._step_hero_zero(index_id, options_chain, intraday_rows, now)
         step_timings["5b_hero_zero"] = int((time.monotonic() - t0) * 1000)
 
         # ── Step 5d: GEX Regime Overlay ───────────────────────────────
@@ -585,6 +703,7 @@ class DecisionEngine:
             vix_value=vix_value,
             price_df=price_df,
             event_modifier=event_modifier,
+            now=now,
         )
         if vix_value is not None:
             self._vix_readings.append((now, vix_value))
@@ -648,6 +767,14 @@ class DecisionEngine:
         )
         step_timings["6c_liquidity"] = int((time.monotonic() - t0) * 1000)
 
+        # ── Step 6d: Stale-data confidence penalty ────────────────────
+        # Must run BEFORE risk + alerting: a penalty applied afterwards
+        # changes nothing that matters (the trade is already sized/sent).
+        if _stale_confidence_penalty > 0:
+            raw_signal = self._apply_stale_penalty(
+                index_id, raw_signal, regime, _stale_confidence_penalty,
+            )
+
         # ── Step 7: Risk Management ────────────────────────────────────
         t0 = time.monotonic()
         final_signal, is_actionable = self._step_risk(raw_signal, options_chain)
@@ -661,16 +788,6 @@ class DecisionEngine:
         step_timings["8_store_alert"] = int((time.monotonic() - t0) * 1000)
 
         total_ms = int((time.monotonic() - cycle_start) * 1000)
-
-        # ── Apply stale-data confidence penalty ──────────────────────
-        if _stale_confidence_penalty > 0 and hasattr(final_signal, "confidence_score"):
-            original = final_signal.confidence_score or 0.0
-            penalized = max(0.0, original - _stale_confidence_penalty)
-            object.__setattr__(final_signal, "confidence_score", penalized)
-            logger.info(
-                "DecisionEngine [%s]: confidence reduced %.2f → %.2f (stale data)",
-                index_id, original, penalized,
-            )
 
         # Surface the overnight gap prediction as a warning during the
         # first hour so traders are aware of the pre-market bias.
@@ -813,21 +930,17 @@ class DecisionEngine:
 
         logger.debug("DecisionEngine: monitoring %d open position(s)", len(open_pos))
 
+        now = datetime.now(tz=_IST)
         for pos in open_pos:
             try:
-                bar = (
-                    self._get_latest_bar(pos.index_id, "5m")
-                    or self._get_latest_bar(pos.index_id, "1d")
-                )
-                if not bar:
-                    logger.warning(
-                        "monitor_open_positions: no price for %s — skipping", pos.index_id
-                    )
+                current_price, price_problem = self._monitor_price(pos.index_id, now)
+                if price_problem:
+                    # Never evaluate SL/target on a missing or stale price —
+                    # but never stay silent either: an unmonitored option
+                    # position is the most dangerous state this system has.
+                    self._report_missing_price(pos, price_problem)
                     continue
-
-                current_price = float(bar.get("close", 0))
-                if current_price <= 0:
-                    continue
+                self._missing_price_cycles.pop(pos.signal_id, None)
 
                 update = self.risk_manager.update_position(pos.signal_id, current_price)
 
@@ -874,6 +987,65 @@ class DecisionEngine:
                     "monitor_open_positions: error for position %s",
                     getattr(pos, "signal_id", "?"),
                 )
+
+    def _monitor_price(self, index_id: str, now: datetime) -> tuple[float, Optional[str]]:
+        """Freshest intraday close for *index_id* → ``(price, problem)``.
+
+        ``problem`` is ``None`` when the price is usable.  Daily bars are
+        deliberately not a fallback: yesterday's close against intraday
+        SL/target levels would trigger false exits (or miss real ones).
+        """
+        candidates = [
+            bar for bar in (
+                self._get_latest_bar(index_id, "1m", as_of=now),
+                self._get_latest_bar(index_id, "5m", as_of=now),
+            ) if bar
+        ]
+        if not candidates:
+            return 0.0, "no intraday price in DB"
+        bar = max(candidates, key=lambda b: str(b.get("timestamp", "")))
+        price = float(bar.get("close") or 0)
+        if price <= 0:
+            return 0.0, f"invalid close {price}"
+        try:
+            bar_ts = datetime.fromisoformat(str(bar.get("timestamp")))
+            if bar_ts.tzinfo is None:
+                bar_ts = bar_ts.replace(tzinfo=_IST)
+            age = (now - bar_ts).total_seconds()
+        except (TypeError, ValueError):
+            return 0.0, f"unparseable bar timestamp {bar.get('timestamp')!r}"
+        if age > _MAX_MONITOR_PRICE_AGE_SECONDS:
+            return 0.0, f"latest price is {age:.0f}s old"
+        return price, None
+
+    def _report_missing_price(self, pos, problem: str) -> None:
+        """Count consecutive unusable-price cycles; alert from the 2nd one."""
+        n = self._missing_price_cycles.get(pos.signal_id, 0) + 1
+        self._missing_price_cycles[pos.signal_id] = n
+        if n < _MISSING_PRICE_ALERT_CYCLES:
+            logger.warning(
+                "monitor_open_positions: %s %s — %s (cycle %d)",
+                pos.index_id, pos.signal_id[:8], problem, n,
+            )
+            return
+        logger.error(
+            "POSITION UNMONITORED: %s %s — %s for %d consecutive cycles. "
+            "SL/target are NOT being enforced; manage this position manually.",
+            pos.index_id, pos.signal_id[:8], problem, n,
+        )
+        # Alert on the first breach, then every 10 cycles to avoid spam.
+        if n == _MISSING_PRICE_ALERT_CYCLES or n % 10 == 0:
+            try:
+                queue_event("system_alert", {
+                    "alert_type": "POSITION_UNMONITORED",
+                    "message": (
+                        f"{pos.index_id} {getattr(pos, 'signal_type', '')} position "
+                        f"not monitored: {problem} ({n} cycles). SL/target not enforced."
+                    ),
+                    "severity": "CRITICAL",
+                })
+            except Exception:
+                logger.debug("POSITION_UNMONITORED broadcast failed", exc_info=True)
 
     def generate_alert_message(self, result: DecisionResult) -> str:
         """
@@ -1093,9 +1265,15 @@ class DecisionEngine:
     # ------------------------------------------------------------------
 
     def _step_gather_data(self, index_id: str, as_of: Optional[datetime] = None) -> tuple:
-        """Step 1 — Load data from DB. Each sub-fetch is isolated."""
+        """Step 1 — Load data from DB. Each sub-fetch is isolated.
+
+        All bar lists are returned in ASCENDING time order (oldest first), so
+        ``rows[-n:]`` means "the n most recent bars" everywhere downstream.
+        Every query is bounded by *as_of* so a replay cannot see the future.
+        """
         as_of_ts = as_of.isoformat() if as_of else "9999-12-31T23:59:59"
-        
+        ref_now = as_of or datetime.now(tz=_IST)
+
         current_bar: Optional[dict] = None
         daily_rows: list[dict] = []
         intraday_rows: list[dict] = []
@@ -1146,11 +1324,20 @@ class DecisionEngine:
                 logger.warning("Step 1: OI summary unavailable for %s", index_id)
 
         try:
+            # Bounded on both sides: a months-old VIX reading presented as
+            # "current" silently mis-buckets the volatility regime.
             row = self._db.fetch_one(
-                "SELECT vix_value FROM vix_data ORDER BY timestamp DESC LIMIT 1", ()
+                "SELECT vix_value FROM vix_data WHERE timestamp <= ? AND timestamp >= ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (as_of_ts, (ref_now - timedelta(seconds=_MAX_VIX_AGE_SECONDS)).isoformat()),
             )
             if row:
                 vix_value = float(row["vix_value"])
+            else:
+                logger.warning(
+                    "Step 1: no VIX reading within %ds of %s — VIX treated as unavailable",
+                    _MAX_VIX_AGE_SECONDS, ref_now.isoformat(),
+                )
         except Exception:
             logger.debug("Step 1: VIX unavailable")
 
@@ -1178,15 +1365,24 @@ class DecisionEngine:
         except Exception:
             logger.debug("Step 1: 1h bars unavailable for %s", index_id)
 
+        # The price queries return newest-first (ORDER BY timestamp DESC);
+        # flip to chronological order once, here.
+        daily_rows = list(reversed(daily_rows))
+        intraday_rows = list(reversed(intraday_rows))
+        benchmark_rows = list(reversed(benchmark_rows))
+        intraday_15m = list(reversed(intraday_15m))
+        intraday_1h = list(reversed(intraday_1h))
+
         self._mtf_cache[index_id] = {
             "15m": intraday_15m,
             "1h": intraday_1h,
         }
 
-        # Load 30-day IV history for IV percentile calculation
+        # Load 30-day IV history (point-in-time) for IV percentile calculation
         try:
             iv_rows = self._db.fetch_all(
-                Q.LIST_IV_HISTORY_30D, (index_id,)
+                Q.LIST_IV_HISTORY_WINDOW,
+                (index_id, (ref_now - timedelta(days=30)).isoformat(), as_of_ts),
             )
             iv_list = [float(r["atm_iv"]) for r in iv_rows if r.get("atm_iv", 0) > 0]
             self._iv_history_cache[index_id] = iv_list
@@ -1197,10 +1393,12 @@ class DecisionEngine:
         # Load FII futures net position for SmartMoney OIMI wiring
         fii_futures_net: Optional[float] = None
         try:
+            # FII data for date D is published after D's close: only days
+            # strictly before the decision date are knowable.
             fii_row = self._db.fetch_one(
                 "SELECT net_value FROM fii_dii_activity "
-                "WHERE segment = 'F&O_FUTURES' ORDER BY date DESC LIMIT 1",
-                ()
+                "WHERE segment = 'F&O_FUTURES' AND date < ? ORDER BY date DESC LIMIT 1",
+                (ref_now.date().isoformat(),)
             )
             if fii_row and fii_row["net_value"] is not None:
                 fii_futures_net = float(fii_row["net_value"])
@@ -1328,19 +1526,24 @@ class DecisionEngine:
         anomaly_result: Optional[AnomalyDetectionResult],
         vix_value: Optional[float],
         advanced_opts=None,
+        now: Optional[datetime] = None,
     ) -> MarketRegime:
         """Step 5 — Regime detection. Always returns a valid MarketRegime."""
+        ref_now = now or datetime.now(tz=_IST)
+        ref_ts = ref_now.isoformat()
         try:
             if technical_result is None:
                 return self._fallback_regime(index_id, "No technical result")
 
-            # Load FII futures positioning from DB
+            # Load FII futures positioning from DB (published after close →
+            # only prior days are knowable at decision time)
             fii_futures_bias = None
             fii_net_position = None
             try:
                 row = self._db.fetch_one(
-                    "SELECT net_value FROM fii_dii_activity WHERE segment = 'F&O_FUTURES' ORDER BY date DESC LIMIT 1",
-                    ()
+                    "SELECT net_value FROM fii_dii_activity WHERE segment = 'F&O_FUTURES' "
+                    "AND date < ? ORDER BY date DESC LIMIT 1",
+                    (ref_now.date().isoformat(),)
                 )
                 if row:
                     fii_net_position = float(row["net_value"] or 0)
@@ -1352,8 +1555,9 @@ class DecisionEngine:
             ad_ratio = None
             try:
                 row = self._db.fetch_one(
-                    "SELECT ad_ratio FROM market_breadth ORDER BY timestamp DESC LIMIT 1",
-                    ()
+                    "SELECT ad_ratio FROM market_breadth WHERE timestamp <= ? "
+                    "ORDER BY timestamp DESC LIMIT 1",
+                    (ref_ts,)
                 )
                 if row:
                     ad_ratio = float(row["ad_ratio"] or 0)
@@ -1363,9 +1567,12 @@ class DecisionEngine:
             # Load futures basis from DB
             futures_basis = None
             try:
+                # Each index's own futures basis (previously every index
+                # silently used NIFTY50's).
                 row = self._db.fetch_one(
-                    "SELECT basis FROM futures_basis WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
-                    (index_id if index_id == "NIFTY50" else "NIFTY50",)
+                    "SELECT basis FROM futures_basis WHERE index_id = ? AND timestamp <= ? "
+                    "ORDER BY timestamp DESC LIMIT 1",
+                    (index_id, ref_ts)
                 )
                 if row:
                     futures_basis = float(row["basis"] or 0)
@@ -1596,6 +1803,7 @@ class DecisionEngine:
         vix_value: Optional[float],
         price_df: Optional[pd.DataFrame],
         event_modifier,
+        now: Optional[datetime] = None,
     ) -> Optional[str]:
         """
         Calculate or read latest GEX profile, run regime detector, return
@@ -1606,6 +1814,7 @@ class DecisionEngine:
         if self.gex_calculator is None or self.gex_regime_detector is None:
             return None
 
+        now = now or datetime.now(tz=_IST)
         try:
             # Calculate GEX profile inline if no fresh one exists
             profile = self.gex_calculator._latest_profiles.get(index_id)
@@ -1622,8 +1831,8 @@ class DecisionEngine:
             price_trend = self._compute_price_trend_15min(index_id, price_df)
             is_expiry = bool(
                 event_modifier and getattr(event_modifier, "is_expiry_day", False)
-            ) or self._default_is_expiry_day()
-            mins_to_close = self._minutes_to_close()
+            ) or self._is_expiry_day_for(index_id, now, options_chain)
+            mins_to_close = self._minutes_to_close(now)
 
             gex_regime = self.gex_regime_detector.classify_regime(
                 symbol=index_id,
@@ -1637,7 +1846,7 @@ class DecisionEngine:
             )
 
             # Morning brief (once per trading day per symbol)
-            today_str = datetime.now(tz=_IST).strftime("%Y-%m-%d")
+            today_str = now.strftime("%Y-%m-%d")
             brief_key = f"{index_id}_{today_str}"
             if brief_key != self._gex_brief_date:
                 try:
@@ -1754,17 +1963,28 @@ class DecisionEngine:
             return "SIDEWAYS"
 
     @staticmethod
-    def _minutes_to_close() -> int:
-        """Return minutes until 3:30 PM IST."""
-        now = datetime.now(tz=_IST)
-        close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    def _minutes_to_close(now: Optional[datetime] = None) -> int:
+        """Return minutes from *now* (default: wall clock) until 3:30 PM IST."""
+        now = now or datetime.now(tz=_IST)
+        close = now.replace(
+            hour=_OPTIONS_CLOSE_HOUR, minute=_OPTIONS_CLOSE_MINUTE, second=0, microsecond=0,
+        )
         delta = (close - now).total_seconds() / 60
         return max(0, int(delta))
 
-    @staticmethod
-    def _default_is_expiry_day() -> bool:
-        """Fallback expiry check: Thursday = weekly F&O expiry day."""
-        return datetime.now(tz=_IST).weekday() == 3  # Thursday
+    def _is_expiry_day_for(self, index_id: str, now: datetime, options_chain=None) -> bool:
+        """True if *index_id*'s nearest option contract expires on *now*'s date.
+
+        Uses the loaded chain's expiry first, then the contract master.
+        Never a weekday rule: expiry weekdays change by circular and holidays
+        move individual expiries.
+        """
+        expiry = getattr(options_chain, "expiry_date", None) if options_chain is not None else None
+        if expiry is not None:
+            return expiry == now.date()
+        idx = self.registry.get_index(index_id)
+        symbol = idx.option_symbol if idx and idx.option_symbol else index_id
+        return bool(self.contract_master.is_expiry_day(symbol, now.date()))
 
     def _step_risk(
         self,
@@ -1813,7 +2033,9 @@ class DecisionEngine:
         alert_priority = "NONE"
 
         try:
-            self.tracker.record_signal(final_signal)
+            # Only a risk-approved signal becomes an OPEN trade row; rejected
+            # BUY_* signals are kept for audit with outcome NULL.
+            self.tracker.record_signal(final_signal, is_actionable=is_actionable)
         except Exception:
             logger.exception("Step 8: tracker.record_signal failed for %s", index_id)
 
@@ -1866,11 +2088,68 @@ class DecisionEngine:
     # Data helpers
     # ------------------------------------------------------------------
 
-    def _get_latest_bar(self, index_id: str, timeframe: str = "1d") -> Optional[dict]:
+    def _get_latest_bar(
+        self, index_id: str, timeframe: str = "1d", as_of: Optional[datetime] = None,
+    ) -> Optional[dict]:
+        """Newest bar at or before *as_of* (default: now).
+
+        GET_LATEST_PRICE takes three parameters; calling it with two raised
+        ``ProgrammingError`` on every call, which was swallowed here — so the
+        position monitor never received a price and no SL/target ever fired.
+        Errors are now logged, not hidden.
+        """
+        as_of_ts = (as_of or datetime.now(tz=_IST)).isoformat()
         try:
-            return self._db.fetch_one(Q.GET_LATEST_PRICE, (index_id, timeframe))
+            return self._db.fetch_one(Q.GET_LATEST_PRICE, (index_id, timeframe, as_of_ts))
         except Exception:
+            logger.exception("_get_latest_bar failed for %s %s", index_id, timeframe)
             return None
+
+    def _nearest_active_expiry(self, index_id: str, as_of: Optional[datetime]) -> Optional[str]:
+        """Nearest stored expiry that is still tradeable at *as_of*.
+
+        The snapshot table keeps every expiry ever collected, so "first
+        expiry in the table" is usually a contract that expired months ago.
+        After 15:30 IST on expiry day, today's contract is dead too.
+        """
+        ref = as_of or datetime.now(tz=_IST)
+        first_day = ref.date()
+        if (ref.hour, ref.minute) >= (_OPTIONS_CLOSE_HOUR, _OPTIONS_CLOSE_MINUTE):
+            first_day = first_day + timedelta(days=1)
+        rows = self._db.fetch_all(
+            Q.LIST_ACTIVE_EXPIRY_DATES, (index_id, first_day.isoformat()),
+        )
+        return rows[0]["expiry_date"] if rows else None
+
+    def _validate_options_chain(
+        self, index_id: str, chain, oi_summary, now: datetime,
+    ) -> tuple:
+        """Drop a chain that is expired or too old to describe the market now.
+
+        Returns ``(chain | None, oi_summary | None, warning | None)``.  With
+        the chain dropped, the options component is marked unavailable and
+        its weight redistributed — never scored on stale positioning.
+        """
+        if chain is None:
+            return None, oi_summary, None
+        problem = None
+        expiry = getattr(chain, "expiry_date", None)
+        if expiry is not None and expiry < now.date():
+            problem = f"options chain expiry {expiry} is in the past"
+        else:
+            ts = getattr(chain, "timestamp", None)
+            if ts is not None:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=_IST)
+                age = (now - ts).total_seconds()
+                if age > _MAX_CHAIN_AGE_SECONDS:
+                    problem = (
+                        f"options chain snapshot is {age / 60:.0f} min old "
+                        f"(max {_MAX_CHAIN_AGE_SECONDS // 60} min)"
+                    )
+        if problem:
+            return None, None, f"Options data ignored: {problem}"
+        return chain, oi_summary, None
 
     def _load_options_chain(self, index_id: str, as_of: Optional[datetime] = None) -> Optional[OptionsChainData]:
         """Reconstruct OptionsChainData from the latest DB snapshot."""
@@ -1880,11 +2159,13 @@ class DecisionEngine:
             
             as_of_ts = as_of.isoformat() if as_of else "9999-12-31T23:59:59"
 
-            expiry_rows = self._db.fetch_all(Q.LIST_EXPIRY_DATES, (index_id,))
-            if not expiry_rows:
+            expiry_str = self._nearest_active_expiry(index_id, as_of)
+            if expiry_str is None:
+                logger.warning("_load_options_chain: no active expiry stored for %s", index_id)
                 return None
-
-            expiry_str = expiry_rows[0]["expiry_date"]
+            expiry_rows = self._db.fetch_all(
+                Q.LIST_ACTIVE_EXPIRY_DATES, (index_id, expiry_str),
+            )
             rows = self._db.fetch_all(
                 Q.LIST_OPTIONS_CHAIN_FOR_EXPIRY,
                 (index_id, expiry_str, as_of_ts, index_id, expiry_str, as_of_ts),
@@ -1905,31 +2186,31 @@ class DecisionEngine:
                 pe = d.get("PE") or {}
                 strikes_list.append(OptionStrike(
                     strike_price=sp,
-                    ce_oi=int(ce.get("open_interest", 0)),
-                    ce_oi_change=int(ce.get("oi_change", 0)),
-                    ce_oi_change_pct=float(ce.get("oi_change_pct", 0.0)),
-                    ce_volume=int(ce.get("volume", 0)),
-                    ce_ltp=float(ce.get("ltp", 0.0)),
-                    ce_ltp_change=float(ce.get("ltp_change", 0.0)),
-                    ce_ltp_change_pct=float(ce.get("ltp_change_pct", 0.0)),
-                    ce_iv=float(ce.get("iv") or 0.0),
-                    ce_bid_price=float(ce.get("bid_price", 0.0)),
-                    ce_bid_qty=int(ce.get("bid_qty", 0)),
-                    ce_ask_price=float(ce.get("ask_price", 0.0)),
-                    ce_ask_qty=int(ce.get("ask_qty", 0)),
+                    ce_oi=int(ce.get("open_interest") or 0),
+                    ce_oi_change=int(ce.get("oi_change") or 0),
+                    ce_oi_change_pct=float(ce.get("oi_change_pct") or 0),
+                    ce_volume=int(ce.get("volume") or 0),
+                    ce_ltp=float(ce.get("ltp") or 0),
+                    ce_ltp_change=float(ce.get("ltp_change") or 0),
+                    ce_ltp_change_pct=float(ce.get("ltp_change_pct") or 0),
+                    ce_iv=float(ce.get("iv") or 0),
+                    ce_bid_price=float(ce.get("bid_price") or 0),
+                    ce_bid_qty=int(ce.get("bid_qty") or 0),
+                    ce_ask_price=float(ce.get("ask_price") or 0),
+                    ce_ask_qty=int(ce.get("ask_qty") or 0),
                     
-                    pe_oi=int(pe.get("open_interest", 0)),
-                    pe_oi_change=int(pe.get("oi_change", 0)),
-                    pe_oi_change_pct=float(pe.get("oi_change_pct", 0.0)),
-                    pe_volume=int(pe.get("volume", 0)),
-                    pe_ltp=float(pe.get("ltp", 0.0)),
-                    pe_ltp_change=float(pe.get("ltp_change", 0.0)),
-                    pe_ltp_change_pct=float(pe.get("ltp_change_pct", 0.0)),
-                    pe_iv=float(pe.get("iv") or 0.0),
-                    pe_bid_price=float(pe.get("bid_price", 0.0)),
-                    pe_bid_qty=int(pe.get("bid_qty", 0)),
-                    pe_ask_price=float(pe.get("ask_price", 0.0)),
-                    pe_ask_qty=int(pe.get("ask_qty", 0)),
+                    pe_oi=int(pe.get("open_interest") or 0),
+                    pe_oi_change=int(pe.get("oi_change") or 0),
+                    pe_oi_change_pct=float(pe.get("oi_change_pct") or 0),
+                    pe_volume=int(pe.get("volume") or 0),
+                    pe_ltp=float(pe.get("ltp") or 0),
+                    pe_ltp_change=float(pe.get("ltp_change") or 0),
+                    pe_ltp_change_pct=float(pe.get("ltp_change_pct") or 0),
+                    pe_iv=float(pe.get("iv") or 0),
+                    pe_bid_price=float(pe.get("bid_price") or 0),
+                    pe_bid_qty=int(pe.get("bid_qty") or 0),
+                    pe_ask_price=float(pe.get("ask_price") or 0),
+                    pe_ask_qty=int(pe.get("ask_qty") or 0),
                 ))
 
             latest_price_row = self._db.fetch_one(
@@ -1963,12 +2244,10 @@ class DecisionEngine:
             from src.data.options_chain import OISummary
             
             as_of_ts = as_of.isoformat() if as_of else "9999-12-31T23:59:59"
-            
-            rows = self._db.fetch_all(Q.LIST_EXPIRY_DATES, (index_id,))
-            if not rows:
+
+            expiry = self._nearest_active_expiry(index_id, as_of)
+            if expiry is None:
                 return None
-            
-            expiry = rows[0]["expiry_date"]
             row = self._db.fetch_one(Q.GET_LATEST_OI_AGGREGATED, (index_id, expiry, as_of_ts))
             if not row:
                 return None
@@ -2098,7 +2377,10 @@ class DecisionEngine:
 
         prev_close = current_price
         try:
-            rows = self._db.fetch_all(Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "1d", 2))
+            rows = self._db.fetch_all(
+                Q.LIST_PRICE_HISTORY_LIMIT,
+                (index_id, "1d", datetime.now(tz=_IST).isoformat(), 2),
+            )
             if len(rows) >= 2:
                 prev_close = float(rows[1]["close"])
         except Exception:
@@ -2374,26 +2656,40 @@ class DecisionEngine:
             return orb
         return None
 
-    def _compute_banknifty_nifty_divergence(self) -> Optional[dict]:
+    def _day_change_pct(self, index_id: str, now: datetime) -> Optional[float]:
+        """Session change % at *now*: latest close vs previous session's close.
+
+        (The old version used the latest row's own open/close — for a 1m or
+        5m bar that is a one-bar move, not the day's move.)
+        """
+        now_ts = now.isoformat()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        last = self._db.fetch_one(
+            "SELECT close FROM price_data WHERE index_id = ? AND timestamp <= ? "
+            "AND timeframe IN ('1m', '5m') ORDER BY timestamp DESC LIMIT 1",
+            (index_id, now_ts),
+        )
+        prev = self._db.fetch_one(
+            "SELECT close FROM price_data WHERE index_id = ? AND timeframe = '1d' "
+            "AND timestamp < ? ORDER BY timestamp DESC LIMIT 1",
+            (index_id, day_start),
+        )
+        if not last or not prev or not prev["close"]:
+            return None
+        return (float(last["close"]) - float(prev["close"])) / float(prev["close"]) * 100
+
+    def _compute_banknifty_nifty_divergence(self, now: Optional[datetime] = None) -> Optional[dict]:
         """Check if BankNIFTY is diverging significantly from NIFTY50.
 
         Divergence > 0.5% for 30 min = sector rotation signal.
         BankNIFTY leading NIFTY = financial sector rotation in/out.
         """
+        now = now or datetime.now(tz=_IST)
         try:
-            nifty_row = self._db.fetch_one(
-                "SELECT close, open FROM price_data WHERE index_id = 'NIFTY50' ORDER BY timestamp DESC LIMIT 1",
-                ()
-            )
-            bank_row = self._db.fetch_one(
-                "SELECT close, open FROM price_data WHERE index_id = 'BANKNIFTY' ORDER BY timestamp DESC LIMIT 1",
-                ()
-            )
-            if not nifty_row or not bank_row:
+            nifty_chg = self._day_change_pct("NIFTY50", now)
+            bank_chg = self._day_change_pct("BANKNIFTY", now)
+            if nifty_chg is None or bank_chg is None:
                 return None
-
-            nifty_chg = (float(nifty_row["close"]) - float(nifty_row["open"])) / float(nifty_row["open"]) * 100
-            bank_chg = (float(bank_row["close"]) - float(bank_row["open"])) / float(bank_row["open"]) * 100
 
             divergence = bank_chg - nifty_chg
 
@@ -2420,9 +2716,9 @@ class DecisionEngine:
     # Overnight data overlay
     # ------------------------------------------------------------------
 
-    def _load_overnight_snapshot(self) -> Optional[dict]:
-        """Load today's overnight snapshot (cached per trade date)."""
-        today_iso = datetime.now(tz=_IST).date().isoformat()
+    def _load_overnight_snapshot(self, now: Optional[datetime] = None) -> Optional[dict]:
+        """Load the overnight snapshot for *now*'s trade date (cached per date)."""
+        today_iso = (now or datetime.now(tz=_IST)).date().isoformat()
         with self._lock:
             if self._overnight_cache_date == today_iso:
                 return self._overnight_cache

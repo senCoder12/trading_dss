@@ -547,6 +547,27 @@ class IndexRegistry:
             logger.info("IndexRegistry: dynamically registered %d stocks as indices", registered)
         return registered
 
+    def apply_lot_sizes(self, lot_sizes: dict[str, int]) -> int:
+        """Override lot sizes in memory (e.g. from the exchange contract master).
+
+        ``config/indices.json`` lot sizes are only a fallback: exchanges revise
+        them twice a year.  Unknown ids and non-positive values are ignored.
+        Returns the number of indices whose lot size changed.
+        """
+        changed = 0
+        with self._lock:
+            for index_id, lot in lot_sizes.items():
+                idx = self._indices.get(index_id.upper())
+                if idx is None or not lot or int(lot) <= 0 or idx.lot_size == int(lot):
+                    continue
+                logger.info(
+                    "IndexRegistry: lot size %s %s → %d (contract master)",
+                    idx.id, idx.lot_size, int(lot),
+                )
+                self._indices[idx.id] = idx.model_copy(update={"lot_size": int(lot)})
+                changed += 1
+        return changed
+
     def remove_dynamic_indices(self) -> int:
         """Remove all indices that are not in the source configuration file."""
         if self._source_path is None:

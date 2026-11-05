@@ -97,6 +97,10 @@ class TechnicalAnalysisResult:
     # Data quality
     data_completeness: float = 1.0
     warnings: list[str] = field(default_factory=list)
+    # False when the bar series carries no real volume (NSE spot indices
+    # publish none intraday).  Volume-derived votes are then meaningless and
+    # must be treated as unavailable, not as NEUTRAL.
+    volume_available: bool = True
 
     # Multi-timeframe confluence
     timeframe_confluence_score: float = 0.0   # -1.0 to 1.0 (agreement across TFs)
@@ -240,7 +244,16 @@ class TechnicalAggregator:
             Unified analysis with votes, signal, confidence, levels, and alerts.
         """
         now = datetime.now()
+        # The result is stamped with the *data* time (last bar), not the wall
+        # clock: downstream staleness checks compare against this, so a
+        # wall-clock stamp would make days-old bars look fresh.
+        data_ts = _last_bar_timestamp(price_df) or now
+        volume_available = _has_real_volume(price_df)
         warnings: list[str] = []
+        if not volume_available:
+            warnings.append(
+                "No real volume in price series — volume/smart-money votes disabled"
+            )
         categories_available = 0
         total_categories = 7
 
@@ -491,7 +504,7 @@ class TechnicalAggregator:
         # ── Build result ───────────────────────────────────────────────
         result = TechnicalAnalysisResult(
             index_id=index_id,
-            timestamp=now,
+            timestamp=data_ts,
             timeframe=timeframe,
             trend=trend,
             momentum=momentum,
@@ -523,6 +536,7 @@ class TechnicalAggregator:
             orb_high=orb_high,
             orb_low=orb_low,
             orb_captured=orb_captured,
+            volume_available=volume_available,
         )
 
         # Generate reasoning last (needs the full result)
@@ -912,6 +926,39 @@ class TechnicalAggregator:
             lines.append("  Caution: " + "; ".join(result.warnings))
 
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Data-quality helpers
+# ---------------------------------------------------------------------------
+
+# Fraction of recent bars that must carry non-zero volume for volume-based
+# indicators to mean anything.
+_MIN_VOLUME_BAR_FRACTION: float = 0.8
+_VOLUME_LOOKBACK_BARS: int = 20
+
+
+def _last_bar_timestamp(price_df: Optional[pd.DataFrame]) -> Optional[datetime]:
+    """Timestamp of the newest bar as a datetime, or ``None`` if unavailable."""
+    if price_df is None or price_df.empty or "timestamp" not in price_df.columns:
+        return None
+    try:
+        ts = pd.to_datetime(price_df["timestamp"], errors="coerce").dropna()
+        if ts.empty:
+            return None
+        return ts.max().to_pydatetime()
+    except Exception:
+        return None
+
+
+def _has_real_volume(price_df: Optional[pd.DataFrame]) -> bool:
+    """True when most of the recent bars have non-zero volume."""
+    if price_df is None or price_df.empty or "volume" not in price_df.columns:
+        return False
+    recent = pd.to_numeric(price_df["volume"], errors="coerce").fillna(0).tail(_VOLUME_LOOKBACK_BARS)
+    if recent.empty:
+        return False
+    return float((recent > 0).mean()) >= _MIN_VOLUME_BAR_FRACTION
 
 
 # ---------------------------------------------------------------------------
