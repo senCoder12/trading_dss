@@ -28,6 +28,55 @@ from src.data.rate_limiter import freshness_tracker
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
 
+# Strikes nearest to spot fetched on the broker fallback (x2 for CE+PE tokens)
+_BROKER_MAX_STRIKES = 50
+
+
+def _quote_time(quotes) -> Optional[datetime]:
+    """Latest exchange feed time across Angel One quotes ("05-Nov-2026 15:40:00"), in IST."""
+    latest = None
+    for q in quotes:
+        try:
+            t = datetime.strptime(q.get("exchFeedTime") or "", "%d-%b-%Y %H:%M:%S").replace(tzinfo=_IST)
+        except ValueError:
+            continue
+        if latest is None or t > latest:
+            latest = t
+    return latest
+
+
+def _implied_vol_pct(
+    ltp: float, spot: float, strike: float, opt_type: str, expiry: date, as_of: datetime
+) -> float:
+    """Black-Scholes IV in percent (NSE's convention), or 0.0 when it can't be solved reliably."""
+    if ltp <= 0 or spot <= 0:
+        return 0.0
+    intrinsic = max(0.0, spot - strike) if opt_type == "CE" else max(0.0, strike - spot)
+    if ltp <= intrinsic:
+        return 0.0  # stale or below-parity print — no meaningful IV
+    try:
+        from src.analysis.gex.black_scholes import (  # noqa: PLC0415 — avoid data→analysis import at load
+            BlackScholesEngine,
+            BSMInputs,
+            get_dte,
+            get_risk_free_rate,
+        )
+        engine = BlackScholesEngine()
+        iv = engine.calculate_iv(ltp, BSMInputs(
+            spot=spot,
+            strike=strike,
+            dte_days=get_dte(expiry, as_of) * 365.0,
+            iv=0.20,
+            risk_free_rate=get_risk_free_rate(),
+            option_type=opt_type,
+        ))
+    except Exception:
+        return 0.0
+    # Solver pinned to its bounds means it did not converge on a real value
+    if iv <= engine.MIN_IV * 1.01 or iv >= engine.MAX_IV * 0.99:
+        return 0.0
+    return round(iv * 100, 2)
+
 
 # =============================================================================
 # Data Structures
@@ -126,10 +175,17 @@ class OptionsChainFetcher:
     needing database round-trips.
     """
 
-    def __init__(self, scraper: Optional[NSEScraper] = None, bse_scraper=None, broker_client=None) -> None:
+    def __init__(
+        self,
+        scraper: Optional[NSEScraper] = None,
+        bse_scraper=None,
+        broker_client=None,
+        db: Optional[DatabaseManager] = None,
+    ) -> None:
         self._scraper = scraper or NSEScraper()
         self._bse_scraper = bse_scraper  # Optional[BSEScraper]
-        self._broker = broker_client  # Optional[SmartAPIClient]
+        self._broker = broker_client  # Optional[AngelOneClient]
+        self._db = db  # Used by the broker path for prior-session OI (change in OI)
         # Memory storage for last two snapshots per symbol/expiry to do quick comparisons.
         # Key format: f"{symbol}_{expiry.isoformat()}" -> list[OptionsChainData] (max 2 items)
         self._previous_chains: dict[str, list[OptionsChainData]] = {}
@@ -605,108 +661,162 @@ class OptionsChainFetcher:
 
     # ── Broker Fallback ───────────────────────────────────────────────────────
 
+    def _prior_session_oi(self, index_id: str, expiry: date, session_date: date) -> dict[tuple[float, str], int]:
+        """OI per (strike, option_type) from the last snapshot taken before session_date's open."""
+        if self._db is None:
+            return {}
+        try:
+            cutoff = f"{session_date.isoformat()}T09:15"
+            rows = self._db.fetch_all(
+                "SELECT strike_price, option_type, open_interest FROM options_chain_snapshot "
+                "WHERE index_id = ? AND expiry_date = ? AND timestamp = ("
+                "  SELECT MAX(timestamp) FROM options_chain_snapshot"
+                "  WHERE index_id = ? AND expiry_date = ? AND timestamp < ?)",
+                (index_id, expiry.isoformat(), index_id, expiry.isoformat(), cutoff),
+            )
+            return {(float(r["strike_price"]), r["option_type"]): int(r["open_interest"]) for r in rows}
+        except Exception as exc:
+            logger.warning("Prior-session OI lookup failed for %s: %s", index_id, exc)
+            return {}
+
     def _fetch_from_broker(self, option_symbol: str, target_date: Optional[date] = None) -> Optional[dict]:
         """
-        Fetch options data from Angel One and format it to match NSE raw structure.
-        
-        This allows the existing parser to work with broker data seamlessly.
+        Build an options chain from Angel One quotes, shaped like the NSE raw response.
+
+        Contracts come from the scrip master (NFO, or BFO for BSE indices); quotes
+        come from getMarketData FULL, which carries LTP, OI and volume. Angel One
+        reports OI and volume in units, so both are divided by lot size to match
+        NSE's contract counts.
+
+        Angel One supplies neither IV nor change in OI, so they are derived:
+        IV is back-solved from LTP with Black-Scholes; change in OI is measured
+        against the last stored snapshot taken before the quotes' session opened
+        (needs ``db``; 0 when no such snapshot exists).
         """
         if not self._broker:
             return None
-            
+
         try:
-            from src.data.index_registry import get_registry
+            import time  # noqa: PLC0415
+
+            import pandas as pd  # noqa: PLC0415
+
+            from src.data.broker.angel_one import INDEX_REST_TOKENS, MARKET_DATA_MAX_TOKENS  # noqa: PLC0415
+
             registry = get_registry()
             idx = registry.get_index_by_option_symbol(option_symbol)
             if not idx:
                 return None
 
-            # 1. Get spot price for ATM strike calculation
-            spot = None
-            if hasattr(self._broker, "get_ltp"):
-                from src.data.data_router import _INDEX_TOKENS
-                token_info = _INDEX_TOKENS.get(idx.id)
-                if token_info:
-                    spot = self._broker.get_ltp(idx.exchange, idx.nse_symbol or option_symbol, token_info[0])
-
-            if spot is None:
-                spot = 0.0
-
-            # 2. Resolve expiry string (e.g. "28APR2026")
-            expiry_str = ""
+            # 1. Option contracts for the target (or nearest live) expiry
+            segment = "BFO" if idx.exchange == "BSE" else "NFO"
+            master = self._broker.get_master_contract(segment)
+            if master is None or master.empty:
+                return None
+            opts = master[
+                (master["name"] == option_symbol.upper())
+                & (master["instrumenttype"].isin(["OPTIDX", "OPTSTK"]))
+            ].copy()
+            if opts.empty:
+                return None
+            opts["expiry_dt"] = pd.to_datetime(opts["expiry"], format="%d%b%Y").dt.date
             if target_date:
-                expiry_str = target_date.strftime("%d%b%Y").upper()
+                opts = opts[opts["expiry_dt"] == target_date]
             else:
-                # Get nearest from master contract
-                master = self._broker.get_master_contract("NFO")
-                if master is not None:
-                    import pandas as pd
-                    sym_df = master[master["name"] == option_symbol].copy()
-                    if not sym_df.empty:
-                        sym_df["expiry_dt"] = pd.to_datetime(sym_df["expiry"])
-                        sym_df = sym_df.sort_values("expiry_dt")
-                        expiry_str = sym_df["expiry"].iloc[0]
-            
-            if not expiry_str:
+                live = opts[opts["expiry_dt"] >= datetime.now(tz=_IST).date()]
+                opts = live[live["expiry_dt"] == live["expiry_dt"].min()] if not live.empty else live
+            if opts.empty:
+                return None
+            opts = opts.copy()
+            expiry_dt = opts["expiry_dt"].iloc[0]
+            opts["strike_val"] = opts["strike"].astype(float) / 100.0
+            opts["opt_type"] = opts["symbol"].str[-2:]
+
+            # 2. Spot, to centre the strike window
+            spot = 0.0
+            rest = INDEX_REST_TOKENS.get(idx.id)
+            if rest:
+                spot_data = self._broker.get_market_data("LTP", {rest[0]: [rest[1]]})
+                fetched = (spot_data or {}).get("fetched") or []
+                if fetched:
+                    spot = float(fetched[0].get("ltp") or 0.0)
+
+            strikes = sorted(opts["strike_val"].unique())
+            if spot > 0:
+                strikes = sorted(strikes, key=lambda s: abs(s - spot))[:_BROKER_MAX_STRIKES]
+            else:
+                mid = len(strikes) // 2
+                half = _BROKER_MAX_STRIKES // 2
+                strikes = strikes[max(0, mid - half): mid + half]
+            opts = opts[opts["strike_val"].isin(strikes)]
+
+            # 3. Quotes in batches of MARKET_DATA_MAX_TOKENS
+            tokens = opts["token"].astype(str).tolist()
+            quotes: dict[str, dict] = {}
+            for i in range(0, len(tokens), MARKET_DATA_MAX_TOKENS):
+                if i:
+                    time.sleep(0.35)  # stay well under the market-data rate limit
+                batch = self._broker.get_market_data("FULL", {segment: tokens[i:i + MARKET_DATA_MAX_TOKENS]})
+                for q in (batch or {}).get("fetched") or []:
+                    quotes[str(q.get("symbolToken"))] = q
+            if not quotes:
                 return None
 
-            # 3. Call SmartAPI optionGreek (returns whole chain around a strike)
-            anchor_strike = str(int(round(spot / 50) * 50)) if spot > 0 else "0"
-            broker_data = self._broker.get_option_chain(option_symbol, expiry_str, anchor_strike)
-            if not broker_data:
-                return None
+            # Quotes' own session time: after hours it is still the last close,
+            # which keeps DTE (for IV) and the OI baseline consistent with the prices.
+            as_of = _quote_time(quotes.values()) or datetime.now(tz=_IST)
+            base_oi = self._prior_session_oi(idx.id, expiry_dt, as_of.date())
 
-            # 4. Map to NSE-style "records" dict
-            nse_style_data = []
-            strikes_map = {}
-            
-            for item in broker_data:
-                try:
-                    strike = float(item.get("strikePrice", 0))
-                    if strike == 0: continue
-                    
-                    if strike not in strikes_map:
-                        strikes_map[strike] = {"strikePrice": strike}
-                    
-                    opt_type = item.get("optionType")
-                    if opt_type in ("CE", "PE"):
-                        strikes_map[strike][opt_type] = {
-                            "strikePrice": strike,
-                            "expiryDate": item.get("expiry"),
-                            "underlying": option_symbol,
-                            "identifier": f"{option_symbol}{item.get('expiry')}{opt_type}{strike}",
-                            "openInterest": int(float(item.get("openInterest", 0))),
-                            "changeinOpenInterest": int(float(item.get("openInterestChange", 0))),
-                            "pchangeinOpenInterest": float(item.get("openInterestChangePer", 0)),
-                            "totalTradedVolume": int(float(item.get("tradeVolume", 0))),
-                            "impliedVolatility": float(item.get("impliedVolatility", 0)),
-                            "lastPrice": float(item.get("ltp", item.get("lastPrice", 0.0))),
-                            "change": float(item.get("netChange", item.get("change", 0.0))),
-                            "pChange": float(item.get("percentChange", item.get("pChange", 0.0))),
-                            "bidQty": int(float(item.get("bidQty", 0))),
-                            "bidprice": float(item.get("bidPrice", 0.0)),
-                            "askQty": int(float(item.get("askQty", 0))),
-                            "askPrice": float(item.get("askPrice", 0.0)),
-                        }
-                except Exception:
+            # 4. Map to NSE-style records
+            expiry_str = expiry_dt.strftime("%d-%b-%Y")
+            strikes_map: dict[float, dict] = {}
+            for row in opts.itertuples(index=False):
+                q = quotes.get(str(row.token))
+                if not q or row.opt_type not in ("CE", "PE"):
                     continue
+                lot = float(row.lotsize or 1) or 1.0
+                depth = q.get("depth") or {}
+                best_bid = (depth.get("buy") or [{}])[0]
+                best_ask = (depth.get("sell") or [{}])[0]
+                strike = float(row.strike_val)
+                oi = int(float(q.get("opnInterest") or 0) / lot)
+                ltp = float(q.get("ltp") or 0.0)
+                prior = base_oi.get((strike, row.opt_type))
+                oi_change = oi - prior if prior is not None else 0
+                strikes_map.setdefault(strike, {"strikePrice": strike, "expiryDate": expiry_str})
+                strikes_map[strike][row.opt_type] = {
+                    "strikePrice": strike,
+                    "expiryDate": expiry_str,
+                    "underlying": option_symbol,
+                    "identifier": row.symbol,
+                    "openInterest": oi,
+                    "changeinOpenInterest": oi_change,
+                    "pchangeinOpenInterest": round(oi_change / prior * 100, 2) if prior else 0.0,
+                    "totalTradedVolume": int(float(q.get("tradeVolume") or 0) / lot),
+                    "impliedVolatility": _implied_vol_pct(ltp, spot, strike, row.opt_type, expiry_dt, as_of),
+                    "lastPrice": ltp,
+                    "change": float(q.get("netChange") or 0.0),
+                    "pChange": float(q.get("percentChange") or 0.0),
+                    "totalBuyQuantity": int(q.get("totBuyQuan") or 0),
+                    "totalSellQuantity": int(q.get("totSellQuan") or 0),
+                    "bidQty": int(best_bid.get("quantity") or 0),
+                    "bidprice": float(best_bid.get("price") or 0.0),
+                    "askQty": int(best_ask.get("quantity") or 0),
+                    "askPrice": float(best_ask.get("price") or 0.0),
+                }
 
-            for strike, combo in strikes_map.items():
-                if "CE" in combo or "PE" in combo:
-                    nse_style_data.append(combo)
-
+            data = [strikes_map[k] for k in sorted(strikes_map)]
+            if not data:
+                return None
+            logger.info("Broker chain for %s %s: %d strikes, %d quotes", option_symbol, expiry_str, len(data), len(quotes))
             return {
                 "records": {
-                    "data": nse_style_data,
+                    "data": data,
                     "underlyingValue": spot,
                     "expiryDates": [expiry_str],
-                    "timestamp": datetime.now(tz=_IST).strftime("%d-%b-%Y %H:%M:%S")
+                    "timestamp": datetime.now(tz=_IST).strftime("%d-%b-%Y %H:%M:%S"),
                 },
-                "filtered": {
-                    "data": nse_style_data,
-                    "CE": {"totOI": 0, "totVol": 0},
-                    "PE": {"totOI": 0, "totVol": 0}
-                }
+                "filtered": {"data": data},
             }
 
         except Exception as exc:
