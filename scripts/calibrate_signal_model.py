@@ -12,7 +12,8 @@ Each tradeable bar (09:30-14:25 IST, regime safe, |score| above the dead
 zone) is labelled by what happened next, as an option buyer experiences it:
 
     entry  = next bar's open
-    win    = price reaches entry ± TARGET_ATR × ATR before entry ∓ STOP_ATR × ATR
+    stop   = max(STOP_ATR × ATR, MIN_STOP_PCT × entry);  target = 1.5 × stop
+    win    = price reaches the target before the stop
              within HORIZON bars of the same session
     loss   = stop first, both in the same bar, or neither by the horizon
 
@@ -62,10 +63,13 @@ from src.engine.signal_generator import SignalGenerator  # noqa: E402
 _IST = ZoneInfo("Asia/Kolkata")
 WINDOW = 300
 HORIZON = 12          # 5m bars = 60 minutes
-from src.engine.signal_calibration import DEFAULT_STOP_ATR, DEFAULT_TARGET_ATR  # noqa: E402
+from src.engine.signal_calibration import (  # noqa: E402
+    DEFAULT_MIN_STOP_PCT, DEFAULT_STOP_ATR, DEFAULT_TARGET_ATR, trade_distances,
+)
 
-TARGET_ATR = DEFAULT_TARGET_ATR   # live levels use the same multiples
+TARGET_ATR = DEFAULT_TARGET_ATR   # live levels use the same rule (trade_distances)
 STOP_ATR = DEFAULT_STOP_ATR
+MIN_STOP_PCT = DEFAULT_MIN_STOP_PCT
 FIRST_ENTRY = dtime(9, 30)
 LAST_ENTRY = dtime(14, 25)
 EDGES = [0.25, 0.40, 0.55, 0.70, 0.90, 1.20, 99.0]
@@ -107,8 +111,9 @@ def label(bars: list[dict], t: int, direction: str, atr: float) -> int | None:
         return None
     entry = path[0]["open"]
     up = direction == "BUY_CALL"
-    target = entry + TARGET_ATR * atr if up else entry - TARGET_ATR * atr
-    stop = entry - STOP_ATR * atr if up else entry + STOP_ATR * atr
+    stop_d, target_d = trade_distances(atr, entry, STOP_ATR, TARGET_ATR, MIN_STOP_PCT)
+    target = entry + target_d if up else entry - target_d
+    stop = entry - stop_d if up else entry + stop_d
     for b in path:
         hit_stop = b["low"] <= stop if up else b["high"] >= stop
         hit_target = b["high"] >= target if up else b["low"] <= target
@@ -265,7 +270,8 @@ def main() -> int:
         "version": CALIBRATION_VERSION,
         "generated_at": datetime.now(tz=_IST).isoformat(),
         "label": {"horizon_bars": HORIZON, "bar": "5m", "target_atr": TARGET_ATR,
-                  "stop_atr": STOP_ATR, "entry": "next bar open",
+                  "stop_atr": STOP_ATR, "min_stop_pct": MIN_STOP_PCT,
+                  "entry": "next bar open",
                   "window_bars": WINDOW, "entry_window": f"{FIRST_ENTRY}-{LAST_ENTRY}"},
         "models": models,
     }

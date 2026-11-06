@@ -1,245 +1,173 @@
-# Backtest Methodology & Results
+# Backtest Methodology
 
-## Overview
+How the decision model is validated, what each test does and does not
+show, and the current results.
 
-This document describes the backtesting framework used to validate the Trading DSS signal generation and risk management logic. All results are based on walk-forward validation with multiple historical data ranges and out-of-sample testing.
+> **Status (2026-11-06): the model has no demonstrated edge.** Out of
+> sample, the calibrated win rate is about the random-walk base rate.
+> Without a validated calibration the engine does not trade, by design.
 
----
+The previous version of this document reported out-of-sample Sharpe
+ratios of 1.6–1.8 for Sep 2024 – Mar 2025. None of those results can be
+reproduced from this codebase or its data:
 
-## Backtest Configuration
+- Option and VIX history start in 2026.
+- No code path fitted parameters per window.
+- The files the old document cited do not exist.
 
-### Test Universe
-- **Indices**: NIFTY50, BANKNIFTY (F&O enabled only)
-- **Instruments**: Index call/put options (weekly & monthly expiry)
-- **Data Period**: 6 months historical (Sep 2024 — Mar 2025)
-- **Timeframe**: Daily bars (1D) + intraday data (5M, 15M) for signal confirmation
-
-### Walk-Forward Validation Setup
-- **Optimization Window**: Rolling 3-month periods
-- **Out-of-Sample Window**: Following 1-month period (unseen data)
-- **Rebalance Frequency**: Monthly (weights optimized on each new out-of-sample window)
-- **Number of Folds**: 3 complete cycles (each month is tested OOS)
-
-```
-Sep—Nov 2024:  Optimize → Dec 2024: Test OOS
-Oct—Dec 2024:  Optimize → Jan 2025: Test OOS
-Nov 2024—Jan 2025: Optimize → Feb 2025: Test OOS
-Dec 2024—Feb 2025: Optimize → Mar 2025: Test OOS
-```
-
-### Key Assumptions
-1. **Slippage**: 2 points per entry/exit (per contract)
-2. **Transaction Cost**: ₹120 round-trip per lot (brokerage + exchange fees)
-3. **Execution**: LIMIT orders at signal price (not MARKET)
-4. **Fills**: Assumed 100% (no partial fills, no rejections)
-5. **Margin**: 10:1 leverage available; position sizing respects capital constraints
+That version has been replaced by this one.
 
 ---
 
-## Performance Metrics
+## 1. What is tested
 
-### Primary Metrics (In-Sample vs Out-of-Sample)
+The backtest replays the **live decision engine**, not a simplified copy of it.
 
-#### Sharpe Ratio
-- **Definition**: (Average Daily Return − Risk-Free Rate) / Std Dev of Daily Returns
-- **Risk-Free Rate**: 6.0% annualized (current GOI T-bill rate)
-- **Interpretation**:
-  - > 2.0: Excellent risk-adjusted returns
-  - 1.0—2.0: Good returns relative to risk
-  - < 1.0: Return not justifying risk taken
-  - **DSS Target**: 1.5+ on out-of-sample data (conservative)
+| Stage | Code | Notes |
+|---|---|---|
+| Replay loop | `src/backtest/engine_replay.py`, `scripts/replay_decision_engine.py` | Calls `DecisionEngine.run_full_cycle(index, as_of=t)` once per stored 5-minute bar. That is the live 5-minute cadence. |
+| Signal model | `src/engine/signal_generator.py` | Confidence is a calibrated P(win) (§3). |
+| Risk and execution | `src/engine/risk_manager.py` | Option-native. It selects a contract by delta, sets premium SL/target, sizes on ₹ premium risk, and enforces the daily limit, caps, cooldown and loss-streak halt. |
+| Costs | `src/engine/option_costs.py` | Brokerage ₹20 per order; STT 0.1 % on the sell side; exchange (NSE 0.03503 % / BSE 0.0325 %); SEBI ₹10 per crore; stamp 0.003 % on the buy side; GST 18 %. |
 
-#### Win Rate (%)
-- **Definition**: (Closed Profitable Trades) / (Total Closed Trades) × 100
-- **Interpretation**:
-  - > 55%: Profitable edge (win rate alone exceeds break-even)
-  - 45—55%: Neutral; profit depends on sizing and R:R ratio
-  - < 45%: Loss-making unless risk-reward is asymmetric
-  - **DSS Target**: 48%+ (works with 1.5+ risk-reward ratio)
+**Point-in-time rules.**
+- Every DB read is bounded by `as_of`.
+- Decision time is the end of bar *t*, so the decision never sees bar *t+1*.
+- News is skipped in replay, because there is no point-in-time news archive.
+- The anomaly store and the kill switch, which describe production today, are disabled.
 
-#### Average Win / Average Loss Ratio
-- **Definition**: (Sum of Profitable Trade P&L) / Count Wins ÷ (Sum of Losing Trade P&L) / Count Losses
-- **Interpretation**:
-  - > 1.5: Sizing or targets are favourable
-  - 1.0—1.5: Marginal; break-even requires high win rate
-  - < 1.0: Loss per losing trade exceeds win per winning trade (rare; usually rejected at design stage)
-  - **DSS Target**: 1.3+ (confirms R:R ratio works in practice)
+**Fills.**
+- Entry is filled at bar *t+1*'s open. The selected contract is re-priced to that spot, and half the spread is added.
+- Exits are checked on every bar:
+  - At the open: gaps through a trigger, and time rules.
+  - Intrabar: high/low against the spot and premium triggers. If both stop and target are touched in one bar, the stop is assumed first.
+  - At the close: time stop, 15:15 forced exit, trailing stop.
+- Exit premium is the model re-price minus half the spread.
 
-#### Profit Factor
-- **Definition**: (Sum of All Winning Trades) / (Sum of All Losing Trades)
-- **Interpretation**:
-  - > 2.0: Excellent profitability
-  - 1.5—2.0: Good profitability
-  - 1.0—1.5: Marginal; low margin for error
-  - **DSS Target**: 1.4+
+**DB safety.** The replay copies the database file to a temporary
+location and never opens the source.
 
-#### Maximum Drawdown (%)
-- **Definition**: Peak-to-trough decline in cumulative P&L during test period
-- **Interpretation**:
-  - < 5%: Low drawdown; psychology-friendly
-  - 5—10%: Moderate; acceptable for growth-focused strategies
-  - 10—15%: High; risks trader abandonment
-  - > 15%: Dangerous; violates money management rules
-  - **DSS Target**: < 8% (preserve capital, enable compounding)
+### Assumptions you must keep in mind
 
-#### Consecutive Losing Trades
-- **Definition**: Longest streak of unprofitable trades
-- **Interpretation**:
-  - < 3: Psychological advantage; easy to stick with system
-  - 3—5: Acceptable; tests discipline
-  - > 5: Risk of emotional abandonment
-  - **DSS Target**: < 4 maximum (rare excursions)
+- **Synthetic option chain.** Historical chains are essentially absent, so
+  premiums are Black-Scholes prices.
+  - IV is VIX at `as_of` when available, otherwise 1.1 × realised vol of the last 75 bars, with a 10 % floor.
+  - IV is flat across strikes and over the life of a trade: no smile and no IV crush.
+  - The half spread is the larger of 0.5 % of premium and ₹0.05.
+- **Expiries follow rules.** NIFTY expires weekly on Tuesday; BANKNIFTY on the last Tuesday of the month. Holidays are ignored.
+- **Lot sizes are today's** (NIFTY 65, BANKNIFTY 30), which is correct for 2026 data.
+- **Market orders at the next open.** There is no limit-order queue and no slippage beyond the half spread.
+- **The data window is short.** About 115 sessions of 5m bars (Mar–Nov 2026). Index volume is zero, so volume-based components are unavailable.
 
----
+## 2. Labels: what counts as a win
 
-## Confidence & Risk Level Tuning
+`scripts/calibrate_signal_model.py` replays the live **scoring** function
+(`SignalGenerator.model_score`) on every tradeable bar:
 
-### Thresholds Used in Backtest
-All signals are classified into confidence buckets:
+- Tradeable means 09:30–14:25, a safe regime, and a score outside the dead zone.
+- Entry is the next bar's open.
+- **Win:** price reaches entry ± 1.5 × ATR before entry ∓ 1.0 × ATR, within 12 bars (60 min) of the same session.
+- **Loss:** the stop is hit first, both are hit in one bar, or neither is hit by the horizon. A timeout bleeds theta for an option buyer, so it counts as a loss.
 
-| Confidence Level | Score Range | Position Size | Entry Timing |
-|---|---|---|---|
-| **HIGH** | 0.65—0.92 | 100% of max risk per trade (2%) | Immediate |
-| **MEDIUM** | 0.45—0.64 | 60% of max risk | After 1 bar confirmation |
-| **LOW** | 0.10—0.44 | 30% of max risk | Requires tighter S/L |
-| **REJECTED** | < 0.10 | 0% | No trade |
+The live engine uses **the same multiples** for its stop and target
+(read from the calibration file), so the calibrated probability
+describes the trade actually taken.
 
-### Backtest Parameters Optimized
-Via walk-forward grid search:
+Break-even win rate at 1.5 : 1 is 40 % before costs. Theta and costs
+push the practical threshold to about 45 %.
 
-| Parameter | Min | Max | Step | Optimal |
+## 3. Calibration and out-of-sample validation
+
+- **Fitting.** Bins of |score|, shrunk with a Beta(2, 2) prior and made monotone with pooled-adjacent-violators. Fitted on the chronologically first 70 % of samples.
+- **Validation.** The last 30 % is out-of-sample. The model is `validated` only if all of the following hold out of sample:
+  - at least 30 samples fall in tradeable bins (P ≥ 0.50);
+  - their realised win rate is ≥ 0.45;
+  - the Brier score beats the constant base-rate forecast.
+- **Runtime.** `SignalCalibration` maps the score to P(win) and applies only penalties for conditions it did not see (anomaly risk, regime transition, extreme volatility, expensive IV). If there is no file, the file is older than 120 days, or the model is not validated, there is **no trade**, and the NO_TRADE reason says why.
+
+Options/OI and anomaly inputs have no point-in-time history. They are
+not part of the score; they can only veto a trade or reduce its probability.
+
+## 4. Statistics
+
+| Tool | Code | Purpose |
+|---|---|---|
+| Daily-return metrics | `src/backtest/metrics.py` | Sharpe, Sortino and Calmar on daily close-to-close returns, with zero-P&L days counted, annualised by √252. The risk-free rate is converted per day. Undefined ratios are `inf` and flagged (no 999 sentinels). |
+| Bootstrap | `src/backtest/optimizer/robustness.py` | i.i.d. and stationary/block bootstrap of daily returns. Gives distributions of final equity, max drawdown and Sharpe, and P(loss). |
+| Nested walk-forward | `src/backtest/walk_forward.py::nested_walk_forward` | Chronological folds with an embargo. `fit_fn` sees only the train slice. An untouched holdout is evaluated exactly once. |
+| Multiple testing | `src/backtest/overfitting.py` | Probabilistic and Deflated Sharpe (Bailey & López de Prado), expected max Sharpe for N trials, minimum track-record length, and PBO via CSCV. |
+| Optimiser | `src/backtest/optimizer/optimization_engine.py` | Splits the data into a selection period and a holdout. Reports DSR with N = all trials. A config is approved only if DSR ≥ 0.95 and it passes the holdout. |
+
+The legacy `WalkForwardValidator.run_walk_forward` runs a **fixed**
+configuration on every window. It is a stability check, not an
+out-of-sample test, and it now warns that it is not out-of-sample.
+
+## 5. Current results (2026-11-06)
+
+### Calibration (NIFTY50 + BANKNIFTY, ~4,900 labelled samples, 5m bars Mar–Nov 2026)
+
+Trade definition: stop = max(1.0 × ATR, 0.1 % of spot), target = 1.5 × stop, 60-minute horizon.
+
+| | Base win rate | OOS win rate by \|score\| bin (n ≥ 100) | Strongest signals (\|score\| ≥ 1.2), OOS | Validated |
 |---|---|---|---|---|
-| Technical Weight | 30% | 50% | 5% | 40% |
-| Options Weight | 20% | 35% | 5% | 25% |
-| News Weight | 10% | 25% | 5% | 15% |
-| Smart Money Weight | 5% | 15% | 5% | 10% |
-| Anomaly Weight | 3% | 10% | 2% | 5% |
-| Confidence Booster (+Smart Money A+) | 0% | 5% | 1% | 3% |
-| Confidence Reducer (−HIGH Anomaly) | −15% | −5% | 2% | −10% |
-| Daily Loss Limit | 2% | 5% | 1% | 2% |
+| NIFTY50 | 25 % | 0.36–0.42 | 0.38 | no |
+| BANKNIFTY | 29 % | 0.31–0.38 | 0.27 | no |
+| Pooled | 27 % | 0.33–0.40 | 0.32 | no |
 
----
+- Win rate does not rise reliably with score strength.
+- The strongest signals are among the worst: entries come after the move.
+- The 0.40–0.42 OOS bins on NIFTY do not appear in the training period (train fit ≈ 0.27). That points to a regime difference between the periods, not a stable edge.
 
-## Results Summary
+An earlier label with a 0.3 % stop floor gave a 2.5–6.5 % base rate. NIFTY rarely moves 0.45 % within 60 minutes, so that definition labelled almost everything a loss. The floor is now 0.1 %, in both the calibration and `RiskConfig.min_sl_pct`.
 
-### Out-of-Sample Performance (Primary)
+### Engine replay
 
-#### NIFTY50 (Feb—Mar 2025, 1-month test)
-- **Total Trades**: 12 closed, 2 open at EOT
-- **Winning Trades**: 6 (50%)
-- **Losing Trades**: 6 (50%)
-- **Avg Win**: ₹2,840
-- **Avg Loss**: ₹1,920
-- **Win/Loss Ratio**: 1.48
-- **Profit Factor**: 1.52
-- **Total P&L**: +₹11,040
-- **Total Return**: +11.04% (on ₹100k capital)
-- **Sharpe Ratio**: 1.62
-- **Max Drawdown**: −6.2%
-- **Consecutive Losses**: 2 max
+NIFTY50, 2026-03-25 → 2026-11-05 (116 sessions, 8,578 decisions, ~76 ms per cycle):
 
-#### BANKNIFTY (Feb—Mar 2025, 1-month test)
-- **Total Trades**: 18 closed, 1 open at EOT
-- **Winning Trades**: 9 (50%)
-- **Losing Trades**: 9 (50%)
-- **Avg Win**: ₹3,120
-- **Avg Loss**: ₹2,050
-- **Win/Loss Ratio**: 1.52
-- **Profit Factor**: 1.68
-- **Total P&L**: +₹19,260
-- **Total Return**: +19.26% (annualized: ~231% at same rate)
-- **Sharpe Ratio**: 1.84
-- **Max Drawdown**: −7.1%
-- **Consecutive Losses**: 3 max
+| Mode | Trades | Win rate | Gross | Costs | Net | Max DD |
+|---|---|---|---|---|---|---|
+| **Live calibration** | 0 | – | – | – | ₹0 | – |
+| Diagnostic (all bins P = 0.60) | 41 | 43.9 % | +₹5,899 | ₹3,761 | +₹2,138 | ₹29,573 (5.9 %) |
+| Diagnostic, BANKNIFTY | 27 | 40.7 % | +₹1,027 | ₹2,434 | −₹1,407 | ₹32,611 (6.5 %) |
 
-#### Combined F&O Universe (3-month OOS total)
-- **Total Trades**: 76 closed
-- **Win Rate**: 50.7%
-- **Avg Win**: ₹2,980
-- **Avg Loss**: ₹1,985
-- **Win/Loss Ratio**: 1.50
-- **Profit Factor**: 1.62
-- **Sharpe Ratio**: 1.71
-- **Max Drawdown**: −7.8% (worst month only)
-- **Monthly Return**: +10.3% avg
-- **Expected Annual Return** (naive extrapolation): ~124% (note: subject to drawdown cycles)
+- **Live calibration.** 65 % of decisions stop at "calibration failed out-of-sample validation" and 20 % at the score dead zone. The rest are time and regime rules: too close to close, VOLATILE_CHOPPY, opening auction, expiry after 14:30.
+- **Diagnostic statistics (on days with trades):**
+  - NIFTY: PSR(SR > 0) = 0.52; stationary-bootstrap P(loss) = 0.48; minimum track record ≈ 16,500 trading days.
+  - BANKNIFTY: PSR = 0.48; P(loss) = 0.505.
 
----
+  Both are statistically indistinguishable from zero. Costs consume most or all of the gross.
+- **What binds in diagnostic mode:**
+  - the premium R:R check after theta (~23 % of decisions);
+  - repeat-signal suppression after a risk rejection (~39 %);
+  - the score dead zone (~20 %).
 
-## Key Findings
+Diagnostic mode only exercises the trade path. **It is not evidence of edge.**
 
-### What Works
-1. **Multi-source confirmation** (technical + options + news) reduces false signals
-2. **Volatility regime awareness** improves trade timing (avoid choppy periods)
-3. **Smart money A+ detection** adds 3% confidence boost; real signal
-4. **Risk-reward >1.5** essential; < 1.3 leads to underwater accounts
+## 6. Reproducing
 
-### What Doesn't Work
-1. **Extreme vol booster** (disabled) — caused whipsaws in choppy markets
-2. **Anomaly institutional activity** (disabled) — too sparse, over-optimized
-3. **Hard confidence cutoffs** — smooth gradation (30%/60%/100% sizing) better than 0%/100%
-
-### Risks Not Modeled
-1. **Gap risk** (overnight, after earnings) — not backtestable; real slippage can be 5+ points
-2. **Expiry roll risk** — assumes fresh contracts always available
-3. **Liquidity crash** (flash crash, bid-ask spread widening) — assumed normal spreads
-4. **Correlation breakdown** — tested only Sep 2024—Mar 2025; other market regimes may differ
-5. **Regime shift** — if USD INR breaks 85, equity correlations may change drastically
-
----
-
-## Backtest Reproducibility
-
-### Code Location
-- **Walk-forward validator**: `src/engine/walk_forward_validator.py`
-- **Backtest runner**: `src/analysis/backtester.py`
-- **Config**: `config/backtest_config.json` (weights, thresholds, capital)
-- **Historical data**: `data/db/trading_dss.db` (table: `price_data`, `options_chain_snapshot`)
-
-### How to Reproduce
 ```bash
-# Run full walk-forward validation
-python -m src.engine.walk_forward_validator --mode=full --output=results/wfv_latest.json
+# 1. calibrate (writes config/signal_calibration.json; --report-only to just print)
+python scripts/calibrate_signal_model.py --db data/db/trading_dss.db --stride 2
 
-# Run single index backtest
-python -m src.analysis.backtester --index=NIFTY50 --start=2025-02-01 --end=2025-03-31
+# 2. replay the live engine with the real calibration
+python scripts/replay_decision_engine.py --db data/db/trading_dss.db \
+    --index NIFTY50 --start 2026-03-25 --end 2026-11-05 --out /tmp/replay_live
 
-# View results
-cat results/wfv_latest.json | jq '.summary'
+# 3. DIAGNOSTIC: permissive calibration, to exercise the trade path (NOT evidence of edge)
+python scripts/replay_decision_engine.py --db data/db/trading_dss.db \
+    --index NIFTY50 --start 2026-03-25 --end 2026-11-05 --diagnostic --out /tmp/replay_diag
 ```
 
----
+Each replay writes `replay_result.json`, `trades.csv`, `daily_pnl.csv`
+and `decision_counts.csv`.
 
-## Validation Rules (Used in Backtest)
+## 7. What would change the verdict
 
-1. **No look-ahead bias**: Signal generated ONLY from data available before signal timestamp
-2. **No survivorship bias**: Include delisted options/indices (rare in F&O, but checked)
-3. **Slippage & costs**: Every entry/exit includes transaction cost
-4. **No data leakage**: Indicator parameters (EMA periods, RSI lookback) NOT optimized on same data used for testing; fixed via domain knowledge
-5. **Out-of-sample only**: In-sample metrics used only for parameter *selection*, not for final performance claims
-
----
-
-## Limitations & Future Work
-
-### Known Limitations
-- Assumes fill at signal price (limit orders may not fill in fast markets)
-- Does not model position abandonment (retail trader might exit early during streaks)
-- Does not account for tax (STCG on options, 15% in India)
-- Does not model broker-specific delays (some brokers' API slower than others)
-
-### Future Validation
-- [ ] Add Monte Carlo robustness test (randomize entry/exit timing ±5 min)
-- [ ] Test on 2 more years of data (2023—2024) to validate regime stability
-- [ ] Add WFA on intraday (5M, 15M) to check if day-trading improves Sharpe
-- [ ] Compare vs. buy-and-hold benchmark (NIFTY50 total return index)
-
----
-
-## Contact / Questions
-
-For backtest reproducibility issues or parameter tuning questions, refer to:
-- **Config source**: `config/backtest_config.json`
-- **Version**: STRATEGY_VERSION = "1.0.0" (see `config/settings.py`)
-- **Last update**: 2025-04-26
-
+- **Features with information the price series lacks:**
+  - near-month futures volume, OI and order-flow imbalance (`futures_depth_1m`, now being collected);
+  - real option-chain history collected during market hours (positioning, IV, skew).
+- **More history:** at least one year of point-in-time data, to reach the minimum track-record length and to cover different volatility regimes.
+- **Once a candidate passes calibration:**
+  - nested walk-forward of calibrate-then-replay;
+  - the DSR computed with every variant ever tried;
+  - 4–6 weeks of premium-native paper trading (`src/paper_trading/adapter.py`) before real capital.

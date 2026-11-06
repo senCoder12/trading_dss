@@ -1,11 +1,12 @@
 {
   "version": 1,
-  "generated_at": "2026-11-06T09:24:10.992245+05:30",
+  "generated_at": "2026-11-06T15:11:08.252324+05:30",
   "label": {
     "horizon_bars": 12,
     "bar": "5m",
     "target_atr": 1.5,
     "stop_atr": 1.0,
+    "min_stop_pct": 0.001,
     "entry": "next bar open",
     "window_bars": 300,
     "entry_window": "09:30:00-14:25:00"
@@ -17,43 +18,43 @@
           "lo": 0.25,
           "hi": 0.4,
           "n": 10,
-          "wins": 4,
-          "p_win": 0.3304
+          "wins": 3,
+          "p_win": 0.2273
         },
         {
           "lo": 0.4,
           "hi": 0.55,
           "n": 554,
-          "wins": 181,
-          "p_win": 0.3304
+          "wins": 123,
+          "p_win": 0.2273
         },
         {
           "lo": 0.55,
           "hi": 0.7,
           "n": 154,
-          "wins": 61,
-          "p_win": 0.3344
+          "wins": 56,
+          "p_win": 0.2712
         },
         {
           "lo": 0.7,
           "hi": 0.9,
           "n": 325,
-          "wins": 124,
-          "p_win": 0.3344
+          "wins": 94,
+          "p_win": 0.2712
         },
         {
           "lo": 0.9,
           "hi": 1.2,
           "n": 271,
-          "wins": 85,
-          "p_win": 0.3344
+          "wins": 66,
+          "p_win": 0.2712
         },
         {
           "lo": 1.2,
           "hi": 99.0,
           "n": 436,
-          "wins": 124,
-          "p_win": 0.3344
+          "wins": 102,
+          "p_win": 0.2712
         }
       ],
       "validated": false,
@@ -62,16 +63,16 @@
         "n_samples": 2500,
         "train_n": 1750,
         "test_n": 750,
-        "train_base_rate": 0.3309,
-        "oos_brier": 0.24754,
-        "oos_brier_base": 0.24794,
+        "train_base_rate": 0.2537,
+        "oos_brier": 0.25785,
+        "oos_brier_base": 0.25943,
         "oos_tradeable_n": 0,
         "oos_tradeable_win_rate": null,
         "oos_by_bin": [
           {
             "lo": 0.25,
             "hi": 0.4,
-            "fit_p": 0.3304,
+            "fit_p": 0.2273,
             "train_n": 10,
             "oos_n": 4,
             "oos_win": 0.5
@@ -79,39 +80,39 @@
           {
             "lo": 0.4,
             "hi": 0.55,
-            "fit_p": 0.3304,
+            "fit_p": 0.2273,
             "train_n": 554,
             "oos_n": 223,
-            "oos_win": 0.39
+            "oos_win": 0.363
           },
           {
             "lo": 0.55,
             "hi": 0.7,
-            "fit_p": 0.3344,
+            "fit_p": 0.2712,
             "train_n": 154,
             "oos_n": 44,
-            "oos_win": 0.523
+            "oos_win": 0.5
           },
           {
             "lo": 0.7,
             "hi": 0.9,
-            "fit_p": 0.3344,
+            "fit_p": 0.2712,
             "train_n": 325,
             "oos_n": 137,
-            "oos_win": 0.409
+            "oos_win": 0.423
           },
           {
             "lo": 0.9,
             "hi": 1.2,
-            "fit_p": 0.3344,
+            "fit_p": 0.2712,
             "train_n": 271,
             "oos_n": 141,
-            "oos_win": 0.447
+            "oos_win": 0.411
           },
           {
             "lo": 1.2,
             "hi": 99.0,
-            "fit_p": 0.3344,
+            "fit_p": 0.2712,
             "train_n": 436,
             "oos_n": 201,
             "oos_win": 0.378
@@ -120,11 +121,11 @@
         "by_direction": {
           "BUY_CALL": {
             "n": 1215,
-            "win": 0.304
+            "win": 0.254
           },
           "BUY_PUT": {
             "n": 1285,
-            "win": 0.402
+            "win": 0.336
           }
         },
         "first_ts": "2026-04-02T09:30:00+05:30",
@@ -137,43 +138,43 @@
           "lo": 0.25,
           "hi": 0.4,
           "n": 13,
-          "wins": 6,
-          "p_win": 0.3158
+          "wins": 4,
+          "p_win": 0.2799
         },
         {
           "lo": 0.4,
           "hi": 0.55,
           "n": 540,
-          "wins": 176,
-          "p_win": 0.3158
+          "wins": 149,
+          "p_win": 0.2799
         },
         {
           "lo": 0.55,
           "hi": 0.7,
           "n": 160,
-          "wins": 60,
-          "p_win": 0.3158
+          "wins": 58,
+          "p_win": 0.2917
         },
         {
           "lo": 0.7,
           "hi": 0.9,
           "n": 264,
-          "wins": 78,
-          "p_win": 0.3158
+          "wins": 76,
+          "p_win": 0.2917
         },
         {
           "lo": 0.9,
           "hi": 1.2,
           "n": 256,
-          "wins": 88,
-          "p_win": 0.3158
+          "wins": 81,
+          "p_win": 0.2917
         },
         {
           "lo": 1.2,
           "hi": 99.0,
           "n": 456,
-          "wins": 121,
-          "p_win": 0.3158
+          "wins": 113,
+          "p_win": 0.2917
         }
       ],
       "validated": false,
@@ -182,16 +183,16 @@
         "n_samples": 2414,
         "train_n": 1689,
         "test_n": 725,
-        "train_base_rate": 0.3132,
-        "oos_brier": 0.22067,
-        "oos_brier_base": 0.22074,
+        "train_base_rate": 0.2848,
+        "oos_brier": 0.21853,
+        "oos_brier_base": 0.21884,
         "oos_tradeable_n": 0,
         "oos_tradeable_win_rate": null,
         "oos_by_bin": [
           {
             "lo": 0.25,
             "hi": 0.4,
-            "fit_p": 0.3158,
+            "fit_p": 0.2799,
             "train_n": 13,
             "oos_n": 3,
             "oos_win": 0.0
@@ -199,15 +200,15 @@
           {
             "lo": 0.4,
             "hi": 0.55,
-            "fit_p": 0.3158,
+            "fit_p": 0.2799,
             "train_n": 540,
             "oos_n": 200,
-            "oos_win": 0.33
+            "oos_win": 0.31
           },
           {
             "lo": 0.55,
             "hi": 0.7,
-            "fit_p": 0.3158,
+            "fit_p": 0.2917,
             "train_n": 160,
             "oos_n": 63,
             "oos_win": 0.349
@@ -215,7 +216,7 @@
           {
             "lo": 0.7,
             "hi": 0.9,
-            "fit_p": 0.3158,
+            "fit_p": 0.2917,
             "train_n": 264,
             "oos_n": 110,
             "oos_win": 0.382
@@ -223,28 +224,28 @@
           {
             "lo": 0.9,
             "hi": 1.2,
-            "fit_p": 0.3158,
+            "fit_p": 0.2917,
             "train_n": 256,
             "oos_n": 124,
-            "oos_win": 0.371
+            "oos_win": 0.363
           },
           {
             "lo": 1.2,
             "hi": 99.0,
-            "fit_p": 0.3158,
+            "fit_p": 0.2917,
             "train_n": 456,
             "oos_n": 225,
-            "oos_win": 0.276
+            "oos_win": 0.271
           }
         ],
         "by_direction": {
           "BUY_CALL": {
             "n": 1219,
-            "win": 0.304
+            "win": 0.29
           },
           "BUY_PUT": {
             "n": 1195,
-            "win": 0.332
+            "win": 0.301
           }
         },
         "first_ts": "2026-04-02T09:30:00+05:30",
@@ -257,43 +258,43 @@
           "lo": 0.25,
           "hi": 0.4,
           "n": 23,
-          "wins": 10,
-          "p_win": 0.324
+          "wins": 7,
+          "p_win": 0.2529
         },
         {
           "lo": 0.4,
           "hi": 0.55,
           "n": 1092,
-          "wins": 356,
-          "p_win": 0.324
+          "wins": 273,
+          "p_win": 0.2529
         },
         {
           "lo": 0.55,
           "hi": 0.7,
           "n": 316,
-          "wins": 123,
-          "p_win": 0.324
+          "wins": 116,
+          "p_win": 0.2808
         },
         {
           "lo": 0.7,
           "hi": 0.9,
           "n": 590,
-          "wins": 203,
-          "p_win": 0.324
+          "wins": 171,
+          "p_win": 0.2808
         },
         {
           "lo": 0.9,
           "hi": 1.2,
           "n": 527,
-          "wins": 173,
-          "p_win": 0.324
+          "wins": 147,
+          "p_win": 0.2808
         },
         {
           "lo": 1.2,
           "hi": 99.0,
           "n": 891,
-          "wins": 245,
-          "p_win": 0.324
+          "wins": 215,
+          "p_win": 0.2808
         }
       ],
       "validated": false,
@@ -302,16 +303,16 @@
         "n_samples": 4914,
         "train_n": 3439,
         "test_n": 1475,
-        "train_base_rate": 0.3228,
-        "oos_brier": 0.23456,
-        "oos_brier_base": 0.23467,
+        "train_base_rate": 0.2701,
+        "oos_brier": 0.23598,
+        "oos_brier_base": 0.23661,
         "oos_tradeable_n": 0,
         "oos_tradeable_win_rate": null,
         "oos_by_bin": [
           {
             "lo": 0.25,
             "hi": 0.4,
-            "fit_p": 0.324,
+            "fit_p": 0.2529,
             "train_n": 23,
             "oos_n": 7,
             "oos_win": 0.286
@@ -319,52 +320,52 @@
           {
             "lo": 0.4,
             "hi": 0.55,
-            "fit_p": 0.324,
+            "fit_p": 0.2529,
             "train_n": 1092,
             "oos_n": 425,
-            "oos_win": 0.362
+            "oos_win": 0.334
           },
           {
             "lo": 0.55,
             "hi": 0.7,
-            "fit_p": 0.324,
+            "fit_p": 0.2808,
             "train_n": 316,
             "oos_n": 105,
-            "oos_win": 0.41
+            "oos_win": 0.4
           },
           {
             "lo": 0.7,
             "hi": 0.9,
-            "fit_p": 0.324,
+            "fit_p": 0.2808,
             "train_n": 590,
             "oos_n": 246,
-            "oos_win": 0.394
+            "oos_win": 0.402
           },
           {
             "lo": 0.9,
             "hi": 1.2,
-            "fit_p": 0.324,
+            "fit_p": 0.2808,
             "train_n": 527,
             "oos_n": 265,
-            "oos_win": 0.411
+            "oos_win": 0.389
           },
           {
             "lo": 1.2,
             "hi": 99.0,
-            "fit_p": 0.324,
+            "fit_p": 0.2808,
             "train_n": 891,
             "oos_n": 427,
-            "oos_win": 0.323
+            "oos_win": 0.321
           }
         ],
         "by_direction": {
           "BUY_CALL": {
             "n": 2434,
-            "win": 0.304
+            "win": 0.272
           },
           "BUY_PUT": {
             "n": 2480,
-            "win": 0.369
+            "win": 0.319
           }
         },
         "first_ts": "2026-04-02T09:30:00+05:30",

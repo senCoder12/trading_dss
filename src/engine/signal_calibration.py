@@ -47,6 +47,13 @@ POOLED_KEY = "ALL"
 # Trade definition used to label outcomes (live levels use the same).
 DEFAULT_STOP_ATR = 1.0
 DEFAULT_TARGET_ATR = 1.5
+# Stop never tighter than this fraction of spot — the same noise floor as
+# RiskConfig.min_sl_pct, so the risk manager never widens the calibrated
+# stop (which would make it a different, uncalibrated trade).  0.1 % is
+# about one 5-minute ATR on NIFTY; a 0.3 % floor with a 1.5R target is a
+# ~0.45 % move that NIFTY makes inside 60 minutes only ~5 % of the time,
+# so almost every labelled trade timed out.
+DEFAULT_MIN_STOP_PCT = 0.001
 
 # Beta prior pseudo-counts for shrinkage toward 50 %.
 _PRIOR_WINS = 2.0
@@ -179,17 +186,20 @@ class SignalCalibration:
                 self._status = f"calibration file unreadable: {exc}"
                 self._models = {}
 
-    def label_multiples(self) -> tuple[float, float]:
-        """(stop ATR multiple, target ATR multiple) the calibration labelled with."""
+    def label_multiples(self) -> tuple[float, float, float]:
+        """(stop ATR multiple, target ATR multiple, min stop % of spot)
+        that the calibration labelled outcomes with."""
         self._ensure_loaded()
         try:
             stop = float(self._label.get("stop_atr", DEFAULT_STOP_ATR))
             target = float(self._label.get("target_atr", DEFAULT_TARGET_ATR))
-            if stop > 0 and target > 0:
-                return stop, target
+            floor = float(self._label.get("min_stop_pct", DEFAULT_MIN_STOP_PCT))
+            if stop > 0 and target > 0 and floor >= 0:
+                return stop, target, floor
         except (TypeError, ValueError):
             pass
-        return DEFAULT_STOP_ATR, DEFAULT_TARGET_ATR
+        return DEFAULT_STOP_ATR, DEFAULT_TARGET_ATR, DEFAULT_MIN_STOP_PCT
+
 
     def lookup(self, index_id: str, abs_score: float) -> tuple[Optional[float], str]:
         """Return ``(P(win) | None, reason)`` for a directional score."""
@@ -208,6 +218,18 @@ class SignalCalibration:
         if p is None:
             return None, f"score {abs_score:.2f} outside calibrated range"
         return p, "ok"
+
+
+def trade_distances(
+    atr: float, entry: float,
+    stop_atr: float = DEFAULT_STOP_ATR,
+    target_atr: float = DEFAULT_TARGET_ATR,
+    min_stop_pct: float = DEFAULT_MIN_STOP_PCT,
+) -> tuple[float, float]:
+    """(stop distance, target distance) in price points — the ONE trade
+    definition shared by the calibration labels and the live levels."""
+    stop = max(stop_atr * atr, min_stop_pct * entry)
+    return stop, stop * (target_atr / stop_atr)
 
 
 _singleton: Optional[SignalCalibration] = None

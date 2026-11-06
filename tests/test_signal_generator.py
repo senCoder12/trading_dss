@@ -640,3 +640,11 @@ class TestLevelsMatchCalibration:
         sig = _signal(gen)
         assert sig.entry_price - sig.stop_loss == pytest.approx(0.8 * 120.0, abs=0.01)
         assert sig.risk_reward_ratio == pytest.approx(2.0)
+
+
+def test_stop_never_tighter_than_noise_floor(tmp_path):
+    tech = replace(_technical(), volatility=replace(_volatility(), atr_value=10.0))
+    sig = _signal(_gen(tmp_path), technical=tech)
+    floor = 0.001 * SPOT_PRICE
+    assert sig.entry_price - sig.stop_loss == pytest.approx(floor, abs=0.01)
+    assert sig.target_price - sig.entry_price == pytest.approx(1.5 * floor, abs=0.01)

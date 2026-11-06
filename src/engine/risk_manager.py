@@ -104,7 +104,10 @@ class RiskConfig:
     time_stop_min_r: float = 0.3               # … i.e. below +0.3R in premium
 
     # Stop-loss validation thresholds
-    min_sl_pct: float = 0.003                  # 0.3% — noise floor
+    # Noise floor for the spot stop.  Must match the calibrated trade
+    # definition (signal_calibration.DEFAULT_MIN_STOP_PCT) or the risk
+    # manager widens the stop into a different, uncalibrated trade.
+    min_sl_pct: float = 0.001                  # 0.1% ≈ one 5m ATR on NIFTY
     max_sl_pct: float = 0.030                  # 3.0% — too much risk
     sl_sr_buffer_pct: float = 0.002            # 0.2% buffer beyond S/R
 

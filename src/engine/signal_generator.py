@@ -421,10 +421,10 @@ class SignalGenerator:
         self._check_cooldown(index_id, direction, now, warnings)
 
         # ── Step 6: Entry / Exit Levels ────────────────────────────────
-        stop_atr, target_atr = self._calibration.label_multiples()
+        stop_atr, target_atr, min_stop_pct = self._calibration.label_multiples()
         entry_price, target_price, stop_loss, rr_ratio = self._calculate_levels(
             direction, current_spot_price, technical, regime, confidence_level,
-            stop_atr=stop_atr, target_atr=target_atr,
+            stop_atr=stop_atr, target_atr=target_atr, min_stop_pct=min_stop_pct,
         )
 
         # ── R:R Gate — reject signals with insufficient risk/reward ────
@@ -1009,13 +1009,15 @@ class SignalGenerator:
         confidence_level: str,
         stop_atr: float = 1.0,
         target_atr: float = 1.5,
+        min_stop_pct: float = 0.001,
     ) -> tuple[float, float, float, float]:
         """Return ``(entry, target, stop_loss, risk_reward_ratio)``.
 
-        The stop and target are the SAME ATR multiples the calibration
-        labelled a win/loss with (``stop_atr`` / ``target_atr`` from the
-        calibration file), so the calibrated P(win) describes this exact
-        trade.  The old levels mixed a support-based stop with an
+        The stop and target follow the SAME rule the calibration labelled
+        a win/loss with (``trade_distances``: stop = max(stop_atr × ATR,
+        min_stop_pct × spot), target = stop × target_atr / stop_atr), so the
+        calibrated P(win) describes this exact trade and the RiskManager's
+        noise floor never has to widen it.  The old levels mixed a support-based stop with an
         ATR × regime-multiplier target; on 5m data that gave R:R ≈ 0.3–0.5
         and ~70 % of otherwise-valid signals failed the R:R gate — and the
         probability, had it existed, would have described a different trade.
@@ -1025,8 +1027,9 @@ class SignalGenerator:
         atr = technical.volatility.atr_value
         if not atr or not math.isfinite(atr) or atr <= 0:
             atr = entry_price * 0.002  # fallback: ~a 5m ATR on an index
-        stop_dist = stop_atr * atr
-        tgt_dist = target_atr * atr
+        from src.engine.signal_calibration import trade_distances  # noqa: PLC0415
+
+        stop_dist, tgt_dist = trade_distances(atr, entry_price, stop_atr, target_atr, min_stop_pct)
         if direction == "BUY_CALL":
             stop_loss, target = entry_price - stop_dist, entry_price + tgt_dist
         else:
