@@ -6,7 +6,11 @@ they reflect genuine market edge or are overfit artefacts:
 
 1. **Parameter Sensitivity** — ±20% perturbation of each parameter.
 2. **Data Stability** — Performance across multiple date-range sub-periods.
-3. **Monte Carlo Simulation** — Trade-order reshuffling (1 000 simulations).
+3. **Monte Carlo Simulation** — bootstrap of daily returns, both i.i.d. (with
+   replacement) and stationary/block bootstrap (configurable block length),
+   giving distributions of final equity, max drawdown and Sharpe plus the
+   probability of loss.  (The former trade-order *reshuffle* could not fail:
+   a permutation of summed P&Ls always has the same final equity.)
 4. **Regime Robustness** — Performance across different market regimes.
 
 Usage
@@ -28,13 +32,21 @@ from __future__ import annotations
 
 import copy
 import logging
-import random
+import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Sequence
 
-from src.backtest.metrics import BacktestMetrics, MetricsCalculator
+import numpy as np
+
+from src.backtest.metrics import (
+    TRADING_DAYS_PER_YEAR,
+    BacktestMetrics,
+    MetricsCalculator,
+    _to_date,
+    session_days,
+)
 from src.backtest.optimizer.param_space import ParameterApplicator, ParameterSpace
 from src.backtest.strategy_runner import BacktestConfig, BacktestResult, StrategyRunner
 from src.backtest.trade_simulator import ClosedTrade, SimulatorConfig
@@ -124,12 +136,35 @@ class StabilityResult:
 
 
 @dataclass
+class BootstrapDistribution:
+    """Distribution of path statistics from one bootstrap scheme."""
+
+    method: str                      # "iid" | "stationary" | "block"
+    block_length: Optional[float]    # mean (stationary) / fixed (block) length
+    n_simulations: int
+    n_observations: int
+    initial_capital: float
+    periods_per_year: float          # Sharpe annualisation (1 → per-trade)
+    final_equity: np.ndarray
+    total_return_pct: np.ndarray
+    max_drawdown_pct: np.ndarray
+    sharpe: np.ndarray               # NaN where a path has zero dispersion
+    prob_loss: float                 # P(final equity < initial capital)
+
+    def pct(self, attr: str, q: float) -> float:
+        """``q``-th percentile (0–100) of ``attr``; NaN-aware."""
+        arr = np.asarray(getattr(self, attr), dtype=float)
+        arr = arr[np.isfinite(arr)]
+        return float(np.percentile(arr, q)) if arr.size else float("nan")
+
+
+@dataclass
 class MonteCarloResult:
-    """Monte Carlo simulation results from trade-order reshuffling."""
+    """Bootstrap Monte Carlo results (headline fields from the block bootstrap)."""
 
     n_simulations: int
 
-    # Return distribution
+    # Return distribution (% of initial capital)
     median_return: float
     p5_return: float
     p25_return: float
@@ -141,13 +176,31 @@ class MonteCarloResult:
     median_drawdown: float
     p95_drawdown: float
 
-    # Confidence interval
+    # Confidence interval (2.5th, 97.5th percentile of total return)
     return_95_ci: tuple[float, float]
 
     # Statistical significance
-    is_statistically_profitable: bool  # p5_return > 0
+    is_statistically_profitable: bool  # p5_return > 0 (one-sided 95% bootstrap)
     luck_factor: float  # (original - median) / |original|
     reliability_score: float  # 0–1
+
+    # --- bootstrap detail (defaults keep older constructors working) ---
+    method: str = "stationary"
+    block_length: Optional[float] = None
+    resample_unit: str = "daily"          # "daily" or "trade" (fallback)
+    n_observations: int = 0
+    initial_capital: float = 100_000.0
+    prob_loss: float = 0.0
+    final_equity_p5: float = 0.0
+    final_equity_p50: float = 0.0
+    final_equity_p95: float = 0.0
+    p5_drawdown: float = 0.0
+    sharpe_p5: float = 0.0
+    sharpe_p50: float = 0.0
+    sharpe_p95: float = 0.0
+    iid: Optional[BootstrapDistribution] = None
+    block: Optional[BootstrapDistribution] = None
+    notes: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +279,16 @@ class RobustnessTester:
         original_metrics: BacktestMetrics,
         trade_history: list[ClosedTrade],
         parameter_space: ParameterSpace,
+        deflated_sharpe: Optional[float] = None,
+        n_trials: Optional[int] = None,
+        dsr_threshold: float = 0.95,
     ) -> RobustnessReport:
-        """Run all four robustness tests and produce an overall assessment."""
+        """Run all four robustness tests and produce an overall assessment.
+
+        If ``deflated_sharpe`` (the DSR of this parameter set given the number
+        of optimiser trials, see :mod:`src.backtest.overfitting`) is supplied
+        and is below ``dsr_threshold``, the report is never approved.
+        """
 
         concerns: list[str] = []
         recommendations: list[str] = []
@@ -266,7 +327,14 @@ class RobustnessTester:
         mc_result: Optional[MonteCarloResult] = None
         if len(trade_history) >= 20:
             logger.info("Robustness test 3/4: Monte Carlo (%d trades) …", len(trade_history))
-            mc_result = self.test_monte_carlo(trade_history, original_metrics)
+            sim_cfg = getattr(base_config, "simulator_config", None)
+            mc_result = self.test_monte_carlo(
+                trade_history,
+                original_metrics,
+                initial_capital=getattr(sim_cfg, "initial_capital", None),
+                start_date=getattr(base_config, "start_date", None),
+                end_date=getattr(base_config, "end_date", None),
+            )
             if not mc_result.is_statistically_profitable:
                 concerns.append(
                     f"Monte Carlo: only {mc_result.pct_profitable:.0%} of simulations profitable"
@@ -341,6 +409,19 @@ class RobustnessTester:
             grade = "OVERFIT"
 
         is_approved = robustness_score >= 0.5
+
+        if deflated_sharpe is not None and not (deflated_sharpe >= dsr_threshold):
+            is_approved = False
+            trials = f" after {n_trials} trials" if n_trials else ""
+            concerns.append(
+                f"Deflated Sharpe {deflated_sharpe:.3f}{trials} is below "
+                f"{dsr_threshold:.2f} — performance is not distinguishable from "
+                f"the best of many unskilled trials"
+            )
+            recommendations.append(
+                "Reduce the number of parameter combinations searched or gather "
+                "a longer track record before approving."
+            )
 
         if not concerns:
             concerns.append("No significant concerns found")
@@ -576,78 +657,81 @@ class RobustnessTester:
         original_metrics: BacktestMetrics,
         n_simulations: int = 1000,
         seed: int = 42,
+        initial_capital: Optional[float] = None,
+        method: str = "stationary",
+        block_length: Optional[float] = None,
+        unit: str = "auto",
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        trading_days: Optional[Iterable[Any]] = None,
+        min_daily_obs: int = 20,
+        risk_free_rate: Optional[float] = None,
     ) -> MonteCarloResult:
-        """Reshuffle trade P&Ls to assess statistical robustness."""
+        """Bootstrap the strategy's daily returns to get outcome distributions.
 
-        pnls = [t.net_pnl for t in trade_history]
-        initial_capital = 100_000.0  # standard baseline for %
+        Trade P&L is aggregated to calendar trading days (exit date), with
+        zero-P&L days inside ``[start_date, end_date]`` included, and expressed
+        as a fraction of ``initial_capital`` (fixed notional).  Two schemes are
+        run:
 
-        # Edge case: all identical P&Ls → no variance
-        if len(set(pnls)) <= 1:
-            total_pnl = sum(pnls)
-            ret = (total_pnl / initial_capital) * 100.0
-            return MonteCarloResult(
-                n_simulations=n_simulations,
-                median_return=ret,
-                p5_return=ret,
-                p25_return=ret,
-                p75_return=ret,
-                p95_return=ret,
-                pct_profitable=1.0 if ret > 0 else 0.0,
-                median_drawdown=0.0,
-                p95_drawdown=0.0,
-                return_95_ci=(ret, ret),
-                is_statistically_profitable=ret > 0,
-                luck_factor=0.0,
-                reliability_score=1.0 if ret > 0 else 0.0,
+        * ``iid`` — resampling days WITH replacement;
+        * ``method`` (``"stationary"`` — Politis-Romano, geometric blocks of
+          mean ``block_length``; or ``"block"`` — circular fixed-length blocks),
+          which preserves serial dependence.  Headline fields come from this.
+
+        ``unit="auto"`` falls back to resampling individual trades (in exit
+        order, Sharpe not annualised) when fewer than ``min_daily_obs`` daily
+        observations exist.  ``initial_capital`` defaults to the value implied
+        by ``original_metrics`` (return amount / return %), else 100 000 with
+        a note.
+        """
+        notes: list[str] = []
+        capital = _resolve_capital(initial_capital, original_metrics, notes)
+
+        days, daily_pnl = daily_pnl_from_trades(
+            trade_history, start=start_date, end=end_date, trading_days=trading_days,
+        )
+        use_daily = unit == "daily" or (unit == "auto" and len(days) >= min_daily_obs)
+        if unit not in ("auto", "daily", "trade"):
+            raise ValueError(f"unit must be 'auto', 'daily' or 'trade', got {unit!r}")
+        if use_daily:
+            pnl = np.asarray(daily_pnl, dtype=float)
+            resample_unit = "daily"
+            ppy: float = TRADING_DAYS_PER_YEAR
+            rf = (
+                risk_free_rate
+                if risk_free_rate is not None
+                else float(getattr(original_metrics, "risk_free_rate", 0.0) or 0.0)
             )
+        else:
+            ordered = sorted(trade_history, key=lambda t: _to_date(t.exit_timestamp))
+            pnl = np.asarray([t.net_pnl for t in ordered], dtype=float)
+            resample_unit = "trade"
+            ppy = 1.0
+            rf = 0.0
+            if unit == "auto":
+                notes.append(
+                    f"Only {len(days)} daily observations (< {min_daily_obs}); "
+                    "resampled individual trades instead (Sharpe is per-trade)."
+                )
 
-        rng = random.Random(seed)
-        sim_returns: list[float] = []
-        sim_drawdowns: list[float] = []
+        returns = pnl / capital
+        iid = bootstrap_returns(
+            returns, capital, n_simulations, method="iid", seed=seed,
+            periods_per_year=ppy, risk_free_rate=rf,
+        )
+        blk_method = method if method in ("stationary", "block") else "stationary"
+        blk = bootstrap_returns(
+            returns, capital, n_simulations, method=blk_method,
+            block_length=block_length, seed=seed + 1,
+            periods_per_year=ppy, risk_free_rate=rf,
+        )
+        primary = iid if method == "iid" else blk
 
-        for _ in range(n_simulations):
-            shuffled = pnls[:]
-            rng.shuffle(shuffled)
-
-            equity = initial_capital
-            peak = equity
-            max_dd = 0.0
-
-            for pnl in shuffled:
-                equity += pnl
-                if equity > peak:
-                    peak = equity
-                dd = ((peak - equity) / peak) * 100.0 if peak > 0 else 0.0
-                if dd > max_dd:
-                    max_dd = dd
-
-            sim_ret = ((equity - initial_capital) / initial_capital) * 100.0
-            sim_returns.append(sim_ret)
-            sim_drawdowns.append(max_dd)
-
-        sim_returns.sort()
-        sim_drawdowns.sort()
-
-        def percentile(data: list[float], pct: float) -> float:
-            idx = int(len(data) * pct / 100.0)
-            idx = max(0, min(idx, len(data) - 1))
-            return data[idx]
-
-        median_return = percentile(sim_returns, 50)
-        p5_return = percentile(sim_returns, 5)
-        p25_return = percentile(sim_returns, 25)
-        p75_return = percentile(sim_returns, 75)
-        p95_return = percentile(sim_returns, 95)
-
-        pct_profitable = sum(1 for r in sim_returns if r > 0) / len(sim_returns)
-
-        median_dd = percentile(sim_drawdowns, 50)
-        p95_dd = percentile(sim_drawdowns, 95)
-
-        return_95_ci = (p5_return, p95_return)
-
-        is_stat_profitable = p5_return > 0
+        p5_return = primary.pct("total_return_pct", 5)
+        median_return = primary.pct("total_return_pct", 50)
+        p95_return = primary.pct("total_return_pct", 95)
+        pct_profitable = float(np.mean(primary.final_equity > capital))
 
         orig_ret = original_metrics.total_return_pct
         if abs(orig_ret) > 1e-9:
@@ -656,7 +740,6 @@ class RobustnessTester:
             luck_factor = 0.0
         luck_factor = min(1.0, luck_factor)
 
-        # reliability_score = pct_profitable * 0.5 + (1 - luck) * 0.3 + (p5 > 0) * 0.2
         reliability_score = (
             pct_profitable * 0.5
             + (1.0 - luck_factor) * 0.3
@@ -668,16 +751,35 @@ class RobustnessTester:
             n_simulations=n_simulations,
             median_return=median_return,
             p5_return=p5_return,
-            p25_return=p25_return,
-            p75_return=p75_return,
+            p25_return=primary.pct("total_return_pct", 25),
+            p75_return=primary.pct("total_return_pct", 75),
             p95_return=p95_return,
             pct_profitable=pct_profitable,
-            median_drawdown=median_dd,
-            p95_drawdown=p95_dd,
-            return_95_ci=return_95_ci,
-            is_statistically_profitable=is_stat_profitable,
+            median_drawdown=primary.pct("max_drawdown_pct", 50),
+            p95_drawdown=primary.pct("max_drawdown_pct", 95),
+            return_95_ci=(
+                primary.pct("total_return_pct", 2.5),
+                primary.pct("total_return_pct", 97.5),
+            ),
+            is_statistically_profitable=p5_return > 0,
             luck_factor=luck_factor,
             reliability_score=reliability_score,
+            method=primary.method,
+            block_length=primary.block_length,
+            resample_unit=resample_unit,
+            n_observations=int(returns.size),
+            initial_capital=capital,
+            prob_loss=primary.prob_loss,
+            final_equity_p5=primary.pct("final_equity", 5),
+            final_equity_p50=primary.pct("final_equity", 50),
+            final_equity_p95=primary.pct("final_equity", 95),
+            p5_drawdown=primary.pct("max_drawdown_pct", 5),
+            sharpe_p5=primary.pct("sharpe", 5),
+            sharpe_p50=primary.pct("sharpe", 50),
+            sharpe_p95=primary.pct("sharpe", 95),
+            iid=iid,
+            block=blk,
+            notes=notes,
         )
 
     # ------------------------------------------------------------------
@@ -786,6 +888,169 @@ class RobustnessTester:
             return None
 
         return result.metrics
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_capital(
+    initial_capital: Optional[float],
+    original_metrics: Optional[BacktestMetrics],
+    notes: list[str],
+) -> float:
+    if initial_capital is not None:
+        if initial_capital <= 0:
+            raise ValueError(f"initial_capital must be > 0, got {initial_capital}")
+        return float(initial_capital)
+    if original_metrics is not None:
+        amt = getattr(original_metrics, "total_return_amount", 0.0) or 0.0
+        pct = getattr(original_metrics, "total_return_pct", 0.0) or 0.0
+        if abs(pct) > 1e-9 and abs(amt) > 1e-9:
+            implied = amt / (pct / 100.0)
+            if implied > 0 and math.isfinite(implied):
+                return float(implied)
+    notes.append("initial_capital not supplied or inferable; assumed 100,000.")
+    return 100_000.0
+
+
+def daily_pnl_from_trades(
+    trades: Sequence[ClosedTrade],
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    trading_days: Optional[Iterable[Any]] = None,
+) -> tuple[list[date], list[float]]:
+    """Net P&L per trading day (exit date), zero-P&L days in the span included.
+
+    The span defaults to first entry date → last exit date.  ``trading_days``
+    supplies an exchange calendar; otherwise Monday–Friday is used.  Days with
+    exits are always kept even if outside the calendar.
+    """
+    if not trades:
+        return [], []
+    by_day: dict[date, float] = {}
+    for t in trades:
+        d = _to_date(t.exit_timestamp)
+        by_day[d] = by_day.get(d, 0.0) + float(t.net_pnl)
+    first = start or min(_to_date(t.entry_timestamp) for t in trades)
+    last = end or max(by_day)
+    cal = set(session_days(first, last, trading_days)) | set(by_day)
+    days = sorted(cal)
+    return days, [by_day.get(d, 0.0) for d in days]
+
+
+def default_block_length(n_obs: int) -> float:
+    """Rule-of-thumb mean block length ``n^(1/3)`` (at least 1)."""
+    return float(max(1, round(n_obs ** (1.0 / 3.0))))
+
+
+def stationary_bootstrap_indices(
+    n_obs: int, n_sims: int, mean_block_length: float, rng: np.random.Generator,
+) -> np.ndarray:
+    """Politis & Romano (1994) stationary bootstrap indices (circular).
+
+    Each position starts a new block with probability ``1 / mean_block_length``,
+    otherwise continues the previous block; block lengths are geometric.
+    """
+    p = 1.0 / max(float(mean_block_length), 1.0)
+    idx = np.empty((n_sims, n_obs), dtype=np.int64)
+    idx[:, 0] = rng.integers(0, n_obs, n_sims)
+    restart = rng.random((n_sims, n_obs)) < p
+    fresh = rng.integers(0, n_obs, (n_sims, n_obs))
+    for t in range(1, n_obs):
+        idx[:, t] = np.where(restart[:, t], fresh[:, t], (idx[:, t - 1] + 1) % n_obs)
+    return idx
+
+
+def circular_block_bootstrap_indices(
+    n_obs: int, n_sims: int, block_length: float, rng: np.random.Generator,
+) -> np.ndarray:
+    """Circular moving-block bootstrap indices with a fixed block length."""
+    b = int(max(1, round(block_length)))
+    n_blocks = -(-n_obs // b)
+    starts = rng.integers(0, n_obs, (n_sims, n_blocks))
+    idx = (starts[:, :, None] + np.arange(b)[None, None, :]) % n_obs
+    return idx.reshape(n_sims, -1)[:, :n_obs]
+
+
+def bootstrap_returns(
+    returns: Sequence[float],
+    initial_capital: float,
+    n_simulations: int = 1000,
+    method: str = "stationary",
+    block_length: Optional[float] = None,
+    seed: Optional[int] = 42,
+    periods_per_year: float = TRADING_DAYS_PER_YEAR,
+    risk_free_rate: float = 0.0,
+    compound: bool = False,
+) -> BootstrapDistribution:
+    """Bootstrap a return series into distributions of path statistics.
+
+    Args:
+        returns: per-period returns as a fraction of ``initial_capital``
+            (fixed notional).  Paths are ``C · (1 + cumsum(r))`` unless
+            ``compound=True`` (``C · cumprod(1 + r)``).
+        method: ``"iid"`` (with replacement), ``"stationary"`` or ``"block"``.
+        block_length: mean/fixed block length; default ``n^(1/3)``.
+        periods_per_year: Sharpe annualisation factor.
+        risk_free_rate: ANNUAL rate, subtracted per period for Sharpe only.
+    """
+    r = np.asarray(returns, dtype=float)
+    r = r[np.isfinite(r)]
+    n = int(r.size)
+    if n == 0:
+        raise ValueError("bootstrap_returns needs at least one return")
+    if n_simulations < 1:
+        raise ValueError("n_simulations must be >= 1")
+    rng = np.random.default_rng(seed)
+
+    if method == "iid":
+        idx = rng.integers(0, n, (n_simulations, n))
+        blen: Optional[float] = None
+    elif method == "stationary":
+        blen = float(block_length) if block_length else default_block_length(n)
+        idx = stationary_bootstrap_indices(n, n_simulations, blen, rng)
+    elif method == "block":
+        blen = float(block_length) if block_length else default_block_length(n)
+        idx = circular_block_bootstrap_indices(n, n_simulations, blen, rng)
+    else:
+        raise ValueError(f"Unknown bootstrap method {method!r}")
+
+    sample = r[idx]
+    cap = float(initial_capital)
+    if compound:
+        equity = cap * np.cumprod(1.0 + sample, axis=1)
+    else:
+        equity = cap * (1.0 + np.cumsum(sample, axis=1))
+    final = equity[:, -1]
+
+    with_start = np.concatenate([np.full((n_simulations, 1), cap), equity], axis=1)
+    peak = np.maximum.accumulate(with_start, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dd = np.where(peak > 0, (peak - with_start) / peak, 1.0)
+    max_dd = np.clip(dd.max(axis=1), 0.0, 1.0) * 100.0
+
+    rf_p = risk_free_rate / periods_per_year if periods_per_year else 0.0
+    sd = sample.std(axis=1, ddof=1) if n >= 2 else np.zeros(n_simulations)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sharpe = np.where(
+            sd > 0, (sample.mean(axis=1) - rf_p) / np.where(sd > 0, sd, 1.0), np.nan,
+        ) * math.sqrt(periods_per_year)
+
+    return BootstrapDistribution(
+        method=method,
+        block_length=blen,
+        n_simulations=n_simulations,
+        n_observations=n,
+        initial_capital=cap,
+        periods_per_year=float(periods_per_year),
+        final_equity=final,
+        total_return_pct=(final - cap) / cap * 100.0,
+        max_drawdown_pct=max_dd,
+        sharpe=sharpe,
+        prob_loss=float(np.mean(final < cap)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -961,8 +1226,13 @@ def _build_summary(
     if monte_carlo_result:
         lines.append(f"  Score: {monte_carlo_result.reliability_score:.2f}")
         lines.append(f"  Simulations: {monte_carlo_result.n_simulations}")
+        lines.append(
+            f"  Method: {monte_carlo_result.method} bootstrap of "
+            f"{monte_carlo_result.n_observations} {monte_carlo_result.resample_unit} obs"
+        )
         lines.append(f"  Median return: {monte_carlo_result.median_return:.2f}%")
         lines.append(f"  5th pctl return: {monte_carlo_result.p5_return:.2f}%")
+        lines.append(f"  P(loss): {monte_carlo_result.prob_loss:.1%}")
         lines.append(f"  % profitable: {monte_carlo_result.pct_profitable:.0%}")
         lines.append(f"  Luck factor: {monte_carlo_result.luck_factor:.2f}")
         lines.append(f"  Statistically profitable: {'Yes' if monte_carlo_result.is_statistically_profitable else 'No'}")

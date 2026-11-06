@@ -383,7 +383,9 @@ class TestOneTrade:
         assert m.win_rate == 100.0
         assert m.avg_win_amount == 500.0
         assert m.avg_loss_amount == 0.0
-        assert m.profit_factor == 999.0   # all wins, capped at 999
+        # No losses → profit factor is undefined (inf), flagged, never a 999 sentinel
+        assert math.isinf(m.profit_factor)
+        assert "profit_factor" in m.undefined_metrics
         assert m.largest_win == 500.0
         assert m.largest_loss == 0.0
 
@@ -407,10 +409,12 @@ class TestOneTrade:
 # ─────────────────────────────────────────────
 
 class TestEdgeCases:
-    def test_all_wins_profit_factor_capped(self):
+    def test_all_wins_profit_factor_undefined(self):
         trades = [make_trade("WIN", 500.0) for _ in range(5)]
         m = MetricsCalculator.calculate_all(trades, [], 100_000.0)
-        assert m.profit_factor == 999.0
+        assert math.isinf(m.profit_factor)
+        assert math.isinf(m.payoff_ratio)
+        assert {"profit_factor", "payoff_ratio"} <= set(m.undefined_metrics)
 
     def test_all_losses_expected_value_negative(self):
         trades = [make_trade("LOSS", -300.0) for _ in range(5)]
@@ -419,13 +423,14 @@ class TestEdgeCases:
         assert m.profit_factor == 0.0
         assert m.has_edge is False
 
-    def test_sortino_999_when_no_downside(self):
-        # Equity curve with no negative daily returns
+    def test_sortino_undefined_when_no_downside(self):
+        # Equity curve with every daily return above the daily risk-free rate
         caps = [100_000.0 + i * 100 for i in range(10)]
         points = make_equity(caps)
         dummy = make_trade("WIN", 0)
         m = MetricsCalculator.calculate_all([dummy], points, 100_000.0)
-        assert m.sortino_ratio == 999.0
+        assert math.isinf(m.sortino_ratio) and m.sortino_ratio > 0
+        assert "sortino_ratio" in m.undefined_metrics
 
 
 # ─────────────────────────────────────────────
