@@ -56,10 +56,13 @@ def _make_mapped_article(
     return ma
 
 
-def _make_fii(net: float = 1500.0, dii_net: float = 800.0) -> MagicMock:
+def _make_fii(net: float = 1500.0, dii_net: float = 800.0, trade_date=None) -> MagicMock:
+    from datetime import date as _date
+
     fii = MagicMock()
     fii.fii_net_value = net
     fii.dii_net_value = dii_net
+    fii.date = trade_date or _date.today()  # fresh by default; stale → NEUTRAL
     return fii
 
 
@@ -375,6 +378,17 @@ class TestClassifyFiiBias:
         """Net ≤ -500 Cr + SELLING trend → STRONG_SELLING."""
         fii = _make_fii(net=-600.0)
         assert self.engine._classify_fii_bias(fii, {"trend": "SELLING"}) == "STRONG_SELLING"
+
+    def test_stale_data_is_neutral(self):
+        """Strong flow from a session older than the previous one must not carry direction."""
+        from datetime import date as _date
+        fii = _make_fii(net=-9000.0, trade_date=_date(2026, 6, 5))
+        assert self.engine._classify_fii_bias(fii, {"trend": "SELLING"}) == "NEUTRAL"
+
+    def test_undated_data_is_neutral(self):
+        fii = _make_fii(net=9000.0)
+        fii.date = None
+        assert self.engine._classify_fii_bias(fii, {"trend": "BUYING"}) == "NEUTRAL"
 
 
 # ---------------------------------------------------------------------------

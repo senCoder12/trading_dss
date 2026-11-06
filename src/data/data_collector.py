@@ -325,12 +325,21 @@ class DataCollector:
             max_instances=1,
             coalesce=True,
         )
-        # FII futures intraday positions — every 30 min
+        # FII futures positions (EOD archive) — gap-fill check every 30 min
         self.scheduler.add_job(
             self.collect_fii_futures_intraday,
             trigger=IntervalTrigger(minutes=30, timezone=_IST),
             id="collect_fii_futures",
             name="Collect FII Futures Positions",
+            max_instances=1,
+            coalesce=True,
+        )
+        # FII cash + futures freshness → Telegram alert when stale/missing
+        self.scheduler.add_job(
+            self.check_data_freshness,
+            trigger=IntervalTrigger(minutes=30, timezone=_IST),
+            id="check_data_freshness",
+            name="Check FII Data Freshness",
             max_instances=1,
             coalesce=True,
         )
@@ -1132,17 +1141,38 @@ class DataCollector:
             logger.warning("collect_iv_history failed: %s", exc)
 
     def collect_fii_futures_intraday(self) -> None:
-        """Fetch FII net futures positions (intraday — published every 30 min by NSE)."""
-        if not self._should_run():
+        """Sync participant-wise futures positions into fii_futures_positions.
+
+        NSE publishes these once per day after the close, as an archive CSV.
+        The old intraday endpoint (/api/fiiStatsData) now returns 404. Each run
+        fills any trading day missing in the last week, so restarts and
+        downtime self-heal. Once a week is complete, a run makes no requests.
+        Not gated to market hours: the file appears in the evening.
+        """
+        if self.dry_run:
             return
         try:
-            positions = self.fii_dii_fetcher.fetch_futures_participant_positions()
-            if positions:
-                self.fii_dii_fetcher.save_futures_positions_to_db(positions, self.db)
-                logger.debug("FII futures: net=%s trend=%s",
-                           positions.get("fii_net_position"), positions.get("fii_fo_trend"))
+            self.fii_dii_fetcher.sync_futures_positions(self.db, lookback_days=7)
         except Exception as exc:
             logger.warning("collect_fii_futures_intraday failed: %s", exc)
+
+    def check_data_freshness(self) -> None:
+        """Alert (Telegram) when FII cash or futures data falls behind the latest published session."""
+        try:
+            if getattr(self, "_freshness_monitor", None) is None:
+                from src.monitoring.data_freshness import FreshnessMonitor  # noqa: PLC0415
+
+                self._freshness_monitor = FreshnessMonitor(self.db, self._send_ops_alert)
+            self._freshness_monitor.run()
+        except Exception as exc:
+            logger.warning("check_data_freshness failed: %s", exc)
+
+    def _send_ops_alert(self, message: str, priority: str) -> None:
+        bot = getattr(self, "telegram_bot", None)
+        if bot is None:
+            logger.warning("Ops alert (Telegram not configured): %s", message)
+            return
+        bot.send_alert(message, priority=priority)
 
     def collect_market_breadth(self) -> None:
         """Collect Advance-Decline ratio from NSE allIndices response.
