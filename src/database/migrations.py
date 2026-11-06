@@ -9,21 +9,33 @@ Adding a new migration
 ----------------------
 1. Write a function that takes a :class:`~src.database.db_manager.DatabaseManager`.
 2. Decorate it with ``@migration(version=<next_int>, description="…")``.
-3. On the next app startup :func:`run_migrations` picks it up automatically.
+3. Add its inverse to :data:`ROLLBACK_SQL`.
+4. Deploy explicitly. Startup never migrates an existing database:
+   ``scripts/migrate.py rehearse --approve N`` validates on a copy of the
+   database, then ``scripts/migrate.py apply --approve N`` backs up and applies.
+
+Approval gate
+-------------
+A *fresh* database (no migrations recorded yet) is built and migrated
+automatically. There is nothing to protect. On an *existing* database,
+:meth:`MigrationRunner.run_pending` raises :class:`PendingMigrationsError`
+unless every pending version is passed in ``approve``. An app restart can
+therefore never change the production schema by surprise.
 
 Rollback
 --------
-SQLite does not support ``DROP COLUMN``, so rollbacks are destructive.
-:meth:`MigrationRunner.rollback` drops the **entire** schema and re-applies
-all migrations up to (but not including) *target_version*.  Use with care —
-only in development environments.
+Per-migration: :func:`rollback_migration` runs the inverse statements in
+:data:`ROLLBACK_SQL` and removes the ``schema_version`` row. The migration
+then shows as pending again and needs re-approval.
+:meth:`MigrationRunner.rollback` is the old *destructive* full reset, for
+development only.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
@@ -38,6 +50,32 @@ MigrationFn = Callable[[DatabaseManager], None]
 
 # Registry: list of (version, description, fn) tuples — populated by @migration
 _REGISTRY: list[tuple[int, str, MigrationFn]] = []
+
+# Inverse statements per migration (only additive migrations can be undone
+# without data loss). Used by rollback_migration() and scripts/migrate.py.
+ROLLBACK_SQL: dict[int, list[str]] = {
+    19: ["DROP TABLE IF EXISTS futures_depth_1m"],
+    20: [
+        "DROP INDEX IF EXISTS idx_fii_fut_pos_lookup",
+        "DROP TABLE IF EXISTS fii_futures_positions",
+    ],
+}
+
+
+class PendingMigrationsError(DatabaseError):
+    """Existing database has migrations that were not explicitly approved."""
+
+    def __init__(self, pending: list[tuple[int, str]]) -> None:
+        self.pending = pending
+        listed = "\n".join(f"  v{v}: {d}" for v, d in pending)
+        versions = ",".join(str(v) for v, _ in pending)
+        super().__init__(
+            "Database has unapplied migrations that need explicit approval:\n"
+            f"{listed}\n"
+            "Schema changes are never applied on startup. Review them, then run:\n"
+            f"  .venv/bin/python scripts/migrate.py rehearse --approve {versions}\n"
+            f"  .venv/bin/python scripts/migrate.py apply --approve {versions}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +479,27 @@ def _v18_gex_tables(db: DatabaseManager) -> None:
                 conn.execute(stmt)
 
 
+@migration(version=19, description="Add futures_depth_1m table for order-book depth features")
+def _v19_futures_depth_table(db: DatabaseManager) -> None:
+    from src.database.models import TABLE_DDL
+
+    conn = db._conn()
+    with conn:
+        for stmt in TABLE_DDL["futures_depth_1m"]:
+            conn.execute(stmt)
+
+
+# Approved 2026-11-06. Purely additive: one table plus one index; no existing table altered.
+@migration(version=20, description="Add fii_futures_positions table (participant-wise futures OI)")
+def _v20_fii_futures_positions(db: DatabaseManager) -> None:
+    from src.database import queries as Q
+
+    conn = db._conn()
+    with conn:
+        conn.execute(Q.CREATE_FII_FUTURES_POSITIONS)
+        conn.execute(Q.CREATE_FII_FUTURES_POSITIONS_IDX)
+
+
 @migration(version=17, description="Add liquidity_levels and level_touches tables for SMC pool detector")
 def _v17_liquidity_tables(db: DatabaseManager) -> None:
     from src.database import queries as Q
@@ -486,9 +545,19 @@ class MigrationRunner:
 
     # ── Public interface ──────────────────────────────────────────────────────
 
-    def run_pending(self) -> int:
+    def pending(self) -> list[tuple[int, str]]:
+        """Registered migrations not yet recorded in ``schema_version``."""
+        applied = self._get_applied_versions()
+        return sorted((v, d) for v, d, _ in _REGISTRY if v not in applied)
+
+    def run_pending(self, approve: Optional[Iterable[int]] = None) -> int:
         """
         Apply all registered migrations not yet recorded in ``schema_version``.
+
+        On a fresh database (no migrations recorded) everything is applied.
+        On an existing database every pending version must be listed in
+        *approve*. Otherwise :class:`PendingMigrationsError` is raised and
+        nothing is changed.
 
         Migrations run inside individual transactions.  If one fails, it is
         rolled back but previously-applied migrations in the same call are
@@ -508,6 +577,12 @@ class MigrationRunner:
         if not pending:
             logger.debug("No pending migrations — schema is up to date")
             return 0
+
+        if applied:  # existing database: never migrate implicitly
+            approved = set(approve or ())
+            unapproved = [(v, d) for v, d, _ in pending if v not in approved]
+            if unapproved:
+                raise PendingMigrationsError(unapproved)
 
         count = 0
         for version, description, fn in pending:
@@ -616,6 +691,23 @@ class MigrationRunner:
                 "applied_at": applied_info["applied_at"] if applied_info else None,
             })
         return report
+
+
+def rollback_migration(db: DatabaseManager, version: int) -> None:
+    """Undo one additive migration: run its ROLLBACK_SQL, drop its version row.
+
+    The migration stays registered, so it reappears as pending and must be
+    re-approved. A restart will not silently re-apply it.
+    """
+    stmts = ROLLBACK_SQL.get(version)
+    if stmts is None:
+        raise DatabaseError(f"No rollback defined for migration v{version}")
+    conn = db._conn()
+    with conn:
+        for stmt in stmts:
+            conn.execute(stmt)
+        conn.execute("DELETE FROM schema_version WHERE version = ?", (version,))
+    logger.warning("Migration v%d rolled back", version)
 
 
 # ---------------------------------------------------------------------------

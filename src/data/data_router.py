@@ -68,6 +68,52 @@ _STRIKE_INTERVAL: dict[str, int] = {
 _DEFAULT_STRIKE_INTERVAL = 50
 
 
+def _nearest_expiry(df: "pd.DataFrame") -> Optional[str]:
+    """Return the nearest non-expired expiry string from Angel master rows.
+
+    Angel stores expiry as text like "27NOV2025"; sorting that text is not
+    chronological ("01DEC2026" < "10NOV2026"), so parse before comparing.
+    """
+    import pandas as pd  # noqa: PLC0415
+
+    if df is None or df.empty:
+        return None
+    parsed = pd.to_datetime(df["expiry"], format="%d%b%Y", errors="coerce")
+    today = pd.Timestamp(datetime.now(tz=_IST).date())
+    live = parsed[parsed >= today]
+    if live.empty:
+        return None
+    return str(df.loc[live.idxmin(), "expiry"])
+
+
+def _best_level_ofi(
+    prev: Optional[tuple[float, int, float, int]],
+    cur: tuple[float, int, float, int],
+) -> float:
+    """Best-level order flow imbalance between two book snapshots.
+
+    Cont, Kukanov & Stoikov (2014):
+        e = 1{Pb >= Pb'}·qb − 1{Pb <= Pb'}·qb' − 1{Pa <= Pa'}·qa + 1{Pa >= Pa'}·qa'
+    where ' marks the previous snapshot.  Tuples are (bid, bid_qty, ask, ask_qty).
+    Positive = net buying pressure.  SnapQuote ticks are sampled snapshots,
+    not every book event, so this is an approximation of true OFI.
+    """
+    if prev is None:
+        return 0.0
+    pb, qb, pa, qa = prev
+    b, qb_n, a, qa_n = cur
+    e = 0.0
+    if b >= pb:
+        e += qb_n
+    if b <= pb:
+        e -= qb
+    if a <= pa:
+        e -= qa_n
+    if a >= pa:
+        e += qa
+    return e
+
+
 class DataRouter:
     """Routes data requests to broker API or NSE scraper based on config.
 
@@ -101,6 +147,15 @@ class DataRouter:
         # Throttle price_tick WS broadcasts to max 1/sec per index
         self._last_tick_broadcast: dict[str, float] = {}
         self._last_tick_times: dict[str, float] = {}  # token → last tick monotonic time
+        # Near-month index futures: spot indices have no order book, so depth
+        # features come from the futures contract.
+        self._fut_token_to_index: dict[str, str] = {}
+        self._latest_fut_depth: dict[str, "LiveTick"] = {}
+        # In-progress 1-minute depth aggregates + previous best level (for OFI)
+        self._depth_bars: dict[str, dict] = {}
+        self._prev_best: dict[str, tuple[float, int, float, int]] = {}
+        self._prev_fut_volume: dict[str, int] = {}  # last cumulative day volume seen
+        self._depth_lock = threading.Lock()
 
         if settings.broker.use_broker_api and settings.broker.angel_one_api_key:
             self._init_broker()
@@ -186,6 +241,11 @@ class DataRouter:
 
             option_tokens_by_exchange = self._get_atm_option_tokens()
 
+            # Near-month index futures → order-book depth features
+            fut_tokens_by_exchange, self._fut_token_to_index = self._get_near_futures_tokens()
+            for exchange_type, fut_tokens in fut_tokens_by_exchange.items():
+                option_tokens_by_exchange.setdefault(exchange_type, []).extend(fut_tokens)
+
             # Build subscription list for each exchange
             subscribe_list: list[dict] = []
             for exchange_type in sorted(tokens_by_exchange.keys()):
@@ -203,14 +263,21 @@ class DataRouter:
 
             self.ws_feed.on_tick_update = self._handle_tick
             self.ws_feed.on_oi_update = self._handle_oi_update
+            self.ws_feed.on_depth_update = self._handle_depth_update
             self.ws_feed.start(subscribe_list)
 
             total_index_tokens = sum(len(t) for t in tokens_by_exchange.values())
-            total_option_tokens = sum(len(t) for t in option_tokens_by_exchange.values())
+            total_fut_tokens = len(self._fut_token_to_index)
+            total_option_tokens = (
+                sum(len(t) for t in option_tokens_by_exchange.values()) - total_fut_tokens
+            )
             logger.info(
-                "WebSocket: subscribed to %d index token(s) + %d option token(s)",
+                "WebSocket: subscribed to %d index token(s) + %d option token(s) "
+                "+ %d index futures token(s) %s",
                 total_index_tokens,
                 total_option_tokens,
+                total_fut_tokens,
+                sorted(self._fut_token_to_index.values()),
             )
         except Exception as exc:
             logger.error("WebSocket feed start failed: %s", exc)
@@ -245,13 +312,16 @@ class DataRouter:
                 interval = _STRIKE_INTERVAL.get(idx.id, _DEFAULT_STRIKE_INTERVAL)
                 atm = round(ltp / interval) * interval
 
-                # Find nearest weekly expiry from master contract
+                # Find nearest weekly expiry from master contract (options rows
+                # only — futures share the name but have monthly expiries)
                 mc = self._master_contract
-                sym_df = mc[mc["name"] == idx.option_symbol].copy()
-                if sym_df.empty:
+                sym_df = mc[
+                    (mc["name"] == idx.option_symbol)
+                    & (mc["instrumenttype"].astype(str).str.startswith("OPT"))
+                ]
+                nearest_expiry = _nearest_expiry(sym_df)
+                if nearest_expiry is None:
                     continue
-                sym_df = sym_df.sort_values("expiry")
-                nearest_expiry = sym_df["expiry"].iloc[0]
 
                 # Determine options exchange: BFO for BSE indices, NFO for NSE indices
                 opt_exchange_type = 4 if exchange_type == 3 else 2  # BFO if BSE, else NFO
@@ -271,6 +341,42 @@ class DataRouter:
             logger.error("ATM option token lookup failed: %s", exc)
 
         return tokens_by_exchange
+
+    def _get_near_futures_tokens(self) -> tuple[dict[int, list[str]], dict[str, str]]:
+        """Near-month futures tokens for F&O indices in _INDEX_TOKENS.
+
+        Returns ({exchange_type: [tokens]}, {token: index_id}).
+        """
+        tokens_by_exchange: dict[int, list[str]] = {}
+        token_to_index: dict[str, str] = {}
+        if self._master_contract is None or self.registry is None:
+            return tokens_by_exchange, token_to_index
+
+        mc = self._master_contract
+        try:
+            for idx in self.registry.get_active_indices():
+                token_info = _INDEX_TOKENS.get(idx.id)
+                if not token_info or not idx.has_options or not idx.option_symbol:
+                    continue
+
+                fut_exchange_type = 4 if token_info[1] == 3 else 2  # BFO if BSE, else NFO
+                fut_df = mc[
+                    (mc["name"] == idx.option_symbol)
+                    & (mc["exch_seg"] == _EXCHANGE_TYPE_MAP[fut_exchange_type])
+                    & (mc["instrumenttype"] == "FUTIDX")
+                ]
+                expiry = _nearest_expiry(fut_df)
+                if expiry is None:
+                    logger.warning("No near-month futures contract found for %s", idx.id)
+                    continue
+
+                token = str(fut_df[fut_df["expiry"] == expiry]["token"].iloc[0])
+                tokens_by_exchange.setdefault(fut_exchange_type, []).append(token)
+                token_to_index[token] = idx.id
+        except Exception as exc:
+            logger.error("Index futures token lookup failed: %s", exc)
+
+        return tokens_by_exchange, token_to_index
 
     # ── WebSocket callbacks ────────────────────────────────────────────────
 
@@ -360,6 +466,101 @@ class DataRouter:
         # subsystem (OptionsChainFetcher).  No action needed here.
         pass
 
+    def _handle_depth_update(self, tick: "LiveTick") -> None:
+        """Cache the latest near-month futures depth and fold it into the minute bar."""
+        index_id = self._fut_token_to_index.get(tick.token)
+        if not index_id:
+            return
+        self._latest_fut_depth[index_id] = tick
+        if tick.has_depth:  # need both sides for spread / OFI
+            self._accumulate_depth(index_id, tick)
+
+    def _accumulate_depth(self, index_id: str, tick: "LiveTick") -> None:
+        minute = tick.timestamp.replace(second=0, microsecond=0)
+        cur_best = (tick.bid_price, tick.bid_qty, tick.ask_price, tick.ask_qty)
+
+        with self._depth_lock:
+            ofi = _best_level_ofi(self._prev_best.get(index_id), cur_best)
+            self._prev_best[index_id] = cur_best
+
+            # Tick volume is cumulative for the day. The first tick after start-up
+            # is only a baseline (delta 0), and a day rollover reset is clamped to 0.
+            # Ticks skipped for missing depth are still counted, because their
+            # volume shows up in the next delta.
+            prev_vol = self._prev_fut_volume.get(index_id)
+            vol_delta = max(0, tick.volume - prev_vol) if prev_vol is not None else 0
+            self._prev_fut_volume[index_id] = tick.volume
+
+            bar = self._depth_bars.get(index_id)
+            if bar is None or bar["minute"] != minute:
+                if bar is not None and not self.dry_run:
+                    self._flush_depth_bar(index_id, bar)
+                bar = {
+                    "minute": minute,
+                    "samples": 0,
+                    "crossed": 0,
+                    "spread_sum": 0.0,
+                    "bid5_sum": 0,
+                    "ask5_sum": 0,
+                    "imb_sum": 0.0,
+                    "imb_n": 0,
+                    "book_imb_sum": 0.0,
+                    "book_imb_n": 0,
+                    "ofi": 0.0,
+                    "volume": 0,
+                    "last": tick,
+                }
+                self._depth_bars[index_id] = bar
+
+            bar["volume"] += vol_delta
+            bar["samples"] += 1
+            if tick.bid_price > tick.ask_price:
+                bar["crossed"] += 1
+            bar["spread_sum"] += tick.spread
+            bar["bid5_sum"] += tick.bid_qty_5
+            bar["ask5_sum"] += tick.ask_qty_5
+            if tick.depth_imbalance is not None:
+                bar["imb_sum"] += tick.depth_imbalance
+                bar["imb_n"] += 1
+            if tick.book_imbalance is not None:
+                bar["book_imb_sum"] += tick.book_imbalance
+                bar["book_imb_n"] += 1
+            bar["ofi"] += ofi
+            bar["last"] = tick
+
+    def _flush_depth_bar(self, index_id: str, bar: dict) -> None:
+        """Write a completed 1-minute depth aggregate to futures_depth_1m."""
+        n = bar["samples"]
+        if n <= 0:
+            return
+        last = bar["last"]
+        try:
+            self.db.execute_many(
+                Q.UPSERT_FUTURES_DEPTH_1M,
+                [(
+                    index_id,
+                    bar["minute"].isoformat(),
+                    last.token,
+                    last.ltp,
+                    int(last.open_interest or 0),
+                    int(bar["volume"]),
+                    n,
+                    bar["crossed"],
+                    bar["spread_sum"] / n,
+                    bar["bid5_sum"] / n,
+                    bar["ask5_sum"] / n,
+                    bar["imb_sum"] / bar["imb_n"] if bar["imb_n"] else None,
+                    last.depth_imbalance,
+                    bar["book_imb_sum"] / bar["book_imb_n"] if bar["book_imb_n"] else None,
+                    last.book_imbalance,
+                    last.total_buy_qty,
+                    last.total_sell_qty,
+                    bar["ofi"],
+                )],
+            )
+        except Exception as exc:
+            logger.error("Depth bar flush failed for %s: %s", index_id, exc)
+
     # ── Public interface ───────────────────────────────────────────────────
 
     def get_index_price(self, index_id: str) -> Optional[dict]:
@@ -385,6 +586,7 @@ class DataRouter:
                         "timestamp": tick.timestamp.isoformat(),
                         "bid": tick.bid_price,
                         "ask": tick.ask_price,
+                        "futures_depth": self.get_futures_depth(index_id),
                     }
 
         # Scraper fallback — look up by symbol via registry
@@ -404,6 +606,34 @@ class DataRouter:
             (item for item in all_data if item.get("index_name", "").upper() == index_id.upper()),
             None,
         )
+
+    def get_futures_depth(self, index_id: str) -> Optional[dict]:
+        """Latest near-month futures order-book snapshot for an index, or None."""
+        tick = self._latest_fut_depth.get(index_id)
+        if tick is None:
+            return None
+        return {
+            "index_id": index_id,
+            "token": tick.token,
+            "fut_ltp": tick.ltp,
+            "bid": tick.bid_price,
+            "ask": tick.ask_price,
+            "spread": tick.spread,
+            "bid_qty": tick.bid_qty,
+            "ask_qty": tick.ask_qty,
+            "bid_qty_5": tick.bid_qty_5,
+            "ask_qty_5": tick.ask_qty_5,
+            "total_buy_qty": tick.total_buy_qty,
+            "total_sell_qty": tick.total_sell_qty,
+            "depth_imbalance": tick.depth_imbalance,
+            "book_imbalance": tick.book_imbalance,
+            "open_interest": tick.open_interest,
+            "timestamp": tick.timestamp.isoformat(),
+        }
+
+    def get_futures_depth_history(self, index_id: str, start: str, end: str) -> list[dict]:
+        """Stored 1-minute depth aggregates for [start, end) — ISO-8601 IST strings."""
+        return self.db.fetch_all(Q.LIST_FUTURES_DEPTH_1M, (index_id, start, end))
 
     def get_all_prices(self) -> list[dict]:
         """Return current prices for all tracked instruments.
@@ -486,11 +716,22 @@ class DataRouter:
             "stale_feeds": stale,
             "oldest_feed_age_sec": round(oldest, 1),
             "active_tokens": len(self._last_tick_times),
+            "ws_connected": getattr(self.ws_feed, "is_connected", False),
+            "ws_reconnects": getattr(self.ws_feed, "reconnect_count", 0),
         }
 
     def is_using_broker_api(self) -> bool:
-        """True when broker API is active and WebSocket feed is running."""
-        return self.broker_client is not None
+        """True when broker WebSocket is configured AND currently delivering ticks."""
+        if self.broker_client is None or self.ws_feed is None:
+            return False
+        if not self.ws_feed.is_running:
+            return False
+        # If ticks were flowing but stopped for >2 min, treat feed as dead
+        if self._last_tick_times:
+            most_recent = max(self._last_tick_times.values())
+            if time.monotonic() - most_recent > 120:
+                return False
+        return True
 
     def get_data_source(self) -> str:
         if self.broker_client:
@@ -505,4 +746,8 @@ class DataRouter:
                     for index_id, bar in self._current_bars.items():
                         self._flush_bar(index_id, bar)
                     self._current_bars.clear()
+                with self._depth_lock:
+                    for index_id, bar in self._depth_bars.items():
+                        self._flush_depth_bar(index_id, bar)
+                    self._depth_bars.clear()
             self.ws_feed.stop()

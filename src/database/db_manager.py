@@ -199,13 +199,28 @@ class DatabaseManager:
 
     # ── Schema initialisation ─────────────────────────────────────────────────
 
+    def has_applied_migrations(self) -> bool:
+        """True once any migration is recorded, i.e. this is an existing database."""
+        conn = self._conn()
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        ).fetchone():
+            return False
+        return conn.execute("SELECT 1 FROM schema_version LIMIT 1").fetchone() is not None
+
     def initialise_schema(self) -> None:
         """
         Create all tables and indexes defined in :data:`~src.database.models.TABLE_DDL`.
 
-        Safe to call on every startup — uses ``CREATE TABLE IF NOT EXISTS``.
+        Only acts on a fresh database. Once migrations are recorded, this is a
+        no-op: schema changes to an existing database go through explicitly
+        approved migrations (see ``src/database/migrations.py``), never through
+        a restart that happens to see a new ``TABLE_DDL`` entry.
         """
         conn = self._conn()
+        if self.has_applied_migrations():
+            logger.debug("initialise_schema: existing database — schema changes only via approved migrations")
+            return
         try:
             with conn:
                 for table_name in TABLE_CREATION_ORDER:

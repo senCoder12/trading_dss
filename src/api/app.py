@@ -28,6 +28,7 @@ from src.api.routes import (
     market_data,
     news,
     portfolio,
+    shadow,
     signals,
     system,
     universe,
@@ -179,6 +180,9 @@ def create_app() -> FastAPI:
     )
     application.include_router(
         universe.router, prefix="/api/universe", tags=["F&O Universe"],
+    )
+    application.include_router(
+        shadow.router, prefix="/api/shadow", tags=["Shadow Model (not traded)"],
     )
 
     # ── Health check ─────────────────────────────────────────────────────

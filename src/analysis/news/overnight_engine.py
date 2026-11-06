@@ -567,7 +567,16 @@ class OvernightNewsEngine:
         return f"{direction.replace('_', ' ').title()} based on: " + "; ".join(lines)
 
     def _classify_fii_bias(self, fii_data: Any, fii_trend: Optional[dict]) -> str:
-        """Classify FII bias using today's net + 5-day trend."""
+        """Classify FII bias using today's net + 5-day trend.
+
+        Stale data (older than the previous trading session) is neutral.
+        """
+        from src.monitoring.data_freshness import is_fresh_for_decision  # noqa: PLC0415
+
+        data_date = getattr(fii_data, "date", None)
+        if not is_fresh_for_decision(data_date):
+            logger.warning("FII bias: data dated %s is stale — NEUTRAL", data_date)
+            return "NEUTRAL"
         thr = self.config.get("fii_bias_thresholds", {})
         net = float(getattr(fii_data, "fii_net_value", 0) or 0)
         trend = (fii_trend or {}).get("trend", "NEUTRAL")

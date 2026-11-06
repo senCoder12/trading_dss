@@ -30,6 +30,9 @@ const styles = {
   ERROR:      'bg-red-500/20 text-red-400 border-red-500/40',
   UNHEALTHY:  'bg-red-500/20 text-red-400 border-red-500/40',
   UNKNOWN:    'bg-slate-500/20 text-slate-400 border-slate-500/40',
+  // Decision source (LIVE engine vs SHADOW model — must never look alike)
+  LIVE:       'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
+  SHADOW:     'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/50 border-dashed',
   // Severity
   CRITICAL:   'bg-red-600/30 text-red-300 border-red-600/50',
   NOISE:      'bg-slate-600/20 text-slate-500 border-slate-600/30',

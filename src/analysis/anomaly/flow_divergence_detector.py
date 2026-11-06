@@ -258,6 +258,14 @@ class FIIFlowDetector:
             )
             return []
 
+        from src.monitoring.data_freshness import is_fresh_for_decision  # noqa: PLC0415
+        if not is_fresh_for_decision(getattr(today_data, "date", None), now):
+            logger.warning(
+                "FII anomaly detection skipped: FII/DII data is stale (dated %s) — neutral",
+                getattr(today_data, "date", None),
+            )
+            return []
+
         if baselines is None or baselines.avg_fii_net_daily == 0:
             logger.info(
                 "FII anomaly detection: insufficient historical FII data for baselines. "
@@ -457,6 +465,21 @@ class FIIFlowDetector:
         today_data : FIIDIIData, optional
             If supplied, incorporates today's data into the bias calculation.
         """
+        # Stale or missing FII data must contribute neutrally, never a direction.
+        from src.monitoring.data_freshness import is_fresh_for_decision  # noqa: PLC0415
+        dates = []
+        if self._daily_data is not None and not self._daily_data.empty:
+            dates.append(date.fromisoformat(str(self._daily_data["date"].max())[:10]))
+        if today_data is not None and getattr(today_data, "date", None):
+            dates.append(today_data.date)
+        latest = max(dates) if dates else None
+        if not is_fresh_for_decision(latest):
+            return FIIBias(
+                bias="NEUTRAL",
+                confidence=0.0,
+                message=f"FII data stale or missing (latest {latest or 'none'}) — treated as neutral.",
+            )
+
         bl = self._baselines or self.compute_flow_baselines()
 
         today_net = today_data.fii_net_value if today_data else 0.0

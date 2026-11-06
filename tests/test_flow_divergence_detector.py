@@ -307,9 +307,31 @@ class TestFIIBias:
         detector._baselines = _make_baselines(
             fii_trend_5d=-2000.0, fii_trend_10d=-3000.0,
         )
-        bias = detector.get_fii_bias()
+        bias = detector.get_fii_bias(_make_fii_data())  # dated today → fresh
 
         assert bias.bias == "SELLING"
+
+    def test_stale_data_is_neutral(self, detector):
+        """Baselines from a session older than the previous one must not carry direction."""
+        detector._baselines = _make_baselines(
+            fii_trend_5d=-8000.0, fii_trend_10d=-12000.0,
+        )
+        bias = detector.get_fii_bias(_make_fii_data(fii_net=-5000.0, trade_date=date(2026, 6, 5)))
+
+        assert bias.bias == "NEUTRAL"
+        assert bias.confidence == 0.0
+        assert "stale" in bias.message
+
+    def test_missing_data_is_neutral(self, detector):
+        detector._baselines = _make_baselines(fii_trend_5d=-8000.0, fii_trend_10d=-12000.0)
+        assert detector.get_fii_bias().bias == "NEUTRAL"
+
+    def test_stale_today_data_raises_no_anomalies(self, detector):
+        baselines = _make_baselines(fii_trend_5d=-8000.0, fii_trend_10d=-12000.0)
+        events = detector.detect_fii_anomaly(
+            _make_fii_data(fii_net=-25000.0, trade_date=date(2026, 6, 5)), baselines,
+        )
+        assert events == []
 
     def test_neutral_bias(self, detector):
         detector._baselines = _make_baselines(

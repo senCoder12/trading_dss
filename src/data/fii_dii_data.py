@@ -7,18 +7,140 @@ and saves to the database.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+import re
+import time
 from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from config.constants import IST_TIMEZONE
 from src.data.nse_scraper import NSEScraper
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
 
 logger = logging.getLogger(__name__)
+_IST = ZoneInfo(IST_TIMEZONE)
+
+# NSE end-of-day participant-wise open interest (contracts). Published after
+# the close for each trading day; historical files remain available, so the
+# same URL serves both the daily job and backfills. Non-trading days are 404.
+PARTICIPANT_OI_URL = (
+    "https://archives.nseindia.com/content/nsccl/fao_participant_oi_{ddmmyyyy}.csv"
+)
+_MISS_RETRY = timedelta(hours=6)
+_PARTICIPANTS = {"CLIENT": "CLIENT", "DII": "DII", "FII": "FII", "PRO": "PRO"}
+_FUT_COLUMNS = {  # instrument → (long column, short column)
+    "INDEX_FUT": ("Future Index Long", "Future Index Short"),
+    "STOCK_FUT": ("Future Stock Long", "Future Stock Short"),
+}
+# Title variants seen in the archive:
+#   'as on Nov 05, 2026'  (since May 2025)
+#   'as on Jan 02,2024'   (older)
+#   'as on Feb 22,"2024"""""'  (some 2024 files quote the year)
+_TITLE_DATE_RE = re.compile(r'as on\s+([A-Za-z]{3})\s+(\d{1,2}),\s*"*\s*(\d{4})')
+
+
+@dataclass(frozen=True)
+class FuturesPosition:
+    """One participant's futures open interest (contracts) at a day's close."""
+    trade_date: date
+    participant: str      # FII | DII | PRO | CLIENT
+    instrument: str       # INDEX_FUT | STOCK_FUT
+    long_contracts: int
+    short_contracts: int
+
+    @property
+    def net_contracts(self) -> int:
+        return self.long_contracts - self.short_contracts
+
+
+def parse_participant_oi_csv(
+    text: str, expected_date: Optional[date] = None
+) -> Optional[list[FuturesPosition]]:
+    """Parse NSE fao_participant_oi CSV into futures positions.
+
+    Returns None for anything that is not a well-formed file (e.g. the HTML
+    404 page served for holidays), when the title date does not match
+    ``expected_date``, or when participant rows do not add up to TOTAL.
+    """
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return None
+
+    m = _TITLE_DATE_RE.search(lines[0])
+    if not m:
+        return None
+    try:
+        file_date = datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y").date()
+    except ValueError:
+        return None
+    if expected_date is not None and file_date != expected_date:
+        logger.warning("Participant OI file date %s != requested %s", file_date, expected_date)
+        return None
+
+    reader = csv.reader(io.StringIO("\n".join(lines[1:])))
+    header = [h.strip() for h in next(reader)]
+    try:
+        col = {name: header.index(name) for pair in _FUT_COLUMNS.values() for name in pair}
+        type_idx = header.index("Client Type")
+    except ValueError:
+        return None
+
+    positions: list[FuturesPosition] = []
+    totals: dict[str, int] = {}
+    for row in reader:
+        if len(row) <= max(col.values()):
+            continue
+        who = row[type_idx].strip().upper()
+        try:
+            values = {name: int(row[i].strip().replace(",", "")) for name, i in col.items()}
+        except ValueError:
+            return None
+        if who == "TOTAL":
+            totals = values
+            continue
+        participant = _PARTICIPANTS.get(who)
+        if participant is None:
+            continue
+        for instrument, (long_col, short_col) in _FUT_COLUMNS.items():
+            positions.append(FuturesPosition(
+                file_date, participant, instrument, values[long_col], values[short_col],
+            ))
+
+    if {p.participant for p in positions} != set(_PARTICIPANTS.values()):
+        return None
+    # Integrity: the four participants must add up to the TOTAL row
+    for name in col:
+        instrument = next(i for i, pair in _FUT_COLUMNS.items() if name in pair)
+        side = "long" if name == _FUT_COLUMNS[instrument][0] else "short"
+        summed = sum(
+            getattr(p, f"{side}_contracts") for p in positions if p.instrument == instrument
+        )
+        if totals and summed != totals[name]:
+            logger.warning("Participant OI %s: %s sums to %d, TOTAL says %d",
+                           file_date, name, summed, totals[name])
+            return None
+    return positions
+
+
+def _http_get_text(url: str) -> Optional[str]:
+    """GET helper; None on 404 or any network error."""
+    import requests  # noqa: PLC0415
+
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+    except requests.RequestException as exc:
+        logger.warning("Participant OI fetch failed (%s): %s", url, exc)
+        return None
+    if resp.status_code != 200:
+        return None
+    return resp.text
 
 
 @dataclass
@@ -41,8 +163,16 @@ class FIIDIIFetcher:
     Fetches FII/DII trading data, generates trends and caches locally.
     """
 
-    def __init__(self, scraper: Optional[NSEScraper] = None) -> None:
+    def __init__(
+        self,
+        scraper: Optional[NSEScraper] = None,
+        http_get: Optional[Callable[[str], Optional[str]]] = None,
+    ) -> None:
         self._scraper = scraper or NSEScraper()
+        self._http_get = http_get or _http_get_text
+        # Days NSE had no file for (holidays, or a transient 404) → time of the miss.
+        # Re-requested after _MISS_RETRY, so a transient miss never becomes permanent.
+        self._missing_oi_days: dict[date, datetime] = {}
 
     def _parse_date(self, date_str: str) -> date:
         try:
@@ -186,104 +316,101 @@ class FIIDIIFetcher:
             "consecutive_sell_days": consecutive_sell
         }
 
-    def fetch_futures_participant_positions(self) -> Optional[dict]:
-        """Fetch FII net futures/options positions from NSE participant-wise data.
+    # ── Futures positions (participant-wise OI, contracts) ─────────────────
 
-        This is the KEY institutional signal — FII net long/short in index futures
-        is the primary directional bias indicator. Published every 30 min by NSE.
+    def fetch_futures_positions(self, trade_date: date) -> Optional[list[FuturesPosition]]:
+        """Fetch one trading day's participant-wise futures OI from the NSE archive.
 
-        Returns dict with keys:
-            fii_index_futures_net_long: FII net long contracts in index futures
-            fii_index_futures_net_short: FII net short contracts
-            fii_net_position: net (long - short)
-            fii_fo_trend: BULLISH / BEARISH / NEUTRAL
-            dii_index_futures_net_long: DII net long
-            dii_net_position: DII net
+        Returns None when NSE has no file for that day (holiday, weekend, or
+        not yet published) or the file fails validation.
         """
-        raw = self._scraper.get_fii_futures_positions()
-        if not raw:
+        url = PARTICIPANT_OI_URL.format(ddmmyyyy=trade_date.strftime("%d%m%Y"))
+        text = self._http_get(url)
+        if not text:
             return None
+        return parse_participant_oi_csv(text, expected_date=trade_date)
 
-        try:
-            data = raw if isinstance(raw, list) else raw.get("data", [])
-            if not data:
-                return None
+    def save_futures_positions_to_db(
+        self,
+        positions: list[FuturesPosition],
+        db: DatabaseManager,
+        source: str = "nse_archive",
+    ) -> int:
+        """Upsert positions into fii_futures_positions (never fii_dii_activity).
 
-            fii_futures: dict = {}
-            dii_futures: dict = {}
+        Returns rows written; 0 if the table does not exist yet (migration v20
+        not applied), so callers degrade gracefully instead of erroring.
+        """
+        if not positions:
+            return 0
+        if not db.table_exists("fii_futures_positions"):
+            logger.warning("fii_futures_positions missing (migration v20 not applied) — skipping write")
+            return 0
+        fetched_at = datetime.now(tz=_IST).isoformat()
+        rows = [
+            (p.trade_date.isoformat(), p.participant, p.instrument,
+             p.long_contracts, p.short_contracts, p.net_contracts, source, fetched_at)
+            for p in positions
+        ]
+        db.execute_many(Q.UPSERT_FII_FUTURES_POSITION, rows)
+        return len(rows)
 
-            for rec in data:
-                cat = str(rec.get("clientType") or rec.get("category") or "").upper()
-                seg = str(rec.get("instrumentType") or rec.get("instrument") or "").upper()
+    def sync_futures_positions(
+        self,
+        db: DatabaseManager,
+        lookback_days: int = 7,
+        now: Optional[datetime] = None,
+        pause_seconds: float = 0.3,
+    ) -> list[date]:
+        """Fill any missing weekdays from (today − lookback) up to the latest published session.
 
-                is_fii = "FII" in cat or "FPI" in cat or "FOREIGN" in cat
-                is_dii = "DII" in cat or "DOMESTIC" in cat
-                is_index_futures = "INDEX" in seg and ("FUT" in seg or "FUTURE" in seg)
+        Today's file is requested only after FUTURES_PUBLISH_CUTOFF, since NSE
+        publishes it after the close. Point-in-time use is enforced by readers:
+        GET_FII_INDEX_FUT_NET_BEFORE_DATE only returns sessions before the
+        decision date. Returns the dates written.
+        """
+        from src.monitoring.data_freshness import FUTURES_PUBLISH_CUTOFF  # noqa: PLC0415
 
-                if is_fii and is_index_futures:
-                    fii_futures = rec
-                elif is_dii and is_index_futures:
-                    dii_futures = rec
-
-            def _n(d: dict, *keys) -> float:
-                for k in keys:
-                    v = d.get(k)
-                    if v is not None:
-                        try:
-                            return float(str(v).replace(",", ""))
-                        except (TypeError, ValueError):
-                            pass
-                return 0.0
-
-            fii_long = _n(fii_futures, "longContracts", "buyContracts", "buyQuantity")
-            fii_short = _n(fii_futures, "shortContracts", "sellContracts", "sellQuantity")
-            fii_net = fii_long - fii_short
-
-            dii_long = _n(dii_futures, "longContracts", "buyContracts", "buyQuantity")
-            dii_short = _n(dii_futures, "shortContracts", "sellContracts", "sellQuantity")
-            dii_net = dii_long - dii_short
-
-            # FII trend based on net position magnitude
-            if fii_net > 5000:
-                trend = "BULLISH"
-            elif fii_net < -5000:
-                trend = "BEARISH"
-            else:
-                trend = "NEUTRAL"
-
-            return {
-                "fii_index_futures_net_long": fii_long,
-                "fii_index_futures_net_short": fii_short,
-                "fii_net_position": fii_net,
-                "fii_fo_trend": trend,
-                "dii_index_futures_net_long": dii_long,
-                "dii_net_position": dii_net,
-                "raw_records_count": len(data),
-            }
-        except Exception as e:
-            logger.error("Failed to parse futures participant positions: %s", e)
-            return None
-
-    def save_futures_positions_to_db(self, positions: dict, db: DatabaseManager) -> None:
-        """Save FII futures positions to DB for trend analysis."""
-        try:
-            from src.data.rate_limiter import freshness_tracker
-            db.execute(
-                """INSERT OR REPLACE INTO fii_dii_activity
-                   (date, category, buy_value, sell_value, net_value, segment)
-                   VALUES (?, 'FII', ?, ?, ?, 'F&O_FUTURES')""",
-                (
-                    date.today().isoformat(),
-                    float(positions.get("fii_index_futures_net_long", 0)),
-                    float(positions.get("fii_index_futures_net_short", 0)),
-                    float(positions.get("fii_net_position", 0)),
-                )
+        if not db.table_exists("fii_futures_positions"):
+            logger.warning("fii_futures_positions missing (migration v20 not applied) — skipping sync")
+            return []
+        now = (now or datetime.now(tz=_IST)).astimezone(_IST)
+        today = now.date()
+        last = today if now.time() >= FUTURES_PUBLISH_CUTOFF else today - timedelta(days=1)
+        start = today - timedelta(days=lookback_days)
+        have = {
+            r["trade_date"]
+            for r in db.fetch_all(
+                Q.LIST_FII_FUTURES_TRADE_DATES, (start.isoformat(), today.isoformat())
             )
-            freshness_tracker.update("fii_futures")
-            logger.info("FII futures positions saved: net=%s trend=%s",
-                       positions.get("fii_net_position"), positions.get("fii_fo_trend"))
-        except Exception as e:
-            logger.error("Failed saving FII futures positions: %s", e)
+        }
+        written: list[date] = []
+        day = start
+        while day <= last:
+            missed_at = self._missing_oi_days.get(day)
+            recently_missed = missed_at is not None and now - missed_at < _MISS_RETRY
+            if day.weekday() < 5 and day.isoformat() not in have and not recently_missed:
+                positions = self.fetch_futures_positions(day)
+                if positions:
+                    self.save_futures_positions_to_db(positions, db)
+                    written.append(day)
+                elif (today - day).days >= 3:
+                    # Settled days only; recent days may still be published any minute.
+                    self._missing_oi_days[day] = now
+                if pause_seconds:
+                    time.sleep(pause_seconds)
+            day += timedelta(days=1)
+        if written:
+            row = db.fetch_one(
+                Q.GET_FII_INDEX_FUT_NET_BEFORE_DATE, ((today + timedelta(days=1)).isoformat(),)
+            )
+            logger.info(
+                "FII futures positions synced for %s; latest FII index-futures net=%s (%s)",
+                [d.isoformat() for d in written],
+                row["net_contracts"] if row else None,
+                row["trade_date"] if row else None,
+            )
+        return written
 
     def save_to_db(self, data: FIIDIIData, db: DatabaseManager) -> None:
         """

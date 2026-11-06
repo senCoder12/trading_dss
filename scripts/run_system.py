@@ -375,6 +375,10 @@ def main() -> None:
             )
             components["collector"] = collector
             print("  ✅ Data Collector initialised")
+
+            # Give API routes the broker client so options chain can fall back to Angel One
+            from src.api.dependencies import set_broker_client
+            set_broker_client(collector.data_router.broker_client)
         except Exception as exc:
             logger.error("Data Collector initialisation failed: %s", exc)
             # Non-fatal — continue without collector
