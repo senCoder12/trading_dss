@@ -23,7 +23,12 @@ export default function ActiveSignals() {
     <Card
       title="Active Signals"
       padding={false}
-      actions={<RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />}
+      actions={
+        <>
+          <Badge variant="LIVE" size="xs">LIVE engine</Badge>
+          <RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />
+        </>
+      }
     >
       {loading && !data ? (
         <div className="divide-y divide-slate-700/50">

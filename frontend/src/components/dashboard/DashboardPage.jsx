@@ -13,6 +13,7 @@ import ActiveSignals from './ActiveSignals';
 import PortfolioSummary from './PortfolioSummary';
 import QuickAlerts from './QuickAlerts';
 import MarketSentiment from './MarketSentiment';
+import ShadowModelPanel from './ShadowModelPanel';
 
 /** Compact pill that shows price + change for one index */
 function IndexPill({ item, selected, onClick }) {
@@ -118,6 +119,9 @@ export default function DashboardPage() {
           <ErrorBoundary><QuickAlerts /></ErrorBoundary>
         </div>
       </div>
+
+      {/* ── Shadow model: evaluation only, never traded ───────────────────── */}
+      <ErrorBoundary><ShadowModelPanel /></ErrorBoundary>
 
     </div>
   );
