@@ -101,6 +101,8 @@ class TechnicalAnalysisResult:
     # publish none intraday).  Volume-derived votes are then meaningless and
     # must be treated as unavailable, not as NEUTRAL.
     volume_available: bool = True
+    # Components that failed to compute (treated as unavailable, not NEUTRAL)
+    unavailable_components: list[str] = field(default_factory=list)
 
     # Multi-timeframe confluence
     timeframe_confluence_score: float = 0.0   # -1.0 to 1.0 (agreement across TFs)
@@ -256,6 +258,10 @@ class TechnicalAggregator:
             )
         categories_available = 0
         total_categories = 7
+        # Components whose computation FAILED.  A failed layer used to fall
+        # back to a NEUTRAL vote that still carried its weight, silently
+        # diluting the score; downstream treats these as unavailable.
+        unavailable: set[str] = set()
 
         # ── 1. Trend ────────────────────────────────────────────────────
         trend_ind = TrendIndicators()
@@ -265,8 +271,9 @@ class TechnicalAggregator:
             logger.debug("Trend vote: %s (confidence %.2f)", trend.trend_vote, trend.trend_confidence)
         except Exception:
             logger.exception("Trend analysis failed for %s", index_id)
-            warnings.append("Trend analysis failed — using neutral fallback")
+            warnings.append("Trend analysis failed — component unavailable")
             trend = _empty_trend(index_id, timeframe, now)
+            unavailable.add("trend")
 
         # ── 2. Momentum ────────────────────────────────────────────────
         momentum_ind = MomentumIndicators()
@@ -276,8 +283,9 @@ class TechnicalAggregator:
             logger.debug("Momentum vote: %s (confidence %.2f)", momentum.momentum_vote, momentum.momentum_confidence)
         except Exception:
             logger.exception("Momentum analysis failed for %s", index_id)
-            warnings.append("Momentum analysis failed — using neutral fallback")
+            warnings.append("Momentum analysis failed — component unavailable")
             momentum = _empty_momentum(now)
+            unavailable.add("momentum")
 
         # ── 3. Volatility ──────────────────────────────────────────────
         vol_ind = VolatilityIndicators()
@@ -298,8 +306,9 @@ class TechnicalAggregator:
             logger.debug("Volume vote: %s (confidence %.2f)", volume.volume_vote, volume.volume_confidence)
         except Exception:
             logger.exception("Volume analysis failed for %s", index_id)
-            warnings.append("Volume analysis failed — using neutral fallback")
+            warnings.append("Volume analysis failed — component unavailable")
             volume = _empty_volume(now)
+            unavailable.add("volume")
 
         # ── 5. Options ─────────────────────────────────────────────────
         options: Optional[OptionsSummary] = None
@@ -537,6 +546,7 @@ class TechnicalAggregator:
             orb_low=orb_low,
             orb_captured=orb_captured,
             volume_available=volume_available,
+            unavailable_components=sorted(unavailable),
         )
 
         # Generate reasoning last (needs the full result)

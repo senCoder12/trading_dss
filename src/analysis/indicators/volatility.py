@@ -142,6 +142,24 @@ class VolatilitySummary:
 # ---------------------------------------------------------------------------
 
 
+_SESSION_MINUTES = 375  # NSE cash/F&O session 09:15-15:30
+
+
+def _periods_per_year(df: pd.DataFrame) -> tuple[float, Optional[float]]:
+    """Return (bars per year, bar interval in minutes) inferred from timestamps."""
+    if "timestamp" not in df.columns or len(df) < 3:
+        return 252.0, None
+    ts = pd.to_datetime(df["timestamp"], errors="coerce").dropna()
+    diffs = ts.diff().dt.total_seconds().dropna() / 60.0
+    diffs = diffs[diffs > 0]
+    if diffs.empty:
+        return 252.0, None
+    interval = float(diffs.median())
+    if interval >= 24 * 60 * 0.9:
+        return 252.0, interval
+    return 252.0 * _SESSION_MINUTES / max(interval, 1.0), interval
+
+
 def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     """Return a clean copy of *df* with NaNs forward-filled.
 
@@ -505,7 +523,19 @@ class VolatilityIndicators:
             )
 
         log_returns = np.log(clean["close"] / clean["close"].shift(1))
-        hv_series = log_returns.rolling(window=period).std(ddof=1) * np.sqrt(252) * 100
+        # Annualise by the BAR interval: sqrt(252) is only right for daily
+        # bars; on 5m bars it understated HV ~9x, pinning the regime to
+        # LOW_VOL and inflating position size.  Intraday, the overnight gap
+        # return is not a 5-minute return and is excluded.
+        periods_per_year, interval_min = _periods_per_year(clean)
+        if interval_min is not None and interval_min < 24 * 60 and "timestamp" in clean.columns:
+            ts = pd.to_datetime(clean["timestamp"], errors="coerce")
+            gap_min = ts.diff().dt.total_seconds() / 60.0
+            log_returns = log_returns.where(~(gap_min > 2 * interval_min))
+        hv_series = (
+            log_returns.rolling(window=period, min_periods=max(2, period // 2)).std(ddof=1)
+            * np.sqrt(periods_per_year) * 100
+        )
 
         valid = hv_series.dropna()
         current_hv = round(float(valid.iloc[-1]), 2) if len(valid) > 0 else float("nan")

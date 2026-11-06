@@ -393,7 +393,8 @@ class TrendIndicators:
                 plus_di=empty,
                 minus_di=empty,
                 trend_strength="WEAK",
-                trend_direction="BEARISH",
+                # Unknown, not bearish: "insufficient data" used to vote down.
+                trend_direction="NEUTRAL",
                 di_crossover=None,
             )
 
@@ -514,9 +515,16 @@ class TrendIndicators:
         e20, e50, e200 = _latest(ema20), _latest(ema50), _latest(ema200)
 
         # Price vs EMA
-        price_vs_ema20 = "ABOVE" if not np.isnan(e20) and latest_close > e20 else "BELOW"
-        price_vs_ema50 = "ABOVE" if not np.isnan(e50) and latest_close > e50 else "BELOW"
-        price_vs_ema200 = "ABOVE" if not np.isnan(e200) and latest_close > e200 else "BELOW"
+        # "UNKNOWN" when the EMA has not warmed up (e.g. EMA200 on 100 bars).
+        # It used to read "BELOW" — a permanent bearish vote on intraday data.
+        def _vs(ema_val: float) -> str:
+            if np.isnan(ema_val):
+                return "UNKNOWN"
+            return "ABOVE" if latest_close > ema_val else "BELOW"
+
+        price_vs_ema20 = _vs(e20)
+        price_vs_ema50 = _vs(e50)
+        price_vs_ema200 = _vs(e200)
 
         # EMA alignment
         if not (np.isnan(e20) or np.isnan(e50) or np.isnan(e200)):
@@ -568,31 +576,40 @@ class TrendIndicators:
         except Exception as _st_e:
             logger.debug("Supertrend computation skipped: %s", _st_e)
 
-        # --- 6-signal vote -------------------------------------------------
-        bullish_count = sum([
-            price_vs_ema20 == "ABOVE",
-            price_vs_ema50 == "ABOVE",
-            price_vs_ema200 == "ABOVE",
-            macd_signal_str == "BULLISH",
-            adx_result.trend_direction == "BULLISH",
-        ])
+        # --- Net vote over AVAILABLE signals ------------------------------
+        # Each signal is +1 (bullish), -1 (bearish) or absent.  The old vote
+        # counted only bullish signals and treated everything else — including
+        # "not enough data" — as bearish, so 5m data carried a built-in short
+        # bias (EMA200 is never warm on 100 bars).
+        def _dir(value: str, up: str = "BULLISH", down: str = "BEARISH") -> Optional[int]:
+            if value == up:
+                return 1
+            if value == down:
+                return -1
+            return None
 
-        # Supertrend is a strong confirming signal — counts as a full vote
-        if supertrend_signal == "BULLISH":
-            bullish_count += 1
-        elif supertrend_signal == "BEARISH":
-            pass  # bearish simply does not add to bullish_count
-
-        _vote_map = {
-            6: ("STRONG_BULLISH", 0.95),
-            5: ("STRONG_BULLISH", 0.95),
-            4: ("BULLISH", 0.75),
-            3: ("NEUTRAL", 0.50),
-            2: ("BEARISH", 0.75),
-            1: ("STRONG_BEARISH", 0.95),
-            0: ("STRONG_BEARISH", 0.95),
-        }
-        trend_vote, base_confidence = _vote_map[bullish_count]
+        signals = [
+            _dir(price_vs_ema20, "ABOVE", "BELOW"),
+            _dir(price_vs_ema50, "ABOVE", "BELOW"),
+            _dir(price_vs_ema200, "ABOVE", "BELOW"),
+            _dir(macd_signal_str),
+            _dir(adx_result.trend_direction) if len(adx_result.adx.dropna()) > 0 else None,
+            _dir(supertrend_signal),
+        ]
+        valid = [v for v in signals if v is not None]
+        net_ratio = (sum(valid) / len(valid)) if valid else 0.0
+        if len(valid) < 3:
+            trend_vote, base_confidence = "NEUTRAL", 0.3
+        elif net_ratio >= 0.67:
+            trend_vote, base_confidence = "STRONG_BULLISH", 0.9
+        elif net_ratio >= 0.33:
+            trend_vote, base_confidence = "BULLISH", 0.7
+        elif net_ratio <= -0.67:
+            trend_vote, base_confidence = "STRONG_BEARISH", 0.9
+        elif net_ratio <= -0.33:
+            trend_vote, base_confidence = "BEARISH", 0.7
+        else:
+            trend_vote, base_confidence = "NEUTRAL", 0.5
 
         # ADX penalty
         adx_valid = adx_result.adx.dropna()

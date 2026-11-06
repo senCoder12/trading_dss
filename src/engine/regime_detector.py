@@ -173,6 +173,8 @@ class RegimeDetector:
         self._db = db
         self._trend_calc = TrendIndicators()
         self._regime_history: dict[str, list[dict]] = {}
+        # Hysteresis state: last raw candidate per index and its streak.
+        self._candidate_streak: dict[str, tuple[str, int]] = {}
 
         # Load thresholds from settings if available
         thresholds = settings.thresholds
@@ -198,6 +200,7 @@ class RegimeDetector:
         gex_value: Optional[float] = None,          # GEX scaled value
         ad_ratio: Optional[float] = None,           # Advance/Decline ratio (>1 = more advances)
         futures_basis: Optional[float] = None,      # NIFTY futures - spot (positive = contango)
+        as_of: Optional[datetime] = None,           # decision time (replay); default wall clock
     ) -> MarketRegime:
         """Classify the current market regime for *index_id*.
 
@@ -216,7 +219,11 @@ class RegimeDetector:
         vix_value:
             Latest India VIX reading (may be ``None``).
         """
-        now = datetime.now(tz=_IST)
+        # The opening-auction rule and the regime history are time-based;
+        # a replay must use the bar's time, not when the replay runs.
+        now = as_of if as_of is not None else datetime.now(tz=_IST)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=_IST)
         warnings: list[str] = []
 
         # --- Handle insufficient data ---
@@ -307,6 +314,15 @@ class RegimeDetector:
             warnings=warnings,
         )
 
+        # ── Step 4c: Hysteresis ─────────────────────────────────────────
+        # Hard cut-offs (ADX 25/40, VIX buckets) flipped the regime — and with
+        # it weights, size and the daily trade cap — every 5-minute cycle
+        # when an input hovered at a threshold.  A new risk-ON regime must be
+        # seen on consecutive cycles before it is adopted; risk-OFF regimes
+        # apply immediately.
+        candidate_regime = primary_regime
+        primary_regime = self._apply_hysteresis(index_id, candidate_regime, warnings)
+
         # ── Step 5: Wyckoff Phase ──────────────────────────────────────
         market_phase = self._detect_wyckoff_phase(
             trend_regime, adx_val, plus_di, minus_di, technical_result,
@@ -345,7 +361,7 @@ class RegimeDetector:
             trend_regime=trend_regime,
         )
         duration = self._estimate_duration(index_id, primary_regime)
-        changing = self._detect_regime_change(
+        changing = candidate_regime != primary_regime or self._detect_regime_change(
             index_id, primary_regime, adx_val, technical_result,
         )
 
@@ -401,8 +417,11 @@ class RegimeDetector:
         """
         if regime.regime == "CRASH":
             return False, "CRASH regime — capital preservation mode, no new longs."
-        # VOLATILE_CHOPPY is tradeable with risk controls: 0.4x position size,
-        # 1.5x stop loss, max 5 trades/day. Remove absolute block.
+        # Option BUYERS lose in chop twice over: whipsawed stops and theta.
+        # (The block was removed earlier and the direction threshold even
+        # LOWERED in this regime — the opposite of what a buyer needs.)
+        if regime.regime == "VOLATILE_CHOPPY":
+            return False, "VOLATILE_CHOPPY — whipsaw + theta; option buying not allowed."
         if regime.position_size_multiplier <= 0.0:
             return False, "Opening auction — market not ready."
         vix_val = _extract_vix_from_warnings(regime.warnings)
@@ -587,8 +606,11 @@ class RegimeDetector:
         elif _gex_is_negative and regime == "RANGE_BOUND" and trend_regime in ("UP", "DOWN"):
             adjusted = "BREAKOUT"
             warnings.append("GEX negative + trend emerging — trending day likely; upgraded to BREAKOUT")
-        elif _gex_is_negative and trend_regime == "FLAT":
-            # NEGATIVE_GEX + sideways price → transitional (about to start trending)
+        elif _gex_is_negative and trend_regime == "FLAT" and regime == "RANGE_BOUND":
+            # NEGATIVE_GEX + sideways price → transitional.  Only a quiet
+            # RANGE_BOUND state is upgraded: this used to turn EVENT_DRIVEN and
+            # VOLATILE_CHOPPY (0.4-0.5x size) into BREAKOUT (1.0x, 5 trades) —
+            # negative gamma in chop is the worst setup for an option buyer.
             adjusted = "BREAKOUT"
             warnings.append("GEX negative + sideways price — transitional, watch for breakout")
         elif _gex_is_positive and trend_regime in ("UP", "DOWN", "STRONG_UP", "STRONG_DOWN"):
@@ -1025,6 +1047,29 @@ class RegimeDetector:
             return True
 
         return False
+
+    # Regimes that reduce or block risk take effect at once; others need
+    # confirmation on consecutive cycles.
+    _RISK_OFF_REGIMES = frozenset({"CRASH", "EVENT_DRIVEN", "VOLATILE_CHOPPY"})
+    _CONFIRM_CYCLES = 2
+
+    def _apply_hysteresis(self, index_id: str, candidate: str, warnings: list[str]) -> str:
+        """Return the regime to act on, given this cycle's raw *candidate*."""
+        prev_candidate, streak = self._candidate_streak.get(index_id, (None, 0))
+        streak = streak + 1 if candidate == prev_candidate else 1
+        self._candidate_streak[index_id] = (candidate, streak)
+
+        history = self._regime_history.get(index_id, [])
+        confirmed = history[-1]["regime"] if history else None
+        if confirmed is None or candidate == confirmed:
+            return candidate
+        if candidate in self._RISK_OFF_REGIMES or streak >= self._CONFIRM_CYCLES:
+            return candidate
+        warnings.append(
+            f"Regime candidate {candidate} awaiting confirmation "
+            f"({streak}/{self._CONFIRM_CYCLES}) — keeping {confirmed}"
+        )
+        return confirmed
 
     def _store_regime(
         self, index_id: str, regime: str, timestamp: datetime,

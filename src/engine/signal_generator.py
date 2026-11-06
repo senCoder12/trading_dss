@@ -34,6 +34,7 @@ from src.analysis.technical_aggregator import TechnicalAnalysisResult
 from src.database.db_manager import DatabaseManager
 from src.database import queries as Q
 from src.engine.regime_detector import MarketRegime, RegimeDetector, SignalWeights
+from src.engine.signal_calibration import SignalCalibration, get_signal_calibration
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo("Asia/Kolkata")
@@ -113,9 +114,12 @@ class TradingSignal:
 # Constants
 # ---------------------------------------------------------------------------
 
-# Minimum confidence thresholds
-_CONF_HIGH: float = 0.65
-_CONF_MEDIUM: float = 0.45
+# Confidence = calibrated P(win) (see src/engine/signal_calibration.py).
+# The calibration labels a win as "target 1.5×ATR reached before stop
+# 1.0×ATR within 60 min", so break-even is P = 0.40 before costs; MEDIUM
+# demands 0.50 to leave room for option costs, theta and model error.
+_CONF_HIGH: float = 0.58
+_CONF_MEDIUM: float = 0.50
 _CONF_LOW: float = 0.10
 _CONF_FLOOR: float = 0.05    # absolute minimum (never return 0)
 _CONF_CEILING: float = 0.92  # absolute maximum (never return 1)
@@ -189,6 +193,19 @@ _WEIGHT_ATTR: dict[str, str] = {
 # All component names (used for redistribution logic)
 _ALL_COMPONENTS: frozenset[str] = frozenset(_WEIGHT_ATTR.keys())
 
+# Components that form the calibrated score.  Options and anomaly have no
+# point-in-time history to calibrate against; they veto or haircut instead.
+_SCORED_COMPONENTS: frozenset[str] = frozenset({"trend", "momentum", "volume", "smart_money"})
+
+# Probability haircuts for conditions the calibration does not see.  Only
+# penalties: un-measured boosts are how the old confidence inflated itself.
+_HAIRCUT_ANOMALY_HIGH = 0.05
+_HAIRCUT_ANOMALY_CAUTION = 0.03
+_HAIRCUT_REGIME_CHANGING = 0.02
+_HAIRCUT_EXTREME_VOL = 0.05
+_HAIRCUT_IV_EXPENSIVE = 0.05
+_HAIRCUT_BANKNIFTY_LAGGING = 0.03
+
 
 # ---------------------------------------------------------------------------
 # Signal Deduplicator
@@ -196,61 +213,48 @@ _ALL_COMPONENTS: frozenset[str] = frozenset(_WEIGHT_ATTR.keys())
 
 
 class SignalDeduplicator:
-    """Prevents duplicate signal generation within a time window.
+    """Suppress a repeat of the same signal on the same index within a window.
 
-    Dedup key: {index_id}_{signal_type}_{5-minute time bucket}
-    If a signal with the same key was generated within the dedup window,
-    the duplicate is suppressed.
+    Keyed by ``(index_id, signal_type)`` with the time of the last accepted
+    signal.  The old version keyed on 3-minute clock buckets (a 5-minute
+    decision cycle never lands in the same bucket twice, so nothing was ever
+    suppressed) and expired entries against the wall clock (so replays never
+    matched either).  All arithmetic now uses the signal's own timestamp.
     """
 
-    def __init__(self, window_seconds: int = 180) -> None:
+    def __init__(self, window_seconds: int = 300) -> None:
         self.window_seconds = window_seconds
-        self._recent_signals: dict[str, datetime] = {}
+        self._last: dict[tuple[str, str], datetime] = {}
         self._lock = threading.Lock()
 
-    def _make_key(self, index_id: str, signal_type: str, timestamp: datetime) -> str:
-        """Create dedup key. Buckets time into 3-minute windows."""
-        bucket = timestamp.replace(
-            minute=(timestamp.minute // 3) * 3,
-            second=0, microsecond=0,
-        )
-        return f"{index_id}_{signal_type}_{bucket.isoformat()}"
+    @staticmethod
+    def _aware(ts: datetime) -> datetime:
+        return ts if ts.tzinfo is not None else ts.replace(tzinfo=_IST)
 
     def is_duplicate(self, index_id: str, signal_type: str, timestamp: datetime) -> bool:
-        """Check if this signal was already generated recently."""
+        """True if the same signal was accepted < window_seconds before *timestamp*."""
         if signal_type == "NO_TRADE":
             return False
-
-        key = self._make_key(index_id, signal_type, timestamp)
+        ts = self._aware(timestamp)
         with self._lock:
-            self._cleanup_expired()
-            if key in self._recent_signals:
+            last = self._last.get((index_id, signal_type))
+            if last is None:
+                return False
+            age = (ts - last).total_seconds()
+            if 0 <= age < self.window_seconds:
                 logger.warning(
-                    "Duplicate signal suppressed: %s %s (original at %s)",
-                    index_id, signal_type, self._recent_signals[key].isoformat(),
+                    "Duplicate signal suppressed: %s %s (previous at %s)",
+                    index_id, signal_type, last.isoformat(),
                 )
                 return True
             return False
 
     def record(self, index_id: str, signal_type: str, timestamp: datetime) -> None:
-        """Record a generated signal for future dedup checks."""
+        """Record an accepted signal."""
         if signal_type == "NO_TRADE":
             return
-        key = self._make_key(index_id, signal_type, timestamp)
         with self._lock:
-            self._recent_signals[key] = timestamp
-
-    def _cleanup_expired(self) -> None:
-        """Remove entries older than the dedup window."""
-        now = datetime.now(tz=_IST)
-        expired = []
-        for k, v in self._recent_signals.items():
-            # Normalize v to aware datetime if naive
-            v_aware = v if v.tzinfo is not None else v.replace(tzinfo=_IST)
-            if (now - v_aware).total_seconds() > self.window_seconds * 2:
-                expired.append(k)
-        for k in expired:
-            del self._recent_signals[k]
+            self._last[(index_id, signal_type)] = self._aware(timestamp)
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +272,10 @@ class SignalGenerator:
         historical counts.
     """
 
-    def __init__(self, db: DatabaseManager) -> None:
+    def __init__(self, db: DatabaseManager, calibration: Optional[SignalCalibration] = None) -> None:
         self._db = db
         self._lock = threading.Lock()
+        self._calibration = calibration or get_signal_calibration()
 
         # Minimum confidence thresholds (could be loaded from settings)
         self._min_conf_high = _CONF_HIGH
@@ -286,7 +291,8 @@ class SignalGenerator:
         self._dynamic_allowed_symbols: set[str] = set()
 
         # Deduplication — suppress duplicate signals within a 5-minute window
-        self.deduplicator = SignalDeduplicator(window_seconds=300)
+        # Same signal on the same index within 15 min (three 5-min cycles) is a repeat
+        self.deduplicator = SignalDeduplicator(window_seconds=900)
 
     def add_allowed_symbol(self, symbol: str) -> None:
         """Dynamically whitelist a symbol for signal generation.
@@ -358,71 +364,44 @@ class SignalGenerator:
                 index_id, now, current_spot_price, hero_zero_result, regime, technical, news, anomaly
             )
 
-        # ── Step 2: Collect All Votes ──────────────────────────────────
-        available = self._available_components(technical, news, anomaly)
-        adj_weights = self._redistribute_weights(regime.weight_adjustments, available)
-        votes = self._collect_votes(technical, news, anomaly, adj_weights, available)
+        # ── Step 2: Model score (measured components only) ────────────
+        # Only components the calibration replay can measure contribute to
+        # the score: trend, momentum, and volume/smart-money when the series
+        # has real volume.  Options and anomaly have no historical record to
+        # calibrate against, so they act as vetoes/haircuts (below), not as
+        # additive weight that silently changes what the score means.
+        weighted_score, votes, _scored = self.model_score(technical, regime)
 
-        # ── Step 3: Weighted Score ─────────────────────────────────────
-        tf_confluence = getattr(technical, "timeframe_confluence_score", 0.0) or 0.0
-        tf_agreement_val = getattr(technical, "tf_agreement", "UNKNOWN") or "UNKNOWN"
-        weighted_score = self._calculate_weighted_score(votes, regime, tf_confluence, tf_agreement_val)
-
-        # ── Special overrides applied to the score ─────────────────────
-        weighted_score, div_warns = self._apply_divergence_override(
-            weighted_score, technical,
-        )
-        warnings.extend(div_warns)
-
-        gap_score, gap_warns = self._apply_gap_fill_override(weighted_score, anomaly)
-
-        # Enhanced gap fill: strengthen bias when gap is large (> 50 pts = 70% fill probability)
-        if anomaly is not None:
-            msg = (anomaly.primary_alert_message or "").upper()
-            if "LARGE_GAP" in msg or "EXTREME_GAP" in msg:
-                # Large gaps have strong fill probability — apply additional bias
-                # Only when the gap_score is still below the strong-signal threshold
-                if abs(gap_score) < 1.0:
-                    if "GAP_UP" in msg or "GAP UP" in msg:
-                        gap_score -= 0.15  # Strong bearish fill bias for large gap up
-                        gap_warns.append("Large gap-up: strong gap fill bias (70%+ fill probability)")
-                    elif "GAP_DOWN" in msg or "GAP DOWN" in msg:
-                        gap_score += 0.15  # Strong bullish fill bias for large gap down
-                        gap_warns.append("Large gap-down: strong gap fill bias (70%+ fill probability)")
-
-        # ── Step 4: Direction ──────────────────────────────────────────
+        # ── Step 3: Direction ──────────────────────────────────────────
         direction = self._determine_direction(weighted_score, regime.regime)
-
-        # Apply gap-fill only when the primary signal is indeterminate or weak
-        if direction == "NO_TRADE" or abs(weighted_score) < 1.0:
-            gap_direction = self._determine_direction(gap_score, regime.regime)
-            if gap_direction != "NO_TRADE":
-                weighted_score = gap_score
-                direction = gap_direction
-                warnings.extend(gap_warns)
-
         if direction == "NO_TRADE":
-            threshold_msg = (
-                "±0.15" if regime.regime == "VOLATILE_CHOPPY" else "±0.25"
-            )
             return self._make_no_trade(
                 index_id, now,
-                f"Score in dead zone (|score| < {threshold_msg}) — no clear edge",
+                f"Score {weighted_score:+.2f} in dead zone "
+                f"(|score| < {_SCORE_CALL_THRESHOLD:.2f}) — no clear edge",
                 regime, technical, news, anomaly, warnings,
                 weighted_score=weighted_score,
             )
 
-        # ── Step 5: Confidence ─────────────────────────────────────────
-        confidence_score, confidence_level = self._calculate_confidence(
-            direction, weighted_score, votes, technical, news, anomaly, regime, warnings, mode,
-        )
-
-        # Filter to MEDIUM confidence minimum — high-quality signals only
-        if confidence_score < self._min_conf_medium:
+        # ── Step 4: Vetoes from unmeasured components ──────────────────
+        veto = self._veto_reason(direction, technical, anomaly)
+        if veto:
             return self._make_no_trade(
-                index_id, now,
-                f"Insufficient confidence ({confidence_score:.2f} < {self._min_conf_medium:.2f}) — MEDIUM minimum",
-                regime, technical, news, anomaly, warnings,
+                index_id, now, veto, regime, technical, news, anomaly, warnings,
+                weighted_score=weighted_score,
+            )
+
+        # ── Step 5: Calibrated confidence ──────────────────────────────
+        confidence_score, confidence_level, cal_reason = self._calibrated_confidence(
+            index_id, direction, weighted_score, technical, anomaly, regime, warnings,
+        )
+        if confidence_score is None or confidence_level == "LOW":
+            reason = (
+                f"Model not tradeable: {cal_reason}" if confidence_score is None
+                else f"Calibrated P(win) {confidence_score:.2f} < {self._min_conf_medium:.2f}"
+            )
+            return self._make_no_trade(
+                index_id, now, reason, regime, technical, news, anomaly, warnings,
                 weighted_score=weighted_score,
             )
 
@@ -430,7 +409,6 @@ class SignalGenerator:
         warnings.extend(self._smart_money_warnings(direction, technical))
         warnings.extend(self._expiry_warnings(direction, technical, regime, now))
 
-        # Re-enabled: conflicting strong signals = direction unclear = NO_TRADE
         if self._has_conflicting_strong_signals(votes):
             return self._make_no_trade(
                 index_id, now,
@@ -448,8 +426,7 @@ class SignalGenerator:
         )
 
         # ── R:R Gate — reject signals with insufficient risk/reward ────
-        min_rr = getattr(settings, 'signal', None)
-        min_rr_ratio = 1.3  # minimum 1:1.3
+        min_rr_ratio = 1.3  # minimum 1:1.3 (spot); premium R:R is re-checked in risk
         if rr_ratio < min_rr_ratio:
             return self._make_no_trade(
                 index_id, now,
@@ -515,7 +492,7 @@ class SignalGenerator:
             if self.deduplicator.is_duplicate(index_id, signal.signal_type, now):
                 signal.signal_type = "NO_TRADE"
                 signal.reasoning = (
-                    "Signal suppressed: duplicate within 5-minute window\n"
+                    "Signal suppressed: same signal within the last 15 minutes\n"
                     + signal.reasoning
                 )
                 signal.warnings.append("DUPLICATE_SUPPRESSED")
@@ -755,13 +732,14 @@ class SignalGenerator:
         news: Optional[NewsVote],
         anomaly: Optional[AnomalyVote],
     ) -> set[str]:
-        available = {"trend", "momentum"}
+        failed = set(getattr(technical, "unavailable_components", None) or [])
+        available = {"trend", "momentum"} - failed
         # Without real volume (NSE spot indices) the volume layer and the
         # smart-money composite carry no information: volume terms are zero
         # and OI history is not supplied, leaving only a candle-wick
         # oscillator.  Mark them unavailable so their weight is redistributed
         # instead of letting noise (or a forced NEUTRAL) vote.
-        has_volume = getattr(technical, "volume_available", True)
+        has_volume = getattr(technical, "volume_available", True) and "volume" not in failed
         if has_volume:
             available.add("volume")
         if technical.options is not None:
@@ -793,23 +771,25 @@ class SignalGenerator:
         def ok(component: str) -> bool:
             return available is None or component in available
 
-        v["trend"] = (
-            num(technical.trend.trend_vote),
-            technical.trend.trend_confidence,
-            weights.trend_weight,
-        )
-        v["momentum"] = (
-            num(technical.momentum.momentum_vote),
-            technical.momentum.momentum_confidence,
-            weights.momentum_weight,
-        )
+        if ok("trend"):
+            v["trend"] = (
+                num(technical.trend.trend_vote),
+                technical.trend.trend_confidence,
+                weights.trend_weight,
+            )
+        if ok("momentum"):
+            v["momentum"] = (
+                num(technical.momentum.momentum_vote),
+                technical.momentum.momentum_confidence,
+                weights.momentum_weight,
+            )
         if ok("volume"):
             v["volume"] = (
                 num(technical.volume.volume_vote),
                 technical.volume.volume_confidence,
                 weights.volume_weight,
             )
-        if technical.options is not None:
+        if technical.options is not None and ok("options"):
             v["options"] = (
                 num(technical.options.options_vote),
                 technical.options.options_confidence,
@@ -821,7 +801,7 @@ class SignalGenerator:
                 technical.smart_money.confidence,
                 weights.smart_money_weight,
             )
-        if anomaly is not None:
+        if anomaly is not None and ok("anomaly"):
             v["anomaly"] = (
                 num(anomaly.vote),
                 anomaly.confidence,
@@ -887,13 +867,11 @@ class SignalGenerator:
 
     @staticmethod
     def _determine_direction(score: float, regime: str = "RANGE_BOUND") -> str:
-        # In VOLATILE_CHOPPY regimes, lower thresholds to capture weaker signals
-        if regime == "VOLATILE_CHOPPY":
-            call_thresh = 0.15
-            put_thresh = -0.15
-        else:
-            call_thresh = _SCORE_CALL_THRESHOLD
-            put_thresh = _SCORE_PUT_THRESHOLD
+        # Same thresholds in every regime.  (VOLATILE_CHOPPY used to LOWER
+        # them to 0.15 — more trades exactly where option buyers bleed; the
+        # regime is now blocked by RegimeDetector.is_safe_to_trade.)
+        call_thresh = _SCORE_CALL_THRESHOLD
+        put_thresh = _SCORE_PUT_THRESHOLD
 
         # Symmetric direction logic — both BUY_CALL and BUY_PUT apply in all regimes
         # Exception: CRASH regime — only BUY_PUT allowed (never buy calls in a crash)
@@ -912,218 +890,109 @@ class SignalGenerator:
     # Step 5 — Confidence
     # ------------------------------------------------------------------
 
-    def _calculate_confidence(
+    # ------------------------------------------------------------------
+    # Model score, vetoes, calibrated confidence
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def model_score(
+        cls,
+        technical: TechnicalAnalysisResult,
+        regime: MarketRegime,
+    ) -> tuple[float, dict[str, tuple[float, float, float]], set[str]]:
+        """The calibrated scoring function: ``(score, votes, components)``.
+
+        ``scripts/calibrate_signal_model.py`` calls exactly this method, so
+        the live score and the calibrated score are the same quantity.
+        """
+        available = cls._available_components(technical, None, None) & _SCORED_COMPONENTS
+        weights = cls._redistribute_weights(regime.weight_adjustments, available)
+        votes = cls._collect_votes(technical, None, None, weights, available)
+        tf_confluence = getattr(technical, "timeframe_confluence_score", 0.0) or 0.0
+        tf_agreement = getattr(technical, "tf_agreement", "UNKNOWN") or "UNKNOWN"
+        score = cls._calculate_weighted_score(votes, regime, tf_confluence, tf_agreement)
+        return score, votes, available
+
+    @staticmethod
+    def _veto_reason(
+        direction: str,
+        technical: TechnicalAnalysisResult,
+        anomaly: Optional[AnomalyVote],
+    ) -> Optional[str]:
+        """Unmeasured components can stop a trade, never start one."""
+        is_call = direction == "BUY_CALL"
+
+        def against(vote: str) -> bool:
+            v = _VOTE_NUMERIC.get((vote or "NEUTRAL").upper(), 0.0)
+            return v <= -1.0 if is_call else v >= 1.0
+
+        opts = technical.options
+        if opts is not None and against(opts.options_vote) and (opts.options_confidence or 0) >= 0.6:
+            return (
+                f"Options positioning opposes {direction} "
+                f"({opts.options_vote}, conf {opts.options_confidence:.2f}) — vetoed"
+            )
+        if anomaly is not None and anomaly.risk_level in ("HIGH", "EXTREME") and against(anomaly.vote):
+            return f"Anomaly engine ({anomaly.vote}, risk {anomaly.risk_level}) opposes {direction} — vetoed"
+        return None
+
+    def _calibrated_confidence(
         self,
+        index_id: str,
         direction: str,
         weighted_score: float,
-        votes: dict[str, tuple[float, float, float]],
         technical: TechnicalAnalysisResult,
-        news: Optional[NewsVote],
         anomaly: Optional[AnomalyVote],
         regime: MarketRegime,
         warnings: list[str],
-        mode: str = "FULL",
-    ) -> tuple[float, str]:
-        """Return ``(confidence_score, confidence_level)``.
+    ) -> tuple[Optional[float], str, str]:
+        """Return ``(P(win) | None, level, reason)``.
 
-        ────────────────────────────────────────────────────────────────────
-        CONFIDENCE TUNING REFERENCE (updated 2025-04-26)
-        ────────────────────────────────────────────────────────────────────
-
-        ** Base Confidence **
-        - TECHNICAL_ONLY mode: use raw weighted_score (capped at 1.0)
-          → Only 3 components (trend, momentum, volatility), rarely exceed 0.8
-        - FULL mode: halve weighted_score to keep base ≤ 1.0
-          → Many components in agreement routinely push scores above 1.0
-
-        ** Thresholds (constants) **
-        - HIGH: >= 0.65  → execute with position size = base
-        - MEDIUM: >= 0.45 → execute with half position size
-        - LOW: >= 0.10   → execute only if risk/reward > 2.5
-        - FLOOR: 0.05    → never return 0 (always tradeable at tiny size)
-        - CEILING: 0.92  → cap at 0.92 (avoid false certainty)
-
-        ** Boosters (confidence increases)**
-        - 5+ categories agree on direction: +0.02
-          Reason: multiple independent signals validate move direction
-        - Strong trend regime (STRONG_TREND_UP/DOWN) matches direction: +0.02
-          Reason: regime acts as trend confirmation filter
-        - Smart money A+ grade aligns with signal: +0.03
-          Reason: institutional positioning = highest conviction signal
-
-        Disabled boosters (were causing overconfidence in backtest):
-        - Anomaly institutional activity alignment: −0.05 (removed 2025-04-15)
-        - News HIGH/EXTREME + direction alignment: −0.05 (removed 2025-04-15)
-
-        ** Reducers (confidence decreases)**
-        - Anomaly HIGH risk: -0.10
-        - Anomaly EXTREME risk: -0.15
-          Reason: structural market anomalies override technical signals
-        - Anomaly vote = CAUTION: -0.10
-          Reason: explicit warning from anomaly engine
-        - Regime is transitioning: -0.05
-          Reason: regime shifts invalidate historical levels & patterns
-        - Regime confidence < 0.5: -0.05
-          Reason: unreliable regime classification reduces signal quality
-        - Volatility regime = EXTREME: -0.10
-          Reason: extreme IV crush/explosion makes levels unreliable
-        - Thin news base (1-2 articles): -0.05
-          Reason: insufficient sentiment coverage = unreliable direction
-        - Missing data sources: -0.05 per source
-          Reason: incomplete analysis (e.g., no options, no smart money)
-
-        ** Source / Backtest Data **
-        All adjustments tuned via walk-forward validation (2025-04-18 to 2025-04-26)
-        on NIFTY50, BANKNIFTY F&O universe with 6-month historical backtest.
-        Tested against: Sharpe ratio, win%, max drawdown, consecutive wins/losses.
+        P(win) comes from the out-of-sample-validated calibration, then only
+        PENALTIES are applied for conditions the calibration did not see.
         """
-        # In FULL mode, weighted scores routinely exceed 1.0 (many components in
-        # agreement), so we halve to keep base ≤ 1.0.  In TECHNICAL_ONLY mode,
-        # only 3 components contribute, so scores rarely exceed 0.8; dividing by
-        # 2 makes the confidence systematically too low.  Use the raw score
-        # directly so the confidence reflects the available evidence.
-        if mode == "TECHNICAL_ONLY":
-            base = min(abs(weighted_score), 1.0)
-        else:
-            base = min(abs(weighted_score) / 2.0, 1.0)
-        adj = 0.0
+        p, reason = self._calibration.lookup(index_id, abs(weighted_score))
+        if p is None:
+            return None, "LOW", reason
 
-        is_bullish = direction == "BUY_CALL"
-
-        # ── Boosters ──────────────────────────────────────────────────
-
-        # 5+ categories agree on direction (reduced from 0.10 — HIGH confidence paradox)
-        agreeing = sum(
-            1
-            for s, _, _ in votes.values()
-            if (is_bullish and s > 0) or (not is_bullish and s < 0)
-        )
-        if agreeing >= 5:
-            adj += 0.02
-
-        # Institutional activity confirms direction (disabled — causing overconfidence)
-        # if anomaly and anomaly.institutional_activity:
-        #     anomaly_score = votes.get("anomaly", (0.0, 0.0, 0.0))[0]
-        #     aligned = (is_bullish and anomaly_score >= 0) or (
-        #         not is_bullish and anomaly_score <= 0
-        #     )
-        #     if aligned:
-        #         adj += 0.05
-
-        # Strong trend regime matches direction (reduced from 0.05)
-        if regime.regime == "STRONG_TREND_UP" and is_bullish:
-            adj += 0.02
-        elif regime.regime == "STRONG_TREND_DOWN" and not is_bullish:
-            adj += 0.02
-
-        # News severity HIGH/EXTREME matching direction (disabled)
-        # if news and news.event_regime in ("HIGH", "EXTREME"):
-        #     news_score = votes.get("news", (0.0, 0.0, 0.0))[0]
-        #     if (is_bullish and news_score > 0) or (not is_bullish and news_score < 0):
-        #         adj += 0.05
-
-        # Smart money A+ grade alignment (reduced from 0.10)
-        if technical.smart_money is not None:
-            sm = technical.smart_money
-            if sm.grade == "A+":
-                sm_bullish = sm.smart_money_bias in ("BULLISH", "STRONGLY_BULLISH")
-                sm_bearish = sm.smart_money_bias in ("BEARISH", "STRONGLY_BEARISH")
-                if (is_bullish and sm_bullish) or (not is_bullish and sm_bearish):
-                    adj += 0.03
-
-        # ── Reducers ──────────────────────────────────────────────────
-
-        # Anomaly risk level
-        if anomaly:
+        haircut = 0.0
+        notes: list[str] = []
+        if anomaly is not None:
             if anomaly.risk_level == "HIGH":
-                adj -= 0.10
-            elif anomaly.risk_level == "EXTREME":
-                adj -= 0.15
+                haircut += _HAIRCUT_ANOMALY_HIGH
+                notes.append("anomaly risk HIGH")
             if anomaly.vote == "CAUTION":
-                adj -= 0.10
-
-        # Regime is transitioning
+                haircut += _HAIRCUT_ANOMALY_CAUTION
+                notes.append("anomaly CAUTION")
         if regime.regime_changing:
-            adj -= 0.05
-
-        # Low regime confidence
-        if regime.regime_confidence < 0.5:
-            adj -= 0.05
-
-        # Extreme volatility (VIX or ATR)
+            haircut += _HAIRCUT_REGIME_CHANGING
+            notes.append("regime transitioning")
         if regime.volatility_regime == "EXTREME":
-            adj -= 0.10
-            warnings.append("Extreme volatility — confidence reduced")
+            haircut += _HAIRCUT_EXTREME_VOL
+            notes.append("extreme volatility")
+        opts = technical.options
+        if opts is not None and (getattr(opts, "iv_strategy_bias", "") or "") == "SELL_PREMIUM":
+            haircut += _HAIRCUT_IV_EXPENSIVE
+            notes.append("IV expensive (IVP > 75)")
+            warnings.append("IV expensive (IVP >75%) — option buyers face IV-crush risk")
+        if direction == "BUY_CALL" and any(
+            "BANKNIFTY_LAGGING" in w for w in (getattr(regime, "warnings", []) or [])
+        ):
+            haircut += _HAIRCUT_BANKNIFTY_LAGGING
+            notes.append("BankNIFTY lagging")
 
-        # Thin news base (1-2 articles only)
-        if news and news.active_article_count <= 2:
-            adj -= 0.05
-
-        # BankNIFTY/NIFTY divergence: if they diverge strongly, reduce confidence
-        if any("BANKNIFTY_LAGGING" in w for w in (getattr(regime, "warnings", []) or [])):
-            if direction == "BUY_CALL":
-                adj -= 0.06  # BankNIFTY lagging while trying to call = weak rally
-        if any("BANKNIFTY_LEADING_BULL" in w for w in (getattr(regime, "warnings", []) or [])):
-            if direction == "BUY_CALL":
-                adj += 0.04  # BankNIFTY leading = strong financial sector = bullish confirmation
-
-        # Penalty per missing data source — only count sources expected in this mode.
-        # TECHNICAL_ONLY: options and news are intentionally absent, no penalty.
-        # TECHNICAL_OPTIONS: news is intentionally absent; penalise missing options.
-        # FULL: all three sources are expected.
-        if mode == "TECHNICAL_ONLY":
-            missing = sum([technical.smart_money is None])
-        elif mode == "TECHNICAL_OPTIONS":
-            missing = sum([
-                technical.options is None,
-                technical.smart_money is None,
-            ])
-        else:
-            missing = sum([
-                technical.options is None,
-                news is None,
-                technical.smart_money is None,
-            ])
-        adj -= 0.05 * missing
-
-        # IV strategy bias: penalise buying options when IV is expensive
-        if technical.options is not None:
-            iv_bias = getattr(technical.options, "iv_strategy_bias", "NEUTRAL") or "NEUTRAL"
-            if iv_bias == "SELL_PREMIUM" and is_bullish is not None:
-                # IVP > 75%: options buyers face IV crush risk
-                adj -= 0.12
-                warnings.append(
-                    "IV expensive (IVP >75%) — buying options has IV crush risk; "
-                    "consider selling premium instead"
-                )
-            elif iv_bias == "BUY_OPTIONS":
-                # IVP < 25%: options are cheap, buying is favorable
-                adj += 0.05
-                warnings.append("IV cheap (IVP <25%) — low cost for option buyers")
-
-        # VIX regime strategy mode from regime description
-        regime_desc = getattr(regime, "description", "") or ""
-        if "SELL_PREMIUM" in regime_desc:
-            # VIX > 20: expensive options → penalise directional buying
-            adj -= 0.08
+        prob = max(_CONF_FLOOR, min(_CONF_CEILING, p - haircut))
+        if notes:
             warnings.append(
-                "VIX elevated — sell premium strategies preferred; "
-                "directional buying confidence reduced"
+                f"Calibrated P(win) {p:.2f} − {haircut:.2f} ({', '.join(notes)}) = {prob:.2f}"
             )
-        elif "BUY options preferred" in regime_desc:
-            # VIX < 14: cheap options → slight boost for buyers
-            adj += 0.03
-
-        score = max(_CONF_FLOOR, min(_CONF_CEILING, base + adj))
-
-        if score >= _CONF_HIGH:
+        if prob >= _CONF_HIGH:
             level = "HIGH"
-        elif score >= _CONF_MEDIUM:
+        elif prob >= self._min_conf_medium:
             level = "MEDIUM"
         else:
             level = "LOW"
-
-        return score, level
+        return prob, level, "ok"
 
     # ------------------------------------------------------------------
     # Step 6 — Levels
@@ -1194,79 +1063,6 @@ class SignalGenerator:
     # ------------------------------------------------------------------
     # Special overrides
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _apply_divergence_override(
-        score: float,
-        technical: TechnicalAnalysisResult,
-    ) -> tuple[float, list[str]]:
-        """Boost score toward CALL/PUT when RSI or OBV divergence is detected.
-
-        Divergences are leading indicators — they can flip a neutral/mild
-        signal toward a higher-conviction direction.
-        """
-        warnings: list[str] = []
-        if not technical.momentum.divergence_detected:
-            return score, warnings
-
-        rsi_div = (technical.momentum.rsi_divergence or "").upper()
-        obv_div = (technical.volume.obv_divergence or "").upper()
-
-        if "BULLISH" in rsi_div or "BULLISH" in obv_div:
-            if score <= _SCORE_CALL_THRESHOLD:  # neutral or mildly bearish
-                score += 0.3
-                warnings.append(
-                    "Bullish divergence detected — score boosted +0.3 toward CALL"
-                )
-        elif "BEARISH" in rsi_div or "BEARISH" in obv_div:
-            if score >= _SCORE_PUT_THRESHOLD:  # neutral or mildly bullish
-                score -= 0.3
-                warnings.append(
-                    "Bearish divergence detected — score adjusted -0.3 toward PUT"
-                )
-
-        return score, warnings
-
-    @staticmethod
-    def _apply_gap_fill_override(
-        score: float,
-        anomaly: Optional[AnomalyVote],
-    ) -> tuple[float, list[str]]:
-        """Apply a mild gap-fill bias for weak signals (≤ 1.0 strength).
-
-        Gaps fill 60-70 % of the time in Indian markets — this nudges the
-        signal direction toward the fill direction when the primary signal
-        is already weak or absent.  Strong signals are left unchanged.
-        """
-        warnings: list[str] = []
-        if anomaly is None:
-            return score, warnings
-
-        msg = (anomaly.primary_alert_message or "").upper()
-        if "GAP" not in msg:
-            return score, warnings
-
-        gap_up = "GAP_UP" in msg or "GAP UP" in msg
-        gap_down = "GAP_DOWN" in msg or "GAP DOWN" in msg
-        if not (gap_up or gap_down):
-            return score, warnings
-
-        # Don't override strong signals
-        if abs(score) >= 1.0:
-            return score, warnings
-
-        if gap_up:
-            score -= 0.2
-            warnings.append(
-                "Gap-up detected — mild bearish bias for gap fill (60-70 % fill rate)"
-            )
-        else:
-            score += 0.2
-            warnings.append(
-                "Gap-down detected — mild bullish bias for gap fill (60-70 % fill rate)"
-            )
-
-        return score, warnings
 
     @staticmethod
     def _smart_money_warnings(
