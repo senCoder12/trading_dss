@@ -572,7 +572,7 @@ class TestMonteCarlo:
         assert result.p95_drawdown >= result.median_drawdown
 
     def test_confidence_interval(self):
-        """95% CI should span p5 to p95."""
+        """95% CI is the 2.5th–97.5th percentile band, so it contains p5..p95."""
         tester = _make_tester()
 
         trades = (
@@ -583,8 +583,10 @@ class TestMonteCarlo:
 
         result = tester.test_monte_carlo(trades, orig_metrics, n_simulations=500)
 
-        assert result.return_95_ci[0] == result.p5_return
-        assert result.return_95_ci[1] == result.p95_return
+        lo, hi = result.return_95_ci
+        assert lo <= result.p5_return <= result.median_return
+        assert result.median_return <= result.p95_return <= hi
+        assert lo < hi
 
 
 # ---------------------------------------------------------------------------

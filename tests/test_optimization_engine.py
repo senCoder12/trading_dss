@@ -682,9 +682,11 @@ class TestInvalidCombinationFiltering:
         engine = OptimizationEngine(db)
 
         run_count = [0]
+        run_cfgs = []
 
         def counting_run(cfg):
             run_count[0] += 1
+            run_cfgs.append(cfg)
             return _make_bt_result(cfg)
 
         engine.strategy_runner.run = counting_run
@@ -709,9 +711,14 @@ class TestInvalidCombinationFiltering:
         config = _base_opt_config(parameter_space=space)
         result = engine.run(config)
 
-        # 9 total combos, 3 invalid → 6 valid backtests run
-        # (SL=1.0 works with all 3 targets; SL=2.0 with T=2.5,3.5; SL=3.0 with T=3.5)
-        assert run_count[0] == 6
+        # 9 total combos, 3 invalid → 6 valid backtests run on the selection
+        # period (SL=1.0 works with all 3 targets; SL=2.0 with T=2.5,3.5;
+        # SL=3.0 with T=3.5) + exactly one run of the winner on the holdout.
+        grid_runs = [c for c in run_cfgs if c.end_date <= result.selection_end]
+        holdout_runs = [c for c in run_cfgs if c.start_date >= result.holdout_start]
+        assert len(grid_runs) == 6
+        assert len(holdout_runs) == 1
+        assert run_count[0] == 7
         assert result.total_evaluations == 6
 
 
