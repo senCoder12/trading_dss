@@ -871,12 +871,19 @@ class OptionsIndicators:
         iv_regime: Optional[str] = None
         iv_rank_pct = 50.0
         iv_percentile_from_rank = 50.0
+        iv_history_usable = False
         if iv_history is not None:
             iv_rank_result = self.calculate_iv_rank(iv_analysis.atm_iv, iv_history)
             if iv_rank_result is not None:
                 iv_regime = iv_rank_result.iv_regime
-                iv_rank_pct = iv_rank_result.iv_rank
-                iv_percentile_from_rank = iv_rank_result.iv_percentile
+                # "insufficient_history" carries percentile 0.0, which used to
+                # read as "IV cheap → BUY_OPTIONS" and boost buying confidence.
+                if iv_rank_result.iv_regime != "insufficient_history":
+                    iv_history_usable = True
+                    iv_rank_pct = iv_rank_result.iv_rank
+                    iv_percentile_from_rank = iv_rank_result.iv_percentile
+                else:
+                    warnings_list.append("IV history too short — IV percentile treated as neutral.")
         else:
             warnings_list.append("No IV history provided — IV regime unavailable.")
 
@@ -902,7 +909,7 @@ class OptionsIndicators:
         adv_skew_regime = "BALANCED"
 
         # Seed IV rank/percentile from iv_history if advanced_metrics is absent
-        if advanced_metrics is None and iv_history is not None:
+        if advanced_metrics is None and iv_history_usable:
             adv_iv_percentile = iv_percentile_from_rank
             adv_iv_rank = iv_rank_pct
             if adv_iv_percentile >= 75:

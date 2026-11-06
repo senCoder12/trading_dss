@@ -590,10 +590,14 @@ class DecisionEngine:
                     chain_df = pd.DataFrame(chain_rows)
                     idx_def = self.registry.get_index(index_id)
                     lot_size = getattr(idx_def, 'lot_size', 50) or 50
+                    from src.engine.option_contract import strike_interval as _strike_interval
                     advanced_opts = run_advanced_options_analytics(
                         chain_df=chain_df,
                         spot_price=current_price,
                         lot_size=lot_size,
+                        # Listed spacing from the chain, not a 50/100 guess.
+                        strike_interval=_strike_interval(chain_df["strike"].tolist()) or 50.0,
+                        historical_ivs=self._iv_history_cache.get(index_id) or [],
                     )
                     logger.debug(
                         "Advanced opts for %s: GEX=%.2f (%s) straddle=%.0f skew=%.2f",
@@ -730,34 +734,8 @@ class DecisionEngine:
             )
             raw_signal = self._make_no_trade_signal(index_id, regime, gex_block_reason)
 
-        # ── Step 6b: Attach Recommended Strike to Signal ───────────────
-        if (
-            getattr(raw_signal, "signal_type", "NO_TRADE") in ("BUY_CALL", "BUY_PUT")
-            and options_chain is not None
-            and current_price > 0
-        ):
-            try:
-                idx_def = self.registry.get_index(index_id)
-                interval = 100.0 if (idx_def and "BANK" in (idx_def.id or "").upper()) else 50.0
-                rec_strike, rec_delta = self._select_optimal_strike(
-                    raw_signal.signal_type,
-                    current_price,
-                    options_chain,
-                    strike_interval=interval,
-                )
-                # Attach to signal using object.__setattr__ (works on both dataclasses and regular objects)
-                try:
-                    object.__setattr__(raw_signal, "recommended_strike", rec_strike)
-                    object.__setattr__(raw_signal, "recommended_delta", round(rec_delta, 4))
-                except (AttributeError, TypeError):
-                    # If dataclass is frozen or setattr not supported, skip
-                    pass
-                logger.debug(
-                    "Recommended strike for %s %s: %.0f (Δ≈%.2f)",
-                    index_id, raw_signal.signal_type, rec_strike, rec_delta,
-                )
-            except Exception as _e:
-                logger.debug("Strike selection failed (non-fatal): %s", _e)
+        # (Strike/expiry/premium are chosen by the RiskManager in step 7 —
+        #  one selector, priced from the chain with real delta and liquidity.)
 
         # ── Step 6c: Liquidity Engine overlay ─────────────────────────
         t0 = time.monotonic()
@@ -777,7 +755,9 @@ class DecisionEngine:
 
         # ── Step 7: Risk Management ────────────────────────────────────
         t0 = time.monotonic()
-        final_signal, is_actionable = self._step_risk(raw_signal, options_chain)
+        final_signal, is_actionable = self._step_risk(
+            raw_signal, options_chain, index_id=index_id, now=now, as_of=as_of,
+        )
         step_timings["7_risk"] = int((time.monotonic() - t0) * 1000)
 
         # ── Step 8: Store & Alert ──────────────────────────────────────
@@ -942,18 +922,35 @@ class DecisionEngine:
                     continue
                 self._missing_price_cycles.pop(pos.signal_id, None)
 
-                update = self.risk_manager.update_position(pos.signal_id, current_price)
+                option_ltp = self._option_mark(pos, now)
+                update = self.risk_manager.update_position(
+                    pos.signal_id, current_price, option_ltp=option_ltp,
+                )
+                if getattr(update, "premium_source", "") == "model":
+                    logger.warning(
+                        "monitor_open_positions: %s %s marked by MODEL (no fresh option "
+                        "quote) — premium ₹%s", pos.index_id, pos.signal_id[:8],
+                        getattr(update, "mark_premium", "?"),
+                    )
 
                 if update.action != "HOLD":
                     exit_reason = update.action.replace("EXIT_", "")
-                    self.risk_manager.close_position(
-                        pos.signal_id, current_price, exit_reason,
+                    mark = getattr(update, "mark_premium", None)
+                    net = self.risk_manager.close_position(
+                        pos.signal_id, current_price, exit_reason, exit_premium=mark,
                     )
+                    # close_position returns NET P&L (spread + statutory costs);
+                    # fall back to the update's estimate only if it could not.
+                    pnl = float(net) if isinstance(net, (int, float)) else float(update.current_pnl)
+                    if getattr(pos, "option_type", None) and isinstance(mark, (int, float)):
+                        exit_px = round(max(mark - float(getattr(pos, "half_spread", 0.0) or 0.0), 0.05), 2)
+                    else:
+                        exit_px = current_price
                     self.tracker.record_outcome(
                         pos.signal_id,
-                        exit_price=current_price,
+                        exit_price=exit_px,
                         exit_reason=exit_reason,
-                        pnl=update.current_pnl,
+                        pnl=pnl,
                     )
                     logger.info(
                         "EXIT ALERT:\n%s",
@@ -962,16 +959,18 @@ class DecisionEngine:
 
                     # Push position-exit event to WebSocket clients
                     try:
-                        outcome = "WIN" if update.current_pnl >= 0 else "LOSS"
                         queue_event("position_exit", {
                             "index_id": pos.index_id,
                             "trade_type": getattr(pos, "signal_type", ""),
                             "exit_reason": exit_reason,
-                            "pnl": round(update.current_pnl, 2),
-                            "pnl_pct": round(update.current_pnl_pct * 100, 2),
-                            "outcome": outcome,
-                            "entry_price": getattr(pos, "entry_price", 0.0),
-                            "exit_price": current_price,
+                            "pnl": round(pnl, 2),
+                            # current_pnl_pct is already a percentage
+                            "pnl_pct": round(update.current_pnl_pct, 2),
+                            "outcome": "WIN" if pnl > 0 else "LOSS",
+                            "entry_price": getattr(pos, "entry_premium", 0.0)
+                            or getattr(pos, "entry_price", 0.0),
+                            "exit_price": exit_px,
+                            "spot_exit": current_price,
                         })
                     except Exception as e:
                         logger.debug("WebSocket exit broadcast failed (non-fatal): %s", e)
@@ -979,7 +978,7 @@ class DecisionEngine:
                     logger.debug(
                         "HOLD  %s (%s)  PnL=₹%.0f (%.2f%%)",
                         pos.index_id, pos.signal_id[:8],
-                        update.current_pnl, update.current_pnl_pct * 100,
+                        update.current_pnl, update.current_pnl_pct,
                     )
 
             except Exception:
@@ -1017,6 +1016,40 @@ class DecisionEngine:
         if age > _MAX_MONITOR_PRICE_AGE_SECONDS:
             return 0.0, f"latest price is {age:.0f}s old"
         return price, None
+
+    def _option_mark(self, pos, now: datetime) -> Optional[float]:
+        """Latest option premium for an open position's contract, or None.
+
+        Uses the newest chain snapshot row for the exact contract within
+        ``_MAX_MONITOR_PRICE_AGE_SECONDS``; mid of bid/ask when both exist.
+        """
+        option_type = getattr(pos, "option_type", None)
+        strike = getattr(pos, "strike", None)
+        expiry = getattr(pos, "expiry", None)
+        if not option_type or strike is None or expiry is None:
+            return None
+        try:
+            row = self._db.fetch_one(
+                "SELECT ltp, bid_price, ask_price, timestamp FROM options_chain_snapshot "
+                "WHERE index_id = ? AND expiry_date = ? AND strike_price = ? "
+                "AND option_type = ? AND timestamp <= ? AND timestamp >= ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (
+                    pos.index_id, expiry.isoformat(), float(strike), option_type,
+                    now.isoformat(),
+                    (now - timedelta(seconds=_MAX_MONITOR_PRICE_AGE_SECONDS)).isoformat(),
+                ),
+            )
+        except Exception:
+            logger.exception("_option_mark failed for %s", getattr(pos, "signal_id", "?"))
+            return None
+        if not row:
+            return None
+        bid, ask = float(row.get("bid_price") or 0), float(row.get("ask_price") or 0)
+        if bid > 0 and ask >= bid:
+            return (bid + ask) / 2
+        ltp = float(row.get("ltp") or 0)
+        return ltp if ltp > 0 else None
 
     def _report_missing_price(self, pos, problem: str) -> None:
         """Count consecutive unusable-price cycles; alert from the 2nd one."""
@@ -1105,30 +1138,45 @@ class DecisionEngine:
         warnings: list[str] = getattr(sig, "warnings", []) or []
 
         SEP = "━" * 20
+        prem_stop = getattr(sig, "premium_stop", 0.0) or 0.0
+        prem_target = getattr(sig, "premium_target", 0.0) or 0.0
+        qty = getattr(sig, "quantity", 0) or 0
+
         lines = [
             f"BUY {direction} — {display_name}",
             SEP,
             f"Confidence: {conf_level} ({conf_score:.2f})",
             f"Regime: {regime_str.replace('_', ' ').title()}",
-            "",
-            "📊 Levels:",
-            f"Entry:     {entry:,.0f}",
-            f"Target:    {target:,.0f} (+{target_pts:.0f} pts)",
-            f"Stop Loss: {sl:,.0f} (-{sl_pts:.0f} pts)",
-            f"RR:        1:{rr:.2f}",
         ]
 
-        if strike and expiry:
-            opt_type = "CE" if signal_type == "BUY_CALL" else "PE"
+        opt_type = "CE" if signal_type == "BUY_CALL" else "PE"
+        if strike and expiry and premium and prem_stop and prem_target:
+            # Option-native alert: the trader executes and manages the PREMIUM;
+            # spot levels are shown as the triggers they are.
             lines += [
                 "",
-                f"📋 Strike:  {result.index_id} {strike:.0f} {opt_type} ({expiry})",
+                f"📋 Contract: {result.index_id} {expiry} {strike:.0f} {opt_type}",
+                f"Entry:     ₹{premium:.2f} premium (LIMIT) | spot {entry:,.0f}",
+                f"Target:    ₹{prem_target:.2f} premium | spot {target:,.0f} (+{target_pts:.0f} pts)",
+                f"Stop Loss: ₹{prem_stop:.2f} premium | spot {sl:,.0f} (-{sl_pts:.0f} pts)",
+                f"RR:        1:{rr:.2f} (premium, net of spread + costs)",
             ]
-            if premium:
-                lines.append(f"Premium:   ~₹{premium:.0f}")
+        else:
+            lines += [
+                "",
+                "📊 Levels (spot):",
+                f"Entry:     {entry:,.0f}",
+                f"Target:    {target:,.0f} (+{target_pts:.0f} pts)",
+                f"Stop Loss: {sl:,.0f} (-{sl_pts:.0f} pts)",
+                f"RR:        1:{rr:.2f}",
+            ]
+            if strike and expiry:
+                lines.append(f"📋 Strike:  {result.index_id} {strike:.0f} {opt_type} ({expiry})")
+                if premium:
+                    lines.append(f"Premium:   ~₹{premium:.0f}")
         lines += [
-            f"Lots:      {lots}",
-            f"Risk:      ₹{max_loss_amt:,.0f} ({risk_pct:.2f}% of capital)",
+            f"Lots:      {lots}" + (f" (qty {qty})" if qty else ""),
+            f"Risk:      ₹{max_loss_amt:,.0f} ({risk_pct:.2f}% of capital, incl. costs)",
         ]
 
         if why_lines:
@@ -1378,14 +1426,17 @@ class DecisionEngine:
             "1h": intraday_1h,
         }
 
-        # Load 30-day IV history (point-in-time) for IV percentile calculation
+        # IV history for IV percentile: ONE observation per trading day
+        # (median of that day's ATM-IV samples), up to a year back, bounded
+        # by as_of.  Raw 5-minute samples over 30 days weighted busy days
+        # heavily and mixed every days-to-expiry; below the minimum number
+        # of days the percentile is reported as neutral downstream.
         try:
             iv_rows = self._db.fetch_all(
                 Q.LIST_IV_HISTORY_WINDOW,
-                (index_id, (ref_now - timedelta(days=30)).isoformat(), as_of_ts),
+                (index_id, (ref_now - timedelta(days=365)).isoformat(), as_of_ts),
             )
-            iv_list = [float(r["atm_iv"]) for r in iv_rows if r.get("atm_iv", 0) > 0]
-            self._iv_history_cache[index_id] = iv_list
+            self._iv_history_cache[index_id] = self._daily_iv_series(iv_rows)
         except Exception:
             logger.debug("Step 1: IV history unavailable for %s", index_id)
             self._iv_history_cache.setdefault(index_id, [])
@@ -1990,9 +2041,15 @@ class DecisionEngine:
         self,
         raw_signal: TradingSignal,
         options_chain,
+        index_id: Optional[str] = None,
+        now: Optional[datetime] = None,
+        as_of: Optional[datetime] = None,
     ) -> tuple:
         """
-        Step 7 — Risk management.
+        Step 7 — Risk management (contract selection, premium levels, sizing).
+
+        On expiry day the next expiry's chain is loaded as well: directional
+        (non-hero-zero) buys are priced on the next expiry's contract.
 
         Returns
         -------
@@ -2002,19 +2059,46 @@ class DecisionEngine:
             if raw_signal.signal_type == "NO_TRADE":
                 return raw_signal, False
 
+            now = now or datetime.now(tz=_IST)
+            next_chain = None
+            if (
+                index_id
+                and options_chain is not None
+                and getattr(options_chain, "expiry_date", None) == now.date()
+            ):
+                next_chain = self._load_next_expiry_chain(index_id, options_chain, now, as_of)
+
             refined = self.risk_manager.validate_and_refine_signal(
                 signal=raw_signal,
                 current_chain=options_chain,
+                _now=now,
+                next_chain=next_chain,
             )
             is_actionable = (
                 refined.is_valid
                 and refined.signal_type in ("BUY_CALL", "BUY_PUT")
             )
+            if not refined.is_valid and getattr(refined, "rejection_reasons", None):
+                logger.info(
+                    "Step 7 [%s]: %s rejected by risk — %s",
+                    index_id, raw_signal.signal_type, "; ".join(refined.rejection_reasons),
+                )
             return refined, is_actionable
 
         except Exception:
             logger.exception("Step 7: risk management failed")
             return raw_signal, False
+
+    def _load_next_expiry_chain(self, index_id: str, chain, now: datetime, as_of):
+        """Chain for the expiry after *chain*'s, validated for freshness."""
+        later = [e for e in getattr(chain, "available_expiries", ()) if e > chain.expiry_date]
+        if not later:
+            return None
+        nxt = self._load_options_chain(index_id, as_of=as_of, expiry=min(later).isoformat())
+        nxt, _, warning = self._validate_options_chain(index_id, nxt, None, now)
+        if warning:
+            logger.warning("DecisionEngine [%s]: next-expiry chain — %s", index_id, warning)
+        return nxt
 
     def _step_store_and_alert(
         self,
@@ -2151,15 +2235,24 @@ class DecisionEngine:
             return None, None, f"Options data ignored: {problem}"
         return chain, oi_summary, None
 
-    def _load_options_chain(self, index_id: str, as_of: Optional[datetime] = None) -> Optional[OptionsChainData]:
-        """Reconstruct OptionsChainData from the latest DB snapshot."""
+    def _load_options_chain(
+        self,
+        index_id: str,
+        as_of: Optional[datetime] = None,
+        expiry: Optional[str] = None,
+    ) -> Optional[OptionsChainData]:
+        """Reconstruct OptionsChainData from the latest DB snapshot.
+
+        *expiry* (``YYYY-MM-DD``) selects a specific contract month/week;
+        default is the nearest expiry still tradeable at *as_of*.
+        """
         try:
             from src.data.options_chain import OptionsChainData, OptionStrike
             from datetime import date as date_
-            
+
             as_of_ts = as_of.isoformat() if as_of else "9999-12-31T23:59:59"
 
-            expiry_str = self._nearest_active_expiry(index_id, as_of)
+            expiry_str = expiry or self._nearest_active_expiry(index_id, as_of)
             if expiry_str is None:
                 logger.warning("_load_options_chain: no active expiry stored for %s", index_id)
                 return None
@@ -2269,6 +2362,25 @@ class DecisionEngine:
             )
         except Exception:
             return None
+
+    @staticmethod
+    def _daily_iv_series(iv_rows: list[dict]) -> list[float]:
+        """Daily median ATM IV, oldest first, from raw IV snapshot rows."""
+        by_day: dict[str, list[float]] = {}
+        for r in iv_rows:
+            try:
+                iv = float(r.get("atm_iv") or 0)
+            except (TypeError, ValueError):
+                continue
+            ts = str(r.get("timestamp") or "")
+            if iv > 0 and len(ts) >= 10:
+                by_day.setdefault(ts[:10], []).append(iv)
+        out = []
+        for day in sorted(by_day):
+            vals = sorted(by_day[day])
+            n = len(vals)
+            out.append(vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2)
+        return out
 
     @staticmethod
     def _rows_to_df(rows: list[dict]) -> pd.DataFrame:
@@ -2470,19 +2582,31 @@ class DecisionEngine:
             "SL": "Stop Loss Hit ❌",
             "TRAILING_SL": "Trailing SL Hit 🔄",
             "TIME": "Time Exit (EOD) ⏰",
+            "TIME_STOP": "Time Stop — trade not working ⏳",
         }
         reason_str = reason_map.get(exit_reason, exit_reason)
         pnl_sign = "+" if update.current_pnl >= 0 else ""
         SEP = "━" * 20
-        return "\n".join([
+        lines = [
             f"🔴 EXIT — {pos.index_id} {direction}",
             SEP,
             f"Reason: {reason_str}",
-            f"Entry: {pos.entry_price:,.0f}",
-            f"PnL: ₹{pnl_sign}{update.current_pnl:,.0f}",
+        ]
+        if getattr(pos, "option_type", None) and getattr(pos, "strike", None) is not None:
+            mark = getattr(update, "mark_premium", None)
+            lines.append(f"Contract: {pos.expiry} {pos.strike:.0f}{pos.option_type}")
+            lines.append(
+                f"Premium: ₹{pos.entry_premium:.2f} → ₹{mark:.2f}"
+                if isinstance(mark, (int, float)) else f"Premium entry: ₹{pos.entry_premium:.2f}"
+            )
+        else:
+            lines.append(f"Entry: {pos.entry_price:,.0f}")
+        lines += [
+            f"PnL (est., net): ₹{pnl_sign}{update.current_pnl:,.0f}",
             f"Duration: {update.time_in_trade_minutes}m",
             SEP,
-        ])
+        ]
+        return "\n".join(lines)
 
     @staticmethod
     def _get_market_status(now: datetime) -> str:
@@ -2502,64 +2626,6 @@ class DecisionEngine:
         if vix < 25:
             return "ELEVATED"
         return "HIGH_VOL"
-
-    @staticmethod
-    def _select_optimal_strike(
-        direction: str,
-        spot_price: float,
-        chain,
-        strike_interval: float = 50.0,
-        target_delta_min: float = 0.35,
-        target_delta_max: float = 0.45,
-    ) -> tuple[float, float]:
-        """Select optimal strike based on delta target (0.35-0.45).
-
-        ATM is not always optimal. 0.35-0.45 delta strikes give the best
-        premium-to-probability ratio for directional trades.
-
-        Returns (optimal_strike, approximate_delta).
-        Falls back to ATM if no suitable strike found.
-        """
-        if chain is None or spot_price <= 0:
-            atm = round(spot_price / strike_interval) * strike_interval
-            return atm, 0.40
-
-        try:
-            # ATM baseline
-            atm = round(spot_price / strike_interval) * strike_interval
-
-            # For BUY_CALL: look at strikes from ATM to 2-3 strikes OTM
-            # For BUY_PUT: look at strikes from ATM to 2-3 strikes OTM (put side)
-            candidates = []
-            for strike in getattr(chain, 'strikes', []):
-                s = getattr(strike, 'strike_price', 0)
-                if direction == "BUY_CALL":
-                    # Calls: at or slightly OTM (strike >= spot - 1 interval)
-                    if spot_price - strike_interval <= s <= spot_price + 3 * strike_interval:
-                        # Approximate delta using moneyness
-                        moneyness = (spot_price - s) / spot_price
-                        approx_delta = 0.5 + moneyness * 5  # crude linear approx
-                        approx_delta = max(0.05, min(0.95, approx_delta))
-                        if target_delta_min <= approx_delta <= target_delta_max:
-                            candidates.append((s, approx_delta))
-                else:  # BUY_PUT
-                    # Puts: at or slightly OTM (strike <= spot + 1 interval)
-                    if spot_price - 3 * strike_interval <= s <= spot_price + strike_interval:
-                        moneyness = (s - spot_price) / spot_price
-                        approx_delta = 0.5 + moneyness * 5
-                        approx_delta = max(0.05, min(0.95, approx_delta))
-                        if target_delta_min <= approx_delta <= target_delta_max:
-                            candidates.append((s, approx_delta))
-
-            if candidates:
-                # Pick candidate closest to mid-delta (0.40)
-                best = min(candidates, key=lambda x: abs(x[1] - 0.40))
-                return best[0], best[1]
-
-            return atm, 0.40
-
-        except Exception:
-            return round(spot_price / strike_interval) * strike_interval, 0.40
 
     @staticmethod
     def _is_rollover_week(now: datetime) -> bool:

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -24,20 +25,22 @@ from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
 from config.settings import settings
-from src.analysis.options_pricing import OptionPnLEstimator
 from src.data.index_registry import get_registry
 from src.data.options_chain import OptionsChainData
 from src.database.db_manager import DatabaseManager
+from src.engine.option_contract import (
+    ContractQuote,
+    SelectionParams,
+    estimate_premium,
+    minutes_until,
+    premium_at,
+    select_contract,
+)
+from src.engine.option_costs import round_trip_cost
 from src.engine.signal_generator import TradingSignal
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo(IST_TIMEZONE)
-
-# Risk-free rate (approximate RBI repo rate)
-_RISK_FREE_RATE: float = 0.065  # 6.5% p.a.
-# Default IV used when chain data is unavailable
-_DEFAULT_IV: float = 0.15       # 15% annualised
-
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -50,19 +53,55 @@ class RiskConfig:
 
     # Capital & risk limits
     total_capital: float = 100_000.0          # ₹ total trading capital
-    max_risk_per_trade_pct: float = 2.0        # % of capital per trade
-    max_risk_per_day_pct: float = 2.0          # % daily loss limit (hard stop at 2%)
+    max_risk_per_trade_pct: float = 2.0        # % of capital at risk per trade (premium terms)
+    # Daily limit must exceed the per-trade limit, otherwise one full-size
+    # loss ends the day and the second trade can never be sized.
+    max_risk_per_day_pct: float = 4.0          # % daily loss limit incl. open risk
     max_open_positions: int = 3                # simultaneous open positions
     max_positions_per_index: int = 1           # positions in same index
     max_lots_per_trade: int = 5                # absolute safety cap
+    # Indian index options are highly correlated: NIFTY/BANKNIFTY/FINNIFTY
+    # calls together are one bet, not three.
+    max_same_direction_positions: int = 2
+    # Premium outlay cap: an option buyer can lose the whole premium.
+    max_premium_outlay_pct: float = 50.0       # % of capital across open positions
 
-    # Risk-reward
+    # Risk-reward (measured in PREMIUM, net of spread and costs)
     min_risk_reward_ratio: float = 1.3         # reject if RR below this
     default_risk_reward: float = 1.5           # target RR
 
-    # Execution costs
-    slippage_points: float = 2.0               # expected slippage per trade
-    transaction_cost_per_lot: float = 120.0    # ₹ round-trip per lot
+    # Execution costs — statutory charges come from src/engine/option_costs.
+    slippage_points: float = 2.0               # (legacy spot path only)
+    transaction_cost_per_lot: float = 120.0    # (legacy spot path only)
+
+    # Option-buyer premium rules
+    max_premium_sl_pct: float = 0.35           # never risk more than 35% of premium
+    expected_hold_minutes: int = 60            # theta horizon for target/SL premiums
+    target_abs_delta_high: float = 0.50        # strike choice by computed delta
+    target_abs_delta_medium: float = 0.40
+    target_abs_delta_hero_zero: float = 0.20
+    min_option_premium: float = 5.0            # ₹ — below this, tick/spread dominate
+    max_spread_pct: float = 0.05               # of mid, when bid/ask are known
+    assumed_half_spread_pct: float = 0.005     # of mid, when bid/ask unknown
+    hero_zero_risk_pct: float = 0.5            # % of capital — lottery-ticket sizing
+    hero_zero_premium_sl_pct: float = 0.50
+    hero_zero_target_multiple: float = 2.5     # premium target = 2.5× entry
+
+    # Kelly sizing is OFF until enough premium-based trades exist; history
+    # recorded before the premium model is in index points and unusable.
+    use_kelly: bool = False
+    kelly_min_trades: int = 30
+    kelly_fraction: float = 0.25
+
+    # Discipline controls
+    loss_cooldown_minutes: int = 30            # per index, after a losing exit
+    max_consecutive_losses: int = 3            # halt new entries for the day
+
+    # Option-buyer time rules (IST wall clock)
+    no_entry_before: str = "09:30"             # opening 15 min = noise + wide spreads
+    force_exit_time: str = "15:15"             # ahead of broker MIS square-off
+    time_stop_minutes: int = 60                # exit if not working by then …
+    time_stop_min_r: float = 0.3               # … i.e. below +0.3R in premium
 
     # Stop-loss validation thresholds
     min_sl_pct: float = 0.003                  # 0.3% — noise floor
@@ -156,6 +195,23 @@ class RefinedSignal:
     limit_price: Optional[float] = None
     validity: str = "DAY"
 
+    # ── Option contract (premium-native risk) ──────────────────────────────
+    is_hero_zero: bool = False
+    option_type: Optional[str] = None       # "CE" / "PE"
+    lot_size: int = 0
+    quantity: int = 0                       # lots × lot_size
+    entry_premium: float = 0.0              # ₹/unit actually paid (mid + half spread)
+    premium_mid: float = 0.0                # ₹/unit fair premium at entry
+    half_spread: float = 0.0                # ₹/unit, each side
+    spread_known: bool = False
+    premium_stop: float = 0.0               # exit when mark ≤ this
+    premium_target: float = 0.0             # exit when mark ≥ this
+    premium_rr: float = 0.0                 # net reward / net risk in ₹
+    option_iv: float = 0.0                  # decimal
+    days_to_expiry: float = 0.0
+    risk_per_lot: float = 0.0               # ₹ incl. spread + statutory costs
+    premium_outlay: float = 0.0             # ₹ paid for the position
+
 
 @dataclass
 class _OpenPosition:
@@ -165,14 +221,36 @@ class _OpenPosition:
     signal_id: str
     index_id: str
     signal_type: str          # "BUY_CALL" / "BUY_PUT"
-    entry_price: float
-    current_sl: float         # trailing stop (mutates over time)
-    target_price: float
+    entry_price: float        # spot at entry
+    current_sl: float         # spot stop trigger (ratchets with the premium stop)
+    target_price: float       # spot target trigger
     lots: int
     lot_size: int
     entry_time: datetime
     confidence_level: str
     is_hero_zero: bool = False
+    # Option contract — None for legacy spot-only positions
+    option_type: Optional[str] = None
+    strike: Optional[float] = None
+    expiry: Optional[date] = None
+    entry_premium: float = 0.0     # paid per unit
+    premium_mid: float = 0.0       # fair premium at entry (model anchor)
+    half_spread: float = 0.0
+    premium_stop: float = 0.0      # ratchets up only
+    initial_premium_stop: float = 0.0
+    premium_target: float = 0.0
+    entry_iv: float = 0.0
+    max_loss_amount: float = 0.0
+    last_premium: float = 0.0
+    exchange: str = "NSE"
+
+    @property
+    def quantity(self) -> int:
+        return self.lots * self.lot_size
+
+    @property
+    def is_option(self) -> bool:
+        return self.option_type is not None and self.strike is not None and self.expiry is not None
 
 
 @dataclass
@@ -180,10 +258,12 @@ class PositionUpdate:
     """Result of checking whether an open position should be exited."""
 
     signal_id: str
-    action: str               # HOLD / EXIT_TARGET / EXIT_SL / EXIT_TRAILING_SL / EXIT_TIME / EXIT_REVERSAL
-    current_pnl: float        # ₹ mark-to-market
-    current_pnl_pct: float    # % of risk_amount
+    action: str               # HOLD / EXIT_TARGET / EXIT_SL / EXIT_TRAILING_SL / EXIT_TIME / EXIT_TIME_STOP
+    current_pnl: float        # ₹ mark-to-market (net of estimated exit costs for options)
+    current_pnl_pct: float    # % of total capital
     time_in_trade_minutes: int
+    mark_premium: Optional[float] = None   # option mark used for the decision
+    premium_source: str = ""                # "quote" / "model"
 
 
 @dataclass
@@ -222,64 +302,6 @@ class PortfolioSummary:
 
 
 # ---------------------------------------------------------------------------
-# Math helpers
-# ---------------------------------------------------------------------------
-
-
-def _ncdf(x: float) -> float:
-    """Standard normal CDF (Abramowitz & Stegun, max error 1.5e-7)."""
-    if x >= 0.0:
-        t = 1.0 / (1.0 + 0.2316419 * x)
-        poly = t * (
-            0.319381530
-            + t * (-0.356563782
-            + t * (1.781477937
-            + t * (-1.821255978
-            + t * 1.330274429)))
-        )
-        return 1.0 - math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi) * poly
-    return 1.0 - _ncdf(-x)
-
-
-def _bs_price(
-    spot: float,
-    strike: float,
-    tte: float,       # years to expiry
-    iv: float,        # annualised volatility (0.15 = 15%)
-    option_type: str, # "CE" or "PE"
-    rate: float = _RISK_FREE_RATE,
-) -> tuple[float, dict]:
-    """Black-Scholes price and first-order greeks (delta, theta/day)."""
-    if tte <= 0.0 or iv <= 0.0 or spot <= 0.0 or strike <= 0.0:
-        return 0.0, {"delta": 0.0, "theta": 0.0}
-
-    sqrt_t = math.sqrt(tte)
-    d1 = (math.log(spot / strike) + (rate + 0.5 * iv * iv) * tte) / (iv * sqrt_t)
-    d2 = d1 - iv * sqrt_t
-    disc = math.exp(-rate * tte)
-
-    if option_type == "CE":
-        price = spot * _ncdf(d1) - strike * disc * _ncdf(d2)
-        delta = _ncdf(d1)
-    else:
-        price = strike * disc * _ncdf(-d2) - spot * _ncdf(-d1)
-        delta = _ncdf(d1) - 1.0
-
-    # Approximate daily theta (negative = time decay cost)
-    pdf_d1 = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
-    common_theta = -(spot * pdf_d1 * iv) / (2.0 * sqrt_t)
-    if option_type == "CE":
-        theta = (common_theta - rate * strike * disc * _ncdf(d2)) / 365.0
-    else:
-        theta = (common_theta + rate * strike * disc * _ncdf(-d2)) / 365.0
-
-    return max(price, 0.0), {
-        "delta": round(delta, 4),
-        "theta": round(theta, 2),
-    }
-
-
-# ---------------------------------------------------------------------------
 # RiskManager
 # ---------------------------------------------------------------------------
 
@@ -306,6 +328,10 @@ class RiskManager:
     ) -> None:
         self._db = db
         self.config = config or RiskConfig()
+        # The 60 s monitor job and the 300 s decision job run on different
+        # scheduler threads; every read-check-write of position state holds
+        # this lock (the position caps were a check-then-act race).
+        self._lock = threading.RLock()
 
         # signal_id → _OpenPosition for instant lookup during the session
         self._open_positions: dict[str, _OpenPosition] = {}
@@ -330,10 +356,8 @@ class RiskManager:
         them based on current market state or mark them expired.
         """
         try:
-            from src.utils.market_hours import MarketHoursManager
             from src.utils.date_utils import get_ist_now
 
-            mh = MarketHoursManager()
             now = get_ist_now()
             today_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
 
@@ -349,37 +373,20 @@ class RiskManager:
 
             resolved_count = 0
             for signal in orphaned:
+                # An option position left open across sessions cannot be
+                # valued from today's index price (theta, IV and the broker's
+                # own square-off all intervene).  Writing a fabricated
+                # index-point P&L as WIN/LOSS corrupted every statistic, so
+                # orphans are marked EXPIRED with no P&L and flagged for
+                # manual reconciliation against the broker contract note.
                 resolution = "EXPIRED"
                 exit_price = None
                 pnl = None
-
-                if mh.is_market_open():
-                    try:
-                        latest = self._db.fetch_one(
-                            """SELECT close FROM price_data
-                               WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1""",
-                            (signal['index_id'],)
-                        )
-                        if latest and latest['close']:
-                            current_price = latest['close']
-                            exit_price = current_price
-
-                            if signal['signal_type'] == 'BUY_CALL':
-                                if current_price <= signal['stop_loss']:
-                                    resolution = "LOSS"
-                                    pnl = signal['stop_loss'] - signal['entry_price']
-                                elif current_price >= signal['target_price']:
-                                    resolution = "WIN"
-                                    pnl = signal['target_price'] - signal['entry_price']
-                            elif signal['signal_type'] == 'BUY_PUT':
-                                if current_price >= signal['stop_loss']:
-                                    resolution = "LOSS"
-                                    pnl = signal['entry_price'] - signal['stop_loss']
-                                elif current_price <= signal['target_price']:
-                                    resolution = "WIN"
-                                    pnl = signal['entry_price'] - signal['target_price']
-                    except Exception as e:
-                        logger.debug(f"Could not determine outcome for signal {signal['id']}: {e}")
+                logger.warning(
+                    "Startup cleanup: signal #%s (%s %s) was still OPEN from a previous "
+                    "session — marked EXPIRED with no P&L. Reconcile with the broker.",
+                    signal['id'], signal['index_id'], signal['signal_type'],
+                )
 
                 self._db.execute(
                     """UPDATE trading_signals
@@ -408,132 +415,96 @@ class RiskManager:
         signal: TradingSignal,
         current_chain: Optional[OptionsChainData] = None,
         _now: Optional[datetime] = None,  # injectable for backtesting/tests
+        next_chain: Optional[OptionsChainData] = None,
     ) -> RefinedSignal:
         """
-        Validate and refine a raw TradingSignal into an executable RefinedSignal.
+        Turn a raw signal into an executable OPTION trade, or reject it.
 
-        All eight refinement steps are applied in sequence.  Any rejection
-        immediately short-circuits remaining steps and returns an invalid
-        ``RefinedSignal`` with populated ``rejection_reasons``.
+        Risk per lot is a premium quantity, so the contract is chosen before
+        sizing.  Steps, each of which can reject:
+
+          0. entry gates      — time window, loss streak, per-index cooldown,
+                                position caps (total / per index / same
+                                direction), daily limit incl. open risk
+          1. spot SL trigger  — side, noise floor, max width, OI support
+          2. spot target      — OI cap only when the wall is on the right side
+          3. contract         — expiry (next expiry on expiry day unless hero
+                                zero), strike by computed delta, liquidity
+          4. premium levels   — SL/target premiums re-priced at the spot
+                                triggers after the expected holding time
+                                (theta), minus spread and statutory costs;
+                                reject if premium R:R < minimum (the edge check)
+          5. sizing           — lots = ₹ budget / ₹ risk per lot; a trade that
+                                cannot fit one lot is rejected, never forced;
+                                capped by the daily limit and premium outlay
 
         Parameters
         ----------
         signal:
-            Raw signal from SignalGenerator.
+            Raw signal from SignalGenerator (spot entry/SL/target).
         current_chain:
-            Live options chain (optional — used for strike selection and S/R).
+            Options chain for the nearest tradeable expiry.
         _now:
-            Current time override (default: ``datetime.now(tz=_IST)``).
-            Inject a fixed time in tests or backtesting to avoid clock dependency.
+            Decision time (default: wall clock).
+        next_chain:
+            Chain for the following expiry — used on expiry day.
         """
-        self._maybe_refresh_daily_cache()
+        with self._lock:
+            return self._validate_and_refine(signal, current_chain, _now, next_chain)
 
+    def _validate_and_refine(
+        self,
+        signal: TradingSignal,
+        chain: Optional[OptionsChainData],
+        _now: Optional[datetime],
+        next_chain: Optional[OptionsChainData],
+    ) -> RefinedSignal:
+        self._maybe_refresh_daily_cache()
         refined = self._init_refined(signal)
 
         if signal.signal_type == "NO_TRADE":
-            refined.is_valid = False
-            refined.rejection_reasons.append("Signal type is NO_TRADE")
-            return refined
+            return self._reject(refined, "Signal type is NO_TRADE")
 
-        # --- Step 0: time gate -------------------------------------------
         now = _now if _now is not None else datetime.now(tz=_IST)
-        
-        is_hero_zero = any("HERO_ZERO" in w for w in refined.warnings)
-        minutes_limit = 10 if is_hero_zero else self.config.no_entry_after_minutes_before_close
-        
-        if self._is_near_close(now, minutes_limit):
-            refined.is_valid = False
-            refined.rejection_reasons.append(
-                f"No new entries within {minutes_limit} minutes of market close"
-            )
-            return refined
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=_IST)
 
-        # --- Step 1: validate / refine stop-loss -------------------------
-        self._step_validate_sl(refined, current_chain)
+        # --- Step 0: entry gates ------------------------------------------
+        gate = self._entry_gate_reason(refined, now)
+        if gate:
+            return self._reject(refined, gate)
+
+        # --- Steps 1-2: spot trigger levels -------------------------------
+        self._step_validate_sl(refined, chain)
+        if not refined.is_valid:
+            return refined
+        self._step_validate_target(refined, chain)
         if not refined.is_valid:
             return refined
 
-        # --- Step 2: validate / refine target ----------------------------
-        self._step_validate_target(refined, current_chain)
-        if not refined.is_valid:
-            return refined
+        # --- Step 3: the actual contract ----------------------------------
+        quote, why = self._step_select_contract(refined, chain, next_chain, now)
+        if quote is None:
+            return self._reject(refined, f"No executable option contract: {why}")
 
-        # --- Step 3: position sizing -------------------------------------
-        lot_size = self._get_lot_size(signal.index_id)
-        if lot_size is None:
-            refined.is_valid = False
-            refined.rejection_reasons.append(
-                f"{signal.index_id} has no F&O lot size — cannot size position"
+        lot_size = self._contract_lot_size(refined.index_id, quote.expiry)
+        if not lot_size:
+            return self._reject(
+                refined, f"{refined.index_id} has no F&O lot size — cannot size position",
             )
+
+        # --- Step 4: premium levels + edge check --------------------------
+        if not self._step_premium_levels(refined, quote, now, lot_size):
             return refined
 
-        # Early capital adequacy check — fail fast before daily-limit math
-        sl_dist_early = abs(refined.refined_entry - refined.refined_stop_loss)
-        min_1lot_cost = sl_dist_early * lot_size + self.config.transaction_cost_per_lot * 2
-        if min_1lot_cost > self.config.total_capital:
-            refined.is_valid = False
-            refined.rejection_reasons.append(
-                f"Insufficient capital: 1-lot risk ₹{min_1lot_cost:.0f} "
-                f"> total capital ₹{self.config.total_capital:.0f}"
-            )
+        # --- Step 5: sizing, daily limit, outlay --------------------------
+        if not self._step_size_premium(refined, lot_size):
             return refined
 
-        daily_remaining = self._compute_daily_remaining()
-        refined.daily_loss_remaining = daily_remaining
-
-        lots, risk_amount = self._step_size_position(
-            refined, lot_size, daily_remaining
-        )
-        refined.lots = lots
-        refined.risk_amount = risk_amount
-
-        # Recompute after lot clamping — express in rupees with account context
-        sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
-        tgt_dist = abs(refined.refined_target - refined.refined_entry)
-        tx_total = lots * self.config.transaction_cost_per_lot * 2  # entry + exit
-        refined.transaction_cost_total = tx_total
-        refined.max_loss_amount = lots * lot_size * sl_dist + tx_total
-        refined.max_profit_amount = lots * lot_size * tgt_dist - tx_total
-        refined.risk_pct_of_capital = (
-            refined.max_loss_amount / self.config.total_capital * 100
-        )
-        refined.total_margin_required = 0.0  # filled in step 6 if chain available
-
-        # Account-size context: note the rupee amounts in reasoning
-        refined.adjustments_made.append(
-            f"Account context: max loss ₹{refined.max_loss_amount:.0f} "
-            f"({refined.risk_pct_of_capital:.2f}% of ₹{self.config.total_capital:.0f})"
-        )
-
-        # --- Step 4: daily loss gate -------------------------------------
-        if not self._step_check_daily_limit(refined, daily_remaining):
-            return refined
-
-        # --- Step 5: open positions gate ---------------------------------
-        if not self._step_check_open_positions(refined):
-            return refined
-
-        # --- Step 6: option strike selection -----------------------------
-        self._step_select_strike(refined, current_chain, lot_size)
-
-        # --- Step 7: breakeven -------------------------------------------
-        if lots > 0 and lot_size > 0:
-            refined.breakeven_move = tx_total / (lots * lot_size)
-            tgt_distance = abs(refined.refined_target - refined.refined_entry)
-            if tgt_distance > 0 and refined.breakeven_move > tgt_distance * 0.3:
-                refined.warnings.append(
-                    f"High cost-to-target ratio: breakeven needs {refined.breakeven_move:.1f} pts "
-                    f"({refined.breakeven_move / tgt_distance * 100:.0f}% of target distance)"
-                )
-
-        # --- Step 8: final validation ------------------------------------
-        self._step_final_validation(refined)
-
-        # Execution instructions
         refined.execution_type = "LIMIT"
-        refined.limit_price = refined.refined_entry
+        refined.limit_price = round(refined.entry_premium, 2)  # an OPTION price
         refined.validity = "DAY"
-
+        refined.is_valid = not refined.rejection_reasons
         return refined
 
     # ------------------------------------------------------------------
@@ -542,10 +513,10 @@ class RiskManager:
 
     def track_open_position(self, signal: RefinedSignal) -> None:
         """
-        Register a refined signal as an open position.
+        Register a refined (risk-approved) signal as an open position.
 
-        Updates the DB row (outcome → 'OPEN', refined details stored in
-        reasoning JSON) and creates an in-memory :class:`_OpenPosition`.
+        Persists the full contract and premium levels into the DB row so a
+        restart restores the position exactly (strike, expiry, premium stop).
         """
         if not signal.is_valid:
             logger.warning(
@@ -554,59 +525,167 @@ class RiskManager:
             )
             return
 
-        lot_size = self._get_lot_size(signal.index_id) or 1
+        with self._lock:
+            lot_size = signal.lot_size or self._get_lot_size(signal.index_id) or 1
+            db_id = self._find_signal_db_id(signal)
 
-        # Persist risk details into the existing DB row
-        db_id = self._find_signal_db_id(signal)
-        if db_id is not None:
-            self._persist_risk_details(db_id, signal)
+            expiry = None
+            if signal.recommended_expiry:
+                try:
+                    expiry = date.fromisoformat(str(signal.recommended_expiry)[:10])
+                except ValueError:
+                    expiry = None
 
-        # In-memory tracker
-        pos = _OpenPosition(
-            db_id=db_id or -1,
-            signal_id=signal.signal_id,
-            index_id=signal.index_id,
-            signal_type=signal.signal_type,
-            entry_price=signal.refined_entry,
-            current_sl=signal.refined_stop_loss,
-            target_price=signal.refined_target,
-            lots=signal.lots,
-            lot_size=lot_size,
-            entry_time=signal.generated_at,
-            confidence_level=signal.confidence_level,
-            is_hero_zero=getattr(signal, "is_hero_zero", False),
-        )
-        self._open_positions[signal.signal_id] = pos
+            pos = _OpenPosition(
+                db_id=db_id or -1,
+                signal_id=signal.signal_id,
+                index_id=signal.index_id,
+                signal_type=signal.signal_type,
+                entry_price=signal.refined_entry,
+                current_sl=signal.refined_stop_loss,
+                target_price=signal.refined_target,
+                lots=signal.lots,
+                lot_size=lot_size,
+                entry_time=signal.generated_at,
+                confidence_level=signal.confidence_level,
+                is_hero_zero=signal.is_hero_zero,
+                option_type=signal.option_type,
+                strike=signal.recommended_strike if signal.option_type else None,
+                expiry=expiry if signal.option_type else None,
+                entry_premium=signal.entry_premium,
+                premium_mid=signal.premium_mid,
+                half_spread=signal.half_spread,
+                premium_stop=signal.premium_stop,
+                initial_premium_stop=signal.premium_stop,
+                premium_target=signal.premium_target,
+                entry_iv=signal.option_iv,
+                max_loss_amount=signal.max_loss_amount,
+                last_premium=signal.premium_mid,
+                exchange=self._exchange_for(signal.index_id),
+            )
+            self._open_positions[signal.signal_id] = pos
+            if db_id is not None:
+                self._persist_risk_details(db_id, signal, pos)
 
-        logger.info(
-            "OPEN  %-12s %s  Entry=%.2f  SL=%.2f  Target=%.2f  Lots=%d",
-            signal.index_id, signal.signal_type,
-            signal.refined_entry, signal.refined_stop_loss,
-            signal.refined_target, signal.lots,
-        )
+        if pos.is_option:
+            logger.info(
+                "OPEN  %-12s %s %s %.0f%s  qty=%d  premium=%.2f  SL=%.2f  TGT=%.2f  "
+                "(spot %.2f, SL %.2f, TGT %.2f)",
+                signal.index_id, signal.signal_type, pos.expiry, pos.strike, pos.option_type,
+                pos.quantity, pos.entry_premium, pos.premium_stop, pos.premium_target,
+                signal.refined_entry, signal.refined_stop_loss, signal.refined_target,
+            )
+        else:
+            logger.info(
+                "OPEN  %-12s %s  Entry=%.2f  SL=%.2f  Target=%.2f  Lots=%d (spot-only)",
+                signal.index_id, signal.signal_type,
+                signal.refined_entry, signal.refined_stop_loss,
+                signal.refined_target, signal.lots,
+            )
 
     def update_position(
         self,
         signal_id: str,
         current_price: float,
         _now: Optional[datetime] = None,  # injectable for tests
+        option_ltp: Optional[float] = None,
     ) -> PositionUpdate:
         """
-        Check exit conditions for an open position and apply trailing SL.
+        Check exit conditions for an open position and ratchet its stop.
 
-        Returns a :class:`PositionUpdate` describing the recommended action.
+        *current_price* is the underlying spot.  For option positions the
+        decision is made on the option mark: *option_ltp* when a live quote
+        is available, else a model re-price from spot (flagged ``model``).
         """
-        pos = self._open_positions.get(signal_id)
-        if pos is None:
+        with self._lock:
+            pos = self._open_positions.get(signal_id)
+            if pos is None:
+                return PositionUpdate(
+                    signal_id=signal_id, action="HOLD", current_pnl=0.0,
+                    current_pnl_pct=0.0, time_in_trade_minutes=0,
+                )
+            now = _now if _now is not None else datetime.now(tz=_IST)
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=_IST)
+            if pos.is_option:
+                return self._update_option_position(pos, current_price, now, option_ltp)
+            return self._update_spot_position(pos, current_price, now)
+
+    def _update_option_position(
+        self,
+        pos: _OpenPosition,
+        spot: float,
+        now: datetime,
+        option_ltp: Optional[float],
+    ) -> PositionUpdate:
+        cfg = self.config
+        minutes = int((now - pos.entry_time).total_seconds() / 60)
+
+        if option_ltp is not None and option_ltp > 0:
+            mark, source = float(option_ltp), "quote"
+        else:
+            mark = estimate_premium(
+                pos.option_type, pos.strike, pos.expiry, pos.entry_iv or 0.15,
+                spot, now, pos.premium_mid or pos.entry_premium, pos.entry_price, pos.entry_time,
+            )
+            source = "model"
+        pos.last_premium = mark
+
+        exit_px = max(mark - pos.half_spread, 0.05)
+        costs = round_trip_cost(pos.entry_premium, exit_px, pos.quantity, pos.exchange).total
+        pnl = (exit_px - pos.entry_premium) * pos.quantity - costs
+
+        def result(action: str) -> PositionUpdate:
             return PositionUpdate(
-                signal_id=signal_id,
-                action="HOLD",
-                current_pnl=0.0,
-                current_pnl_pct=0.0,
-                time_in_trade_minutes=0,
+                signal_id=pos.signal_id,
+                action=action,
+                current_pnl=round(pnl, 2),
+                current_pnl_pct=round(pnl / cfg.total_capital * 100, 4),
+                time_in_trade_minutes=minutes,
+                mark_premium=round(mark, 2),
+                premium_source=source,
             )
 
-        now = _now if _now is not None else datetime.now(tz=_IST)
+        is_call = pos.signal_type == "BUY_CALL"
+
+        # Time exits first: an intraday option must not be carried.
+        if pos.is_hero_zero and minutes_until(now, "14:55") <= 0:
+            return result("EXIT_TIME")
+        if minutes_until(now, cfg.force_exit_time) <= 0:
+            return result("EXIT_TIME")
+
+        # Stop (premium or spot trigger) before target — conservative.
+        spot_sl_hit = spot <= pos.current_sl if is_call else spot >= pos.current_sl
+        if mark <= pos.premium_stop or spot_sl_hit:
+            trailing = pos.premium_stop >= pos.entry_premium
+            return result("EXIT_TRAILING_SL" if trailing else "EXIT_SL")
+
+        spot_tgt_hit = spot >= pos.target_price if is_call else spot <= pos.target_price
+        if mark >= pos.premium_target or spot_tgt_hit:
+            return result("EXIT_TARGET")
+
+        # Time stop: a long option that is not working is bleeding theta.
+        risk_unit = pos.entry_premium - pos.initial_premium_stop
+        if (
+            not pos.is_hero_zero
+            and minutes >= cfg.time_stop_minutes
+            and risk_unit > 0
+            and (mark - pos.entry_premium) / risk_unit < cfg.time_stop_min_r
+        ):
+            return result("EXIT_TIME_STOP")
+
+        if self._trail_premium_stop(pos, mark):
+            self._persist_position_state(pos)
+        return result("HOLD")
+
+    def _update_spot_position(
+        self,
+        pos: _OpenPosition,
+        current_price: float,
+        now: datetime,
+    ) -> PositionUpdate:
+        """Legacy spot-only position (no contract recorded): delta-1 P&L."""
+        signal_id = pos.signal_id
         time_in_trade = int((now - pos.entry_time).total_seconds() / 60)
 
         is_call = pos.signal_type == "BUY_CALL"
@@ -615,155 +694,110 @@ class RiskManager:
         pnl_points = sign * (current_price - pos.entry_price)
         pnl_rupees = pnl_points * pos.lots * pos.lot_size
 
-        # --- Hero Zero hard exit at 14:55 IST ---
-        if pos.is_hero_zero:
-            hz_exit = now.replace(hour=14, minute=55, second=0, microsecond=0)
-            if now >= hz_exit:
-                return PositionUpdate(
-                    signal_id=signal_id,
-                    action="EXIT_TIME",
-                    current_pnl=round(pnl_rupees, 2),
-                    current_pnl_pct=round(
-                        pnl_rupees / self.config.total_capital * 100, 4
-                    ),
-                    time_in_trade_minutes=time_in_trade,
-                )
-
-        # --- Force exit near close (intraday) ---
-        if self._is_near_close(now, self.config.force_exit_minutes_before_close):
+        def result(action: str) -> PositionUpdate:
             return PositionUpdate(
                 signal_id=signal_id,
-                action="EXIT_TIME",
+                action=action,
                 current_pnl=round(pnl_rupees, 2),
-                current_pnl_pct=round(
-                    pnl_rupees / self.config.total_capital * 100, 4
-                ),
+                current_pnl_pct=round(pnl_rupees / self.config.total_capital * 100, 4),
                 time_in_trade_minutes=time_in_trade,
             )
 
-        # --- Target hit ---
+        if pos.is_hero_zero and minutes_until(now, "14:55") <= 0:
+            return result("EXIT_TIME")
+        if self._is_near_close(now, self.config.force_exit_minutes_before_close) or (
+            minutes_until(now, self.config.force_exit_time) <= 0
+        ):
+            return result("EXIT_TIME")
+
         if is_call and current_price >= pos.target_price:
-            return PositionUpdate(
-                signal_id=signal_id,
-                action="EXIT_TARGET",
-                current_pnl=round(pnl_rupees, 2),
-                current_pnl_pct=round(
-                    pnl_rupees / self.config.total_capital * 100, 4
-                ),
-                time_in_trade_minutes=time_in_trade,
-            )
+            return result("EXIT_TARGET")
         if not is_call and current_price <= pos.target_price:
-            return PositionUpdate(
-                signal_id=signal_id,
-                action="EXIT_TARGET",
-                current_pnl=round(pnl_rupees, 2),
-                current_pnl_pct=round(
-                    pnl_rupees / self.config.total_capital * 100, 4
-                ),
-                time_in_trade_minutes=time_in_trade,
-            )
+            return result("EXIT_TARGET")
 
-        # --- Stop loss / trailing SL hit ---
-        # TRAILING_SL = SL has been ratcheted into profitable territory
-        # (for CALL: SL >= entry; for PUT: SL <= entry)
         if is_call and current_price <= pos.current_sl:
-            action = (
-                "EXIT_TRAILING_SL"
-                if pos.current_sl >= pos.entry_price
-                else "EXIT_SL"
-            )
-            return PositionUpdate(
-                signal_id=signal_id,
-                action=action,
-                current_pnl=round(pnl_rupees, 2),
-                current_pnl_pct=round(
-                    pnl_rupees / self.config.total_capital * 100, 4
-                ),
-                time_in_trade_minutes=time_in_trade,
-            )
+            return result("EXIT_TRAILING_SL" if pos.current_sl >= pos.entry_price else "EXIT_SL")
         if not is_call and current_price >= pos.current_sl:
-            action = (
-                "EXIT_TRAILING_SL"
-                if pos.current_sl <= pos.entry_price
-                else "EXIT_SL"
-            )
-            return PositionUpdate(
-                signal_id=signal_id,
-                action=action,
-                current_pnl=round(pnl_rupees, 2),
-                current_pnl_pct=round(
-                    pnl_rupees / self.config.total_capital * 100, 4
-                ),
-                time_in_trade_minutes=time_in_trade,
-            )
+            return result("EXIT_TRAILING_SL" if pos.current_sl <= pos.entry_price else "EXIT_SL")
 
-        # --- Apply trailing SL adjustments (only moves in favour) --------
         self._apply_trailing_sl(pos, current_price)
-
-        return PositionUpdate(
-            signal_id=signal_id,
-            action="HOLD",
-            current_pnl=round(pnl_rupees, 2),
-            current_pnl_pct=round(
-                pnl_rupees / self.config.total_capital * 100, 4
-            ),
-            time_in_trade_minutes=time_in_trade,
-        )
+        return result("HOLD")
 
     def close_position(
         self,
         signal_id: str,
         exit_price: float,
         exit_reason: str,
-    ) -> None:
+        exit_premium: Optional[float] = None,
+    ) -> Optional[float]:
         """
-        Finalise an open position: compute P&L, update DB, and log.
+        Finalise an open position: compute net P&L, update DB, and log.
 
         Parameters
         ----------
         signal_id:
             UUID of the signal to close.
         exit_price:
-            Actual exit price (index level for index options).
+            Underlying spot at exit.
         exit_reason:
-            Human-readable reason: "TARGET", "SL", "TRAILING_SL", "TIME", etc.
+            "TARGET", "SL", "TRAILING_SL", "TIME", "TIME_STOP", …
+        exit_premium:
+            Option mark at exit (default: the last mark seen by the monitor).
+
+        Returns
+        -------
+        Net ₹ P&L after spread and statutory costs, or ``None`` if the
+        position was not open.  WIN means net P&L > 0.
         """
-        pos = self._open_positions.pop(signal_id, None)
-        if pos is None:
-            logger.warning("close_position: signal %s not in open positions", signal_id)
-            return
+        with self._lock:
+            pos = self._open_positions.pop(signal_id, None)
+            if pos is None:
+                logger.warning("close_position: signal %s not in open positions", signal_id)
+                return None
 
-        is_call = pos.signal_type == "BUY_CALL"
-        sign = 1 if is_call else -1
-        pnl_points = sign * (exit_price - pos.entry_price)
-        tx_cost = pos.lots * self.config.transaction_cost_per_lot * 2
-        pnl_rupees = pnl_points * pos.lots * pos.lot_size - tx_cost
-
-        outcome = "WIN" if pnl_rupees >= 0 else "LOSS"
-        self._daily_realised_pnl += pnl_rupees
-
-        # Update DB
-        if pos.db_id > 0:
-            now_ist = datetime.now(tz=_IST).isoformat()
-            try:
-                self._db.execute(
-                    """
-                    UPDATE trading_signals
-                    SET outcome = ?, actual_exit_price = ?, actual_pnl = ?,
-                        closed_at = ?
-                    WHERE id = ?
-                    """,
-                    (outcome, exit_price, round(pnl_rupees, 2), now_ist, pos.db_id),
+            if pos.is_option:
+                mark = exit_premium if exit_premium and exit_premium > 0 else (
+                    pos.last_premium or pos.premium_mid or pos.entry_premium
                 )
-            except Exception:
-                logger.exception("Failed to update signal %s in DB", signal_id)
+                exit_px = max(mark - pos.half_spread, 0.05)
+                costs = round_trip_cost(
+                    pos.entry_premium, exit_px, pos.quantity, pos.exchange,
+                ).total
+                pnl_rupees = (exit_px - pos.entry_premium) * pos.quantity - costs
+                recorded_exit = round(exit_px, 2)  # the traded instrument's price
+            else:
+                is_call = pos.signal_type == "BUY_CALL"
+                sign = 1 if is_call else -1
+                tx_cost = pos.lots * self.config.transaction_cost_per_lot * 2
+                pnl_rupees = sign * (exit_price - pos.entry_price) * pos.quantity - tx_cost
+                recorded_exit = exit_price
+
+            outcome = "WIN" if pnl_rupees > 0 else "LOSS"
+            self._daily_realised_pnl += pnl_rupees
+
+            if pos.db_id > 0:
+                now_ist = datetime.now(tz=_IST).isoformat()
+                try:
+                    self._db.execute(
+                        """
+                        UPDATE trading_signals
+                        SET outcome = ?, actual_exit_price = ?, actual_pnl = ?,
+                            closed_at = ?
+                        WHERE id = ?
+                        """,
+                        (outcome, recorded_exit, round(pnl_rupees, 2), now_ist, pos.db_id),
+                    )
+                    self._persist_exit_details(pos, exit_price, recorded_exit, exit_reason)
+                except Exception:
+                    logger.exception("Failed to update signal %s in DB", signal_id)
 
         logger.info(
-            "CLOSED %-12s %s: Entry=%.2f  Exit=%.2f  PnL=₹%.0f  (%s)  [%s]",
-            pos.index_id, pos.signal_type,
-            pos.entry_price, exit_price,
+            "CLOSED %-12s %s: spot %.2f→%.2f  %s  net PnL=₹%.0f  (%s)  [%s]",
+            pos.index_id, pos.signal_type, pos.entry_price, exit_price,
+            f"premium {pos.entry_premium:.2f}→{recorded_exit:.2f}" if pos.is_option else "",
             pnl_rupees, outcome, exit_reason,
         )
+        return round(pnl_rupees, 2)
 
     # ------------------------------------------------------------------
     # Public API — reporting
@@ -845,11 +879,13 @@ class RiskManager:
         month_pnl = _sum_pnl(month_start, today_str)
         trades_today = _count_today()
 
-        # Build per-position dicts (no live price — mark entry as current)
+        # Build per-position dicts (option positions carry their last mark)
         open_list = []
         total_margin = 0.0
-        for pos in self._open_positions.values():
-            open_list.append({
+        with self._lock:
+            positions = list(self._open_positions.values())
+        for pos in positions:
+            item = {
                 "signal_id": pos.signal_id,
                 "index": pos.index_id,
                 "signal_type": pos.signal_type,
@@ -859,9 +895,21 @@ class RiskManager:
                 "lots": pos.lots,
                 "lot_size": pos.lot_size,
                 "entry_time": pos.entry_time.isoformat(),
-            })
-            # Very rough margin estimate: entry × lot_size × lots × 0.15
-            total_margin += pos.entry_price * pos.lot_size * pos.lots * 0.15
+            }
+            if pos.is_option:
+                item.update({
+                    "contract": f"{pos.expiry} {pos.strike:.0f}{pos.option_type}",
+                    "entry_premium": pos.entry_premium,
+                    "premium_stop": pos.premium_stop,
+                    "premium_target": pos.premium_target,
+                    "last_premium": pos.last_premium,
+                })
+                # A long option's capital at work is the premium paid.
+                total_margin += pos.entry_premium * pos.quantity
+            else:
+                # Legacy spot-only record: rough 15 % of notional
+                total_margin += pos.entry_price * pos.quantity * 0.15
+            open_list.append(item)
 
         daily_limit = self.config.total_capital * self.config.max_risk_per_day_pct / 100
         realised_loss = abs(min(0.0, today_pnl))
@@ -927,26 +975,28 @@ class RiskManager:
             )
 
         # --- OI-based support/resistance check --------------------------
-        # Only apply if the resulting SL stays within the max allowed distance
-        # (avoids widening SL to a far-away OI level that exceeds max_sl_pct).
+        # An OI wall between the stop and entry is a defended level: if it
+        # breaks, the trade thesis is wrong, so the stop TIGHTENS to just
+        # beyond it.  It never WIDENS the stop — the old rule moved the stop
+        # out to the max-OI strike (often 2 % away), turning a 90-point stop
+        # into a 500-point one for an option buyer.
         if chain is not None and chain.strikes:
             support, resistance = self._oi_sr_levels(chain)
-            if is_call and support is not None:
+            min_dist = entry * self.config.min_sl_pct
+            if is_call and support is not None and support < entry:
                 sr_floor = support * (1.0 - self.config.sl_sr_buffer_pct)
-                new_dist_pct = abs(entry - sr_floor) / entry
-                if sl > sr_floor and new_dist_pct <= self.config.max_sl_pct:
+                if sl < sr_floor and entry - sr_floor >= min_dist:
                     sl = sr_floor
                     refined.adjustments_made.append(
-                        f"SL moved to below OI support {support:.2f} "
+                        f"SL tightened to below OI support {support:.2f} "
                         f"(− {self.config.sl_sr_buffer_pct*100:.1f}% buffer)"
                     )
-            elif not is_call and resistance is not None:
+            elif not is_call and resistance is not None and resistance > entry:
                 sr_ceil = resistance * (1.0 + self.config.sl_sr_buffer_pct)
-                new_dist_pct = abs(entry - sr_ceil) / entry
-                if sl < sr_ceil and new_dist_pct <= self.config.max_sl_pct:
+                if sl > sr_ceil and sr_ceil - entry >= min_dist:
                     sl = sr_ceil
                     refined.adjustments_made.append(
-                        f"SL moved to above OI resistance {resistance:.2f} "
+                        f"SL tightened to above OI resistance {resistance:.2f} "
                         f"(+ {self.config.sl_sr_buffer_pct*100:.1f}% buffer)"
                     )
 
@@ -980,8 +1030,15 @@ class RiskManager:
             return
 
         # --- OI resistance cap (non-HIGH confidence) --------------------
+        # Only a wall on the profitable side of entry can cap the target: a
+        # max-CE-OI strike *below* spot (already broken) used to drag a CALL
+        # target under entry, and the abs()-based R:R let it through.
         if chain is not None and chain.strikes and refined.confidence_level != "HIGH":
             support, resistance = self._oi_sr_levels(chain)
+            if resistance is not None and resistance <= entry:
+                resistance = None
+            if support is not None and support >= entry:
+                support = None
             if is_call and resistance is not None and target > resistance:
                 refined.adjustments_made.append(
                     f"Target {target:.2f} beyond OI resistance {resistance:.2f} "
@@ -998,6 +1055,15 @@ class RiskManager:
         # Persist any OI adjustment to refined_target immediately so it is
         # visible even when we subsequently reject on RR grounds.
         refined.refined_target = round(target, 2)
+
+        # --- Side check: target must be in the profitable direction ------
+        if (is_call and target <= entry) or (not is_call and target >= entry):
+            refined.is_valid = False
+            refined.rejection_reasons.append(
+                f"Target {target:.2f} is on the wrong side of entry {entry:.2f} "
+                f"for {refined.signal_type}"
+            )
+            return
 
         # --- RR check ---------------------------------------------------
         tgt_dist = abs(target - entry)
@@ -1036,307 +1102,365 @@ class RiskManager:
         refined.refined_target = round(target, 2)
         refined.risk_reward_ratio = round(rr, 2)
 
-    def _step_size_position(
-        self,
-        refined: RefinedSignal,
-        lot_size: int,
-        daily_remaining: float,
-    ) -> tuple[int, float]:
-        """
-        Step 3 — calculate lots based on Kelly criterion (or conservative fallback).
+    # ------------------------------------------------------------------
+    # Step 0 — entry gates
+    # ------------------------------------------------------------------
 
-        Kelly% = (b*p - (1-p)) / b, where:
-        - p = historical win rate
-        - b = avg_win / avg_loss (payoff ratio)
+    @staticmethod
+    def _reject(refined: RefinedSignal, reason: str) -> RefinedSignal:
+        refined.is_valid = False
+        refined.rejection_reasons.append(reason)
+        return refined
 
-        Returns ``(lots, risk_amount_₹)``.
-        """
+    def _entry_gate_reason(self, refined: RefinedSignal, now: datetime) -> Optional[str]:
+        """Return a rejection reason, or ``None`` if a new entry is allowed."""
         cfg = self.config
-        sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
 
-        # Attempt Kelly sizing from historical performance
-        hist = self._fetch_historical_stats(refined.index_id)
-        if hist["total_trades"] >= 10:  # need min sample size
-            kelly_pct = self._kelly_criterion(hist)
-            risk_amount = kelly_pct * cfg.total_capital
-            refined.adjustments_made.append(
-                f"Kelly criterion: {kelly_pct*100:.1f}% of capital "
-                f"({hist['total_trades']} trades, {hist['win_rate']*100:.1f}% win)"
-            )
-        else:
-            # Fallback: confidence-based sizing
-            max_risk = cfg.total_capital * cfg.max_risk_per_trade_pct / 100
-            conf_map = {
-                "HIGH": cfg.high_confidence_size_pct,
-                "MEDIUM": cfg.medium_confidence_size_pct,
-                "LOW": cfg.low_confidence_size_pct,
-            }
-            conf_pct = conf_map.get(refined.confidence_level, cfg.low_confidence_size_pct)
-            risk_amount = max_risk * (conf_pct / 100.0)
-            refined.adjustments_made.append(
-                f"Fallback: confidence-based sizing ({refined.confidence_level}) — "
-                f"insufficient history for Kelly ({hist['total_trades']} trades)"
-            )
+        if minutes_until(now, cfg.no_entry_before) > 0:
+            return f"No new entries before {cfg.no_entry_before} (opening noise, wide spreads)"
+        close_buffer = 10 if refined.is_hero_zero else cfg.no_entry_after_minutes_before_close
+        if self._is_near_close(now, close_buffer):
+            return f"No new entries within {close_buffer} minutes of market close"
 
-        # Regime/anomaly position modifier from signal
-        risk_amount *= refined.position_size_modifier
-        risk_amount = max(risk_amount, 0.0)
+        closed = self._closed_trades_today(now)
+        if closed is None:
+            return "Cannot verify today's closed trades (DB error) — no new entries"
+        streak = 0
+        for row in reversed(closed):
+            if row["outcome"] != "LOSS":
+                break
+            streak += 1
+        if streak >= cfg.max_consecutive_losses:
+            return f"{streak} consecutive losses today — new entries halted for the day"
+        for row in reversed(closed):
+            if row["index_id"] != refined.index_id or row["outcome"] != "LOSS":
+                continue
+            closed_at = self._parse_ts(row["closed_at"])
+            if closed_at is not None:
+                mins = (now - closed_at).total_seconds() / 60.0
+                if 0 <= mins < cfg.loss_cooldown_minutes:
+                    return (
+                        f"Cooldown: last {refined.index_id} trade lost {mins:.0f} min ago "
+                        f"(< {cfg.loss_cooldown_minutes} min)"
+                    )
+            break
 
-        # Delta-adjusted SL
-        entry_delta = 1.0
-        if refined.option_greeks and "delta" in refined.option_greeks:
-            entry_delta = abs(float(refined.option_greeks["delta"]))
-        elif refined.recommended_strike:
-            try:
-                estimator = OptionPnLEstimator()
-                days_to_expiry = getattr(refined, "days_to_expiry", None) or 7.0
-                iv = estimator.get_default_iv(refined.index_id)
-                entry_delta = estimator.get_entry_delta(
-                    trade_type=refined.signal_type,
-                    spot=refined.refined_entry,
-                    strike=refined.recommended_strike,
-                    days_to_expiry=float(days_to_expiry),
-                    iv=iv,
-                )
-            except Exception:
-                entry_delta = 1.0
-
-        entry_delta = max(0.1, min(entry_delta, 0.95))
-        effective_sl_distance = sl_dist * entry_delta
-        loss_per_lot = effective_sl_distance * lot_size + cfg.transaction_cost_per_lot
-
-        if loss_per_lot <= 0:
-            return 1, risk_amount
-
-        lots = math.floor(risk_amount / loss_per_lot)
-        lots = max(lots, 1)
-        lots = min(lots, cfg.max_lots_per_trade)
-
-        if entry_delta < 0.99:
-            refined.adjustments_made.append(
-                f"Delta adjustment: {entry_delta:.2f}x, effective SL {effective_sl_distance:.1f}pts"
-            )
-
-        return lots, round(risk_amount, 2)
-
-    def _step_check_daily_limit(
-        self,
-        refined: RefinedSignal,
-        daily_remaining: float,
-    ) -> bool:
-        """Step 4 — enforce daily loss limit.  Returns False if trade rejected."""
-        if daily_remaining <= 0:
-            refined.is_valid = False
-            refined.rejection_reasons.append(
-                f"Daily loss limit reached — ₹{daily_remaining:.0f} remaining"
-            )
-            return False
-
-        max_loss = refined.max_loss_amount
-        if max_loss > daily_remaining:
-            # Try reducing lots
-            lot_size = self._get_lot_size(refined.index_id) or 1
-            sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
-            tx_per_lot = self.config.transaction_cost_per_lot * 2
-            loss_per_lot = sl_dist * lot_size + tx_per_lot
-            max_lots = math.floor(daily_remaining / loss_per_lot) if loss_per_lot > 0 else 0
-            if max_lots < 1:
-                refined.is_valid = False
-                refined.rejection_reasons.append(
-                    f"Trade risk ₹{max_loss:.0f} exceeds daily limit "
-                    f"remaining ₹{daily_remaining:.0f} — cannot fit even 1 lot"
-                )
-                return False
-            # Reduce lots and recalculate
-            refined.lots = max_lots
-            refined.max_loss_amount = max_lots * lot_size * sl_dist + max_lots * tx_per_lot
-            refined.max_profit_amount = (
-                max_lots * lot_size * abs(refined.refined_target - refined.refined_entry)
-                - max_lots * tx_per_lot
-            )
-            refined.adjustments_made.append(
-                f"Lots reduced from {refined.lots} to {max_lots} to stay within daily limit"
-            )
-
-        return True
-
-    def _step_check_open_positions(self, refined: RefinedSignal) -> bool:
-        """Step 5 — check open position caps.  Returns False if trade rejected."""
-        total_open = len(self._open_positions)
-        if total_open >= self.config.max_open_positions:
-            refined.is_valid = False
-            refined.rejection_reasons.append(
-                f"Max open positions reached ({total_open}/{self.config.max_open_positions})"
-            )
-            return False
-
-        index_open = sum(
-            1 for p in self._open_positions.values()
-            if p.index_id == refined.index_id
-        )
-        if index_open >= self.config.max_positions_per_index:
-            refined.is_valid = False
-            refined.rejection_reasons.append(
+        open_pos = list(self._open_positions.values())
+        if len(open_pos) >= cfg.max_open_positions:
+            return f"Max open positions reached ({len(open_pos)}/{cfg.max_open_positions})"
+        index_open = sum(1 for p in open_pos if p.index_id == refined.index_id)
+        if index_open >= cfg.max_positions_per_index:
+            return (
                 f"Max positions for {refined.index_id} reached "
-                f"({index_open}/{self.config.max_positions_per_index})"
+                f"({index_open}/{cfg.max_positions_per_index})"
             )
-            return False
+        same_dir = sum(1 for p in open_pos if p.signal_type == refined.signal_type)
+        if same_dir >= cfg.max_same_direction_positions:
+            return (
+                f"Max same-direction positions reached ({same_dir}/"
+                f"{cfg.max_same_direction_positions}) — correlated indices are one bet"
+            )
 
-        return True
+        remaining = self._compute_daily_remaining()
+        refined.daily_loss_remaining = round(remaining, 2)
+        if remaining <= 0:
+            return "Daily loss limit reached (realised loss + risk reserved by open positions)"
+        return None
 
-    def _step_select_strike(
+    def _closed_trades_today(self, now: datetime) -> Optional[list[dict]]:
+        try:
+            return self._db.fetch_all(
+                """
+                SELECT index_id, outcome, closed_at FROM trading_signals
+                WHERE outcome IN ('WIN', 'LOSS') AND date(closed_at) = ?
+                ORDER BY closed_at ASC
+                """,
+                (now.date().isoformat(),),
+            )
+        except Exception:
+            logger.exception("Could not load today's closed trades")
+            return None
+
+    @staticmethod
+    def _parse_ts(value) -> Optional[datetime]:
+        try:
+            ts = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        return ts.replace(tzinfo=_IST) if ts.tzinfo is None else ts
+
+    # ------------------------------------------------------------------
+    # Step 3 — contract selection
+    # ------------------------------------------------------------------
+
+    def _step_select_contract(
         self,
         refined: RefinedSignal,
         chain: Optional[OptionsChainData],
-        lot_size: int,
-    ) -> None:
-        """Step 6 — select option strike, expiry, and estimate premium."""
-        if chain is None or not chain.strikes:
-            # Fallback: Black-Scholes estimate with default IV
-            self._bs_fallback(refined)
-            return
-
-        # --- Expiry selection -------------------------------------------
-        today = date.today()
-        expiry = chain.expiry_date
-        days_to_expiry = (expiry - today).days
-        is_hero_zero = any("HERO_ZERO" in w for w in refined.warnings)
-
-        if days_to_expiry < 1 and not is_hero_zero and len(chain.available_expiries) > 1:
-            expiry = chain.available_expiries[1]
-            refined.adjustments_made.append(
-                f"Expiry day — using next expiry {expiry} instead (non-Hero Zero)"
-            )
-        elif refined.confidence_level == "HIGH" and days_to_expiry < 3 and not is_hero_zero:
-            if len(chain.available_expiries) > 1:
-                expiry = chain.available_expiries[1]
-
-        dte = (expiry - today).days
-        refined.recommended_expiry = expiry.isoformat()
-
-        # --- Strike selection -------------------------------------------
-        spot = chain.spot_price
-        is_call = refined.signal_type == "BUY_CALL"
-
-        sorted_strikes = sorted(chain.strikes, key=lambda s: s.strike_price)
-        strike_prices = [s.strike_price for s in sorted_strikes]
-
-        # ATM = closest strike to spot
-        atm_strike = min(strike_prices, key=lambda k: abs(k - spot))
-        atm_idx = strike_prices.index(atm_strike)
-
-        if is_hero_zero:
-            # For Hero Zero, we want 2 strikes OTM to catch the gamma burst
-            if is_call:
-                chosen_idx = min(atm_idx + 2, len(strike_prices) - 1)
-            else:
-                chosen_idx = max(atm_idx - 2, 0)
-            refined.adjustments_made.append("HERO_ZERO: Selected 2-strike OTM for gamma potential")
-        elif refined.confidence_level == "HIGH":
-            chosen_idx = atm_idx  # ATM for HIGH
-        else:
-            # 1 OTM for MEDIUM/LOW
-            if is_call:
-                chosen_idx = min(atm_idx + 1, len(strike_prices) - 1)
-            else:
-                chosen_idx = max(atm_idx - 1, 0)
-
-        chosen_strike = strike_prices[chosen_idx]
-        refined.recommended_strike = chosen_strike
-
-        # --- Premium from chain ------------------------------------------
-        strike_data = sorted_strikes[chosen_idx]
-        ltp = strike_data.ce_ltp if is_call else strike_data.pe_ltp
-        iv = strike_data.ce_iv if is_call else strike_data.pe_iv
-
-        # Skip zero-liquidity strikes, try adjacent
-        attempts = 0
-        while ltp <= 0.0 and attempts < 3:
-            attempts += 1
-            alt_idx = (
-                chosen_idx + attempts if is_call
-                else chosen_idx - attempts
-            )
-            alt_idx = max(0, min(alt_idx, len(sorted_strikes) - 1))
-            strike_data = sorted_strikes[alt_idx]
-            ltp = strike_data.ce_ltp if is_call else strike_data.pe_ltp
-            iv = strike_data.ce_iv if is_call else strike_data.pe_iv
-            if ltp > 0:
-                chosen_strike = strike_prices[alt_idx]
-                refined.recommended_strike = chosen_strike
-                refined.adjustments_made.append(
-                    f"Zero LTP at chosen strike — shifted to {chosen_strike}"
-                )
-
-        if ltp <= 0.0:
-            # All adjacent strikes illiquid — use BS
-            self._bs_fallback(refined)
-            return
-
-        refined.option_premium = round(ltp, 2)
-
-        # Margin = premium × lot_size × lots (option buyer pays premium)
-        refined.total_margin_required = round(
-            ltp * lot_size * refined.lots, 2
-        )
-
-        # Greeks
-        if iv and iv > 0:
-            tte = max(dte, 1) / 365.0
-            _, greeks = _bs_price(spot, chosen_strike, tte, iv / 100.0,
-                                   "CE" if is_call else "PE")
-            refined.option_greeks = greeks
-        else:
-            refined.option_greeks = {"delta": None, "theta": None}
-
-    def _step_final_validation(self, refined: RefinedSignal) -> None:
-        """Step 8 — compile all final checks into is_valid / rejection_reasons."""
+        next_chain: Optional[OptionsChainData],
+        now: datetime,
+    ) -> tuple[Optional[ContractQuote], str]:
         cfg = self.config
-        reasons = refined.rejection_reasons  # mutated in place
+        if chain is None or not chain.strikes:
+            return None, "no live options chain (cannot price the trade)"
 
-        sl_dist = abs(refined.refined_entry - refined.refined_stop_loss)
-        tgt_dist = abs(refined.refined_target - refined.refined_entry)
-        rr = tgt_dist / sl_dist if sl_dist > 0 else 0.0
+        use_chain = chain
+        if chain.expiry_date == now.date() and not refined.is_hero_zero:
+            # 0DTE: theta and gamma are extreme — directional buys go to the
+            # next expiry, priced from THAT expiry's chain (not today's).
+            if next_chain is None or not next_chain.strikes:
+                return None, "expiry day and the next-expiry chain is unavailable"
+            use_chain = next_chain
+            refined.adjustments_made.append(
+                f"Expiry day — using next expiry {next_chain.expiry_date}"
+            )
 
-        # Only reject on risk_pct when lots > 1.  If lots == 1 (minimum) and
-        # the cost still exceeds budget it means the instrument requires more
-        # capital — surfaced as a warning, not a hard rejection.
-        if refined.risk_pct_of_capital > cfg.max_risk_per_trade_pct:
-            if refined.lots > 1:
-                reasons.append(
-                    f"Risk {refined.risk_pct_of_capital:.2f}% > max {cfg.max_risk_per_trade_pct}%"
+        if refined.is_hero_zero:
+            target_delta = cfg.target_abs_delta_hero_zero
+        elif refined.confidence_level == "HIGH":
+            target_delta = cfg.target_abs_delta_high
+        else:
+            target_delta = cfg.target_abs_delta_medium
+        params = SelectionParams(
+            target_abs_delta=target_delta,
+            min_premium=cfg.min_option_premium,
+            max_spread_pct=cfg.max_spread_pct,
+            assumed_half_spread_pct=cfg.assumed_half_spread_pct,
+        )
+        quote, why = select_contract(use_chain, refined.signal_type, refined.refined_entry, now, params)
+        if quote is None:
+            return None, why
+        quote.index_id = refined.index_id
+
+        g = quote.greeks
+        refined.recommended_strike = quote.strike
+        refined.recommended_expiry = quote.expiry.isoformat()
+        refined.option_type = quote.option_type
+        refined.premium_mid = round(quote.mid, 2)
+        refined.half_spread = round(quote.half_spread, 2)
+        refined.spread_known = quote.spread_known
+        refined.option_iv = round(quote.iv, 4)
+        refined.days_to_expiry = float(max((quote.expiry - now.date()).days, 0))
+        refined.option_greeks = {
+            "delta": round(g.delta, 4),
+            "gamma": round(g.gamma, 6),
+            "theta": round(g.theta_per_day, 2),
+            "vega": round(g.vega_per_pct, 2),
+            "iv": round(quote.iv * 100, 2),
+            "iv_source": quote.iv_source,
+        }
+        refined.adjustments_made.append(
+            f"Contract {quote.expiry} {quote.strike:.0f}{quote.option_type}: mid ₹{quote.mid:.2f}, "
+            f"Δ {g.delta:+.2f}, θ ₹{g.theta_per_day:.2f}/day, IV {quote.iv * 100:.1f}% ({quote.iv_source})"
+        )
+        if not quote.spread_known:
+            refined.warnings.append(
+                f"Bid/ask unavailable — spread assumed {cfg.assumed_half_spread_pct * 200:.1f}% "
+                "of premium; place a LIMIT order"
+            )
+        return quote, ""
+
+    # ------------------------------------------------------------------
+    # Step 4 — premium levels and the edge check
+    # ------------------------------------------------------------------
+
+    def _step_premium_levels(
+        self,
+        refined: RefinedSignal,
+        quote: ContractQuote,
+        now: datetime,
+        lot_size: int,
+    ) -> bool:
+        cfg = self.config
+        mid, half = quote.mid, quote.half_spread
+        entry_paid = mid + half
+        exchange = self._exchange_for(refined.index_id)
+
+        if refined.is_hero_zero:
+            stop = mid * (1.0 - cfg.hero_zero_premium_sl_pct)
+            target = mid * cfg.hero_zero_target_multiple
+            refined.adjustments_made.append(
+                f"HERO_ZERO: premium stop −{cfg.hero_zero_premium_sl_pct:.0%}, "
+                f"target {cfg.hero_zero_target_multiple:.1f}× premium"
+            )
+        else:
+            hold_until = now + timedelta(minutes=cfg.expected_hold_minutes)
+            at_spot_sl = premium_at(quote, refined.refined_stop_loss, hold_until)
+            floor = mid * (1.0 - cfg.max_premium_sl_pct)
+            stop = max(at_spot_sl, floor)
+            if floor > at_spot_sl:
+                refined.adjustments_made.append(
+                    f"Premium stop capped at −{cfg.max_premium_sl_pct:.0%} (₹{floor:.2f}); "
+                    f"spot SL alone implied ₹{at_spot_sl:.2f}"
                 )
-            else:
-                refined.warnings.append(
-                    f"Risk {refined.risk_pct_of_capital:.2f}% exceeds {cfg.max_risk_per_trade_pct}% budget "
-                    "at minimum 1-lot size — consider adding capital"
-                )
+            target = premium_at(quote, refined.refined_target, hold_until)
 
+        exit_at_stop = max(stop - half, 0.05)
+        exit_at_target = target - half
+        cost_stop = round_trip_cost(entry_paid, exit_at_stop, lot_size, exchange).total
+        cost_target = round_trip_cost(entry_paid, max(exit_at_target, 0.05), lot_size, exchange).total
+        risk_lot = (entry_paid - exit_at_stop) * lot_size + cost_stop
+        reward_lot = (exit_at_target - entry_paid) * lot_size - cost_target
+
+        refined.entry_premium = round(entry_paid, 2)
+        refined.option_premium = refined.entry_premium
+        refined.premium_stop = round(stop, 2)
+        refined.premium_target = round(target, 2)
+        refined.risk_per_lot = round(risk_lot, 2)
+
+        spot_rr = refined.risk_reward_ratio
+        if reward_lot <= 0:
+            self._reject(
+                refined,
+                f"No edge: spot target {refined.refined_target:.0f} lifts the premium only to "
+                f"₹{target:.2f} after {cfg.expected_hold_minutes} min of theta — below entry "
+                f"₹{entry_paid:.2f} + spread + costs",
+            )
+            return False
+        rr = reward_lot / risk_lot if risk_lot > 0 else 0.0
+        refined.premium_rr = round(rr, 2)
         if rr < cfg.min_risk_reward_ratio:
-            reasons.append(
-                f"Final RR {rr:.2f} < minimum {cfg.min_risk_reward_ratio}"
+            self._reject(
+                refined,
+                f"Premium R:R {rr:.2f} < {cfg.min_risk_reward_ratio} after theta "
+                f"({cfg.expected_hold_minutes} min), spread and costs (spot R:R was {spot_rr:.2f})",
             )
+            return False
+        refined.risk_reward_ratio = round(rr, 2)
+        return True
 
-        if refined.lots < 1:
-            reasons.append("Position size rounds to zero lots")
+    # ------------------------------------------------------------------
+    # Step 5 — sizing on premium risk
+    # ------------------------------------------------------------------
 
-        if refined.daily_loss_remaining <= 0:
-            reasons.append("Daily loss limit already reached")
+    def _risk_budget(self, refined: RefinedSignal) -> tuple[float, str]:
+        cfg = self.config
+        if refined.is_hero_zero:
+            return cfg.total_capital * cfg.hero_zero_risk_pct / 100.0, "hero-zero fixed risk"
+        cap = cfg.total_capital * cfg.max_risk_per_trade_pct / 100.0
+        conf_pct = {
+            "HIGH": cfg.high_confidence_size_pct,
+            "MEDIUM": cfg.medium_confidence_size_pct,
+            "LOW": cfg.low_confidence_size_pct,
+        }.get(refined.confidence_level, cfg.low_confidence_size_pct)
+        budget = cap * conf_pct / 100.0
+        basis = f"{refined.confidence_level} confidence {conf_pct:.0f}% of {cfg.max_risk_per_trade_pct}%"
+        if cfg.use_kelly:
+            hist = self._fetch_historical_stats(refined.index_id)
+            if hist["total_trades"] >= cfg.kelly_min_trades:
+                k = self._kelly_raw(hist)
+                if k <= 0:
+                    return 0.0, f"negative historical edge (Kelly {k:.3f} ≤ 0)"
+                budget = min(budget, cfg.kelly_fraction * k * cfg.total_capital)
+                basis += f", capped at {cfg.kelly_fraction:.2f}× Kelly"
+        budget *= refined.position_size_modifier
+        return budget, basis
 
-        # Hard reject: RR < 1.0 is never acceptable
-        if rr < 1.0 and sl_dist > 0:
-            reasons.append(f"RR {rr:.2f} < 1.0 — always rejected")
+    def _step_size_premium(self, refined: RefinedSignal, lot_size: int) -> bool:
+        cfg = self.config
+        risk_lot = refined.risk_per_lot
+        if risk_lot <= 0:
+            self._reject(refined, "Non-positive risk per lot — cannot size")
+            return False
 
-        # Check capital sufficiency for 1 lot
-        lot_size = self._get_lot_size(refined.index_id) or 1
-        min_cost = sl_dist * lot_size + cfg.transaction_cost_per_lot * 2
-        if min_cost > cfg.total_capital:
-            reasons.append(
-                f"Insufficient capital: 1-lot risk ₹{min_cost:.0f} "
-                f"> total capital ₹{cfg.total_capital:.0f}"
+        budget, basis = self._risk_budget(refined)
+        refined.risk_amount = round(budget, 2)
+        lots = math.floor(budget / risk_lot)
+        if lots < 1:
+            self._reject(
+                refined,
+                f"1 lot risks ₹{risk_lot:,.0f} > risk budget ₹{budget:,.0f} ({basis}) — "
+                "skipped rather than forced to 1 lot",
             )
+            return False
+        if lots > cfg.max_lots_per_trade:
+            refined.adjustments_made.append(f"Lots capped {lots} → {cfg.max_lots_per_trade}")
+            lots = cfg.max_lots_per_trade
 
-        refined.is_valid = len(reasons) == 0
+        remaining = refined.daily_loss_remaining
+        lots_daily = math.floor(remaining / risk_lot)
+        if lots_daily < 1:
+            self._reject(
+                refined,
+                f"1 lot risks ₹{risk_lot:,.0f} > daily limit remaining ₹{remaining:,.0f} "
+                "(realised loss + open risk)",
+            )
+            return False
+        if lots_daily < lots:
+            refined.adjustments_made.append(
+                f"Lots reduced {lots} → {lots_daily} to stay within the daily limit"
+            )
+            lots = lots_daily
+
+        per_lot_outlay = refined.entry_premium * lot_size
+        open_outlay = sum(
+            p.entry_premium * p.quantity for p in self._open_positions.values() if p.is_option
+        )
+        outlay_room = cfg.total_capital * cfg.max_premium_outlay_pct / 100.0 - open_outlay
+        lots_outlay = math.floor(outlay_room / per_lot_outlay) if per_lot_outlay > 0 else 0
+        if lots_outlay < 1:
+            self._reject(
+                refined,
+                f"Premium outlay cap: 1 lot costs ₹{per_lot_outlay:,.0f}, room ₹{max(outlay_room, 0):,.0f} "
+                f"({cfg.max_premium_outlay_pct:.0f}% of capital incl. open positions)",
+            )
+            return False
+        if lots_outlay < lots:
+            refined.adjustments_made.append(
+                f"Lots reduced {lots} → {lots_outlay} by the premium outlay cap"
+            )
+            lots = lots_outlay
+
+        qty = lots * lot_size
+        exchange = self._exchange_for(refined.index_id)
+        exit_stop = max(refined.premium_stop - refined.half_spread, 0.05)
+        exit_target = refined.premium_target - refined.half_spread
+        cost_stop = round_trip_cost(refined.entry_premium, exit_stop, qty, exchange).total
+        cost_target = round_trip_cost(refined.entry_premium, max(exit_target, 0.05), qty, exchange).total
+
+        refined.lots = lots
+        refined.lot_size = lot_size
+        refined.quantity = qty
+        refined.max_loss_amount = round((refined.entry_premium - exit_stop) * qty + cost_stop, 2)
+        refined.max_profit_amount = round((exit_target - refined.entry_premium) * qty - cost_target, 2)
+        refined.transaction_cost_total = round(cost_stop, 2)
+        refined.premium_outlay = round(refined.entry_premium * qty, 2)
+        refined.total_margin_required = refined.premium_outlay
+        refined.risk_pct_of_capital = round(refined.max_loss_amount / cfg.total_capital * 100, 4)
+        refined.breakeven_move = round(2 * refined.half_spread + cost_stop / qty, 2)
+        refined.adjustments_made.append(
+            f"Size {lots} lot(s) × {lot_size} = {qty}: max loss ₹{refined.max_loss_amount:,.0f} "
+            f"({refined.risk_pct_of_capital:.2f}% of ₹{cfg.total_capital:,.0f}), "
+            f"outlay ₹{refined.premium_outlay:,.0f}, premium R:R {refined.premium_rr:.2f}"
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # Premium trailing stop
+    # ------------------------------------------------------------------
+
+    def _trail_premium_stop(self, pos: _OpenPosition, mark: float) -> bool:
+        """Ratchet the premium stop (never loosens).  Returns True if moved.
+
+        Progress = share of the entry→target premium distance achieved:
+          ≥ 50 %  → breakeven (exit at bid covers entry + costs)
+          ≥ 75 %  → lock 30 % of the distance
+        """
+        dist = pos.premium_target - pos.entry_premium
+        if dist <= 0 or pos.quantity <= 0:
+            return False
+        progress = (mark - pos.entry_premium) / dist
+        if progress >= 0.75:
+            new_stop = pos.entry_premium + 0.3 * dist
+        elif progress >= 0.5:
+            costs = round_trip_cost(pos.entry_premium, pos.entry_premium, pos.quantity, pos.exchange).total
+            new_stop = pos.entry_premium + pos.half_spread + costs / pos.quantity
+        else:
+            return False
+        if new_stop > pos.premium_stop:
+            pos.premium_stop = round(new_stop, 2)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Trailing SL logic
@@ -1421,6 +1545,10 @@ class RiskManager:
             refined_entry=signal.entry_price,
             refined_target=signal.target_price,
             refined_stop_loss=signal.stop_loss,
+            # The flag used to be dropped here, so the 14:55 hero-zero exit
+            # never fired and history queries never matched.
+            is_hero_zero=bool(getattr(signal, "is_hero_zero", False))
+            or any("HERO_ZERO" in w for w in (signal.warnings or [])),
         )
 
     def _get_lot_size(self, index_id: str) -> Optional[int]:
@@ -1452,50 +1580,60 @@ class RiskManager:
 
         return support, resistance
 
-    def _bs_fallback(self, refined: RefinedSignal) -> None:
-        """Estimate option premium via Black-Scholes when chain is unavailable."""
-        entry = refined.refined_entry
-        if entry <= 0:
-            return
-
-        # Estimate ATM strike (round to nearest 50 for NIFTY-like indices)
-        # For a rough estimate, use entry as both spot and strike (ATM)
-        dte_assumption = 4  # assume mid-week, ~4 days to expiry
-        tte = dte_assumption / 365.0
-        is_call = refined.signal_type == "BUY_CALL"
-
-        premium, greeks = _bs_price(
-            entry, entry, tte, _DEFAULT_IV,
-            "CE" if is_call else "PE",
-        )
-
-        refined.option_premium = round(premium, 2) if premium > 0 else None
-        refined.option_greeks = greeks
-        if refined.recommended_expiry is None:
-            # Generic label when no chain is available
-            refined.recommended_expiry = "current_weekly"
-        if refined.recommended_strike is None:
-            refined.recommended_strike = round(entry / 50) * 50  # nearest 50
-
-        if premium > 0 and refined.lots > 0:
-            lot_size = self._get_lot_size(refined.index_id) or 1
-            refined.total_margin_required = round(
-                premium * lot_size * refined.lots, 2
-            )
-        refined.adjustments_made.append("Option premium estimated via Black-Scholes (no live chain)")
-
     def _compute_daily_remaining(self) -> float:
-        """Return how much ₹ of daily loss limit is still available."""
+        """₹ of daily loss limit still available for a NEW trade.
+
+        limit − realised net loss − risk already reserved by open positions.
+        (The old version ignored open positions, so three open trades could
+        lose ~3× the daily limit.)
+        """
         daily_limit = self.config.total_capital * self.config.max_risk_per_day_pct / 100
-        unrealised = self._unrealised_pnl_total()
-        # Only negative unrealised counts against limit
-        unrealised_loss = abs(min(0.0, unrealised))
-        return max(0.0, daily_limit - abs(min(0.0, self._daily_realised_pnl)) - unrealised_loss)
+        realised_loss = abs(min(0.0, self._daily_realised_pnl))
+        return max(0.0, daily_limit - realised_loss - self._open_risk_reserved())
+
+    def _open_risk_reserved(self) -> float:
+        """₹ each open position can still lose from here to its stop."""
+        total = 0.0
+        for p in self._open_positions.values():
+            if p.is_option:
+                exit_stop = max(p.premium_stop - p.half_spread, 0.05)
+                costs = round_trip_cost(p.entry_premium, exit_stop, p.quantity, p.exchange).total
+                total += max(0.0, (p.entry_premium - exit_stop) * p.quantity) + costs
+            elif p.max_loss_amount > 0:
+                total += p.max_loss_amount
+            else:
+                total += abs(p.entry_price - p.current_sl) * p.quantity
+        return total
 
     def _unrealised_pnl_total(self) -> float:
-        """Sum of unrealised P&L across all open positions (no live price)."""
-        # Without a live price feed, return 0 (conservative — don't assume gain)
-        return 0.0
+        """Mark-to-market P&L of open option positions at their last mark."""
+        total = 0.0
+        for p in self._open_positions.values():
+            if p.is_option and p.last_premium > 0:
+                total += (max(p.last_premium - p.half_spread, 0.05) - p.entry_premium) * p.quantity
+        return total
+
+    def _contract_lot_size(self, index_id: str, expiry: Optional[date]) -> Optional[int]:
+        """Lot size of the specific contract (lot sizes are per expiry)."""
+        try:
+            from src.data.contract_master import get_contract_master  # noqa: PLC0415
+
+            idx = get_registry().get(index_id)
+            symbol = idx.option_symbol if idx and idx.option_symbol else index_id
+            lot = get_contract_master().lot_size(symbol, expiry=expiry)
+            if lot:
+                return int(lot)
+        except Exception:
+            logger.debug("Contract lot-size lookup failed for %s", index_id, exc_info=True)
+        return self._get_lot_size(index_id)
+
+    @staticmethod
+    def _exchange_for(index_id: str) -> str:
+        try:
+            idx = get_registry().get(index_id)
+            return (idx.exchange if idx else "NSE") or "NSE"
+        except Exception:
+            return "NSE"
 
     @staticmethod
     def _is_near_close(now: datetime, minutes: int) -> bool:
@@ -1565,6 +1703,17 @@ class RiskManager:
         kelly = max(0.005, min(kelly, 0.25))
         return kelly
 
+    @staticmethod
+    def _kelly_raw(hist: dict) -> float:
+        """Unclamped Kelly fraction (≤ 0 means no historical edge)."""
+        p = hist.get("win_rate", 0.0)
+        avg_win = hist.get("avg_win", 0.0)
+        avg_loss = hist.get("avg_loss", 0.0)
+        if avg_loss <= 0 or avg_win <= 0:
+            return 0.0
+        b = avg_win / avg_loss
+        return (b * p - (1 - p)) / b
+
     def _load_open_positions(self) -> None:
         """Restore open positions from DB on startup (today's OPEN signals)."""
         today_str = date.today().isoformat()
@@ -1589,14 +1738,15 @@ class RiskManager:
             # Parse extra risk details from reasoning JSON if present
             try:
                 reasoning = json.loads(row["reasoning"])
-                risk = reasoning.get("risk_details", {})
-                signal_id = risk.get("signal_id", f"db_{row['id']}")
-                lots = int(risk.get("lots", 1))
-            except (json.JSONDecodeError, TypeError, KeyError):
+                risk = reasoning.get("risk_details", {}) or {}
+                signal_id = risk.get("signal_id") or reasoning.get("signal_id") or f"db_{row['id']}"
+                lots = int(risk.get("lots", 1) or 1)
+            except (json.JSONDecodeError, TypeError, KeyError, ValueError):
+                risk = {}
                 signal_id = f"db_{row['id']}"
                 lots = 1
 
-            lot_size = self._get_lot_size(row["index_id"]) or 1
+            lot_size = int(risk.get("lot_size") or self._get_lot_size(row["index_id"]) or 1)
             try:
                 entry_time = datetime.fromisoformat(row["generated_at"])
                 if entry_time.tzinfo is None:
@@ -1604,18 +1754,44 @@ class RiskManager:
             except (ValueError, TypeError):
                 entry_time = datetime.now(tz=_IST)
 
+            expiry = None
+            if risk.get("expiry"):
+                try:
+                    expiry = date.fromisoformat(str(risk["expiry"])[:10])
+                except ValueError:
+                    expiry = None
+            has_contract = bool(risk.get("option_type") and risk.get("strike") and expiry)
+
             pos = _OpenPosition(
                 db_id=row["id"],
                 signal_id=signal_id,
                 index_id=row["index_id"],
                 signal_type=row["signal_type"],
-                entry_price=float(row["entry_price"]),
-                current_sl=float(row["stop_loss"]),
-                target_price=float(row["target_price"]),
+                entry_price=float(risk.get("spot_entry") or row["entry_price"]),
+                current_sl=float(risk.get("spot_stop") or row["stop_loss"]),
+                target_price=float(risk.get("spot_target") or row["target_price"]),
                 lots=lots,
                 lot_size=lot_size,
                 entry_time=entry_time,
                 confidence_level=row["confidence_level"],
+                is_hero_zero=bool(risk.get("is_hero_zero", False)),
+                option_type=risk.get("option_type") if has_contract else None,
+                strike=float(risk["strike"]) if has_contract else None,
+                expiry=expiry if has_contract else None,
+                entry_premium=float(risk.get("entry_premium") or 0.0),
+                premium_mid=float(risk.get("premium_mid") or 0.0),
+                half_spread=float(risk.get("half_spread") or 0.0),
+                # The trailing stop is persisted every time it moves, so a
+                # restart resumes the ratcheted level, not the initial one.
+                premium_stop=float(risk.get("premium_stop") or 0.0),
+                initial_premium_stop=float(
+                    risk.get("initial_premium_stop") or risk.get("premium_stop") or 0.0
+                ),
+                premium_target=float(risk.get("premium_target") or 0.0),
+                entry_iv=float(risk.get("entry_iv") or 0.0),
+                max_loss_amount=float(risk.get("max_loss_amount") or 0.0),
+                last_premium=float(risk.get("last_premium") or risk.get("premium_mid") or 0.0),
+                exchange=str(risk.get("exchange") or self._exchange_for(row["index_id"])),
             )
             self._open_positions[signal_id] = pos
 
@@ -1645,10 +1821,16 @@ class RiskManager:
 
     def _maybe_refresh_daily_cache(self) -> None:
         """Refresh daily cache if the date has changed (midnight rollover)."""
-        if self._cache_date != date.today():
-            self._open_positions.clear()
-            self._load_open_positions()
-            self._refresh_daily_pnl()
+        with self._lock:
+            if self._cache_date != date.today():
+                self._open_positions.clear()
+                self._load_open_positions()
+                self._refresh_daily_pnl()
+
+    def get_open_positions(self) -> list[_OpenPosition]:
+        """Snapshot of open positions (safe to iterate from another thread)."""
+        with self._lock:
+            return list(self._open_positions.values())
 
     def _find_signal_db_id(self, signal: RefinedSignal) -> Optional[int]:
         """
@@ -1675,35 +1857,101 @@ class RiskManager:
             logger.debug("Could not find DB id for signal %s", signal.signal_id)
             return None
 
-    def _persist_risk_details(self, db_id: int, signal: RefinedSignal) -> None:
-        """Append risk_details to the reasoning JSON in the DB row."""
+    def _update_reasoning_json(self, db_id: int, mutate) -> None:
+        """Read-modify-write the reasoning JSON of one trading_signals row."""
+        row = self._db.fetch_one("SELECT reasoning FROM trading_signals WHERE id = ?", (db_id,))
+        if not row:
+            return
         try:
-            row = self._db.fetch_one(
-                "SELECT reasoning FROM trading_signals WHERE id = ?",
-                (db_id,),
-            )
-            if row:
-                try:
-                    reasoning = json.loads(row["reasoning"])
-                except (json.JSONDecodeError, TypeError):
-                    reasoning = {}
-                reasoning["risk_details"] = {
-                    "signal_id": signal.signal_id,
-                    "lots": signal.lots,
-                    "refined_entry": signal.refined_entry,
-                    "refined_target": signal.refined_target,
-                    "refined_stop_loss": signal.refined_stop_loss,
-                    "risk_amount": signal.risk_amount,
-                    "max_loss_amount": signal.max_loss_amount,
-                    "recommended_strike": signal.recommended_strike,
-                    "option_premium": signal.option_premium,
-                }
-                self._db.execute(
-                    "UPDATE trading_signals SET reasoning = ? WHERE id = ?",
-                    (json.dumps(reasoning, ensure_ascii=False), db_id),
-                )
+            reasoning = json.loads(row["reasoning"]) if row["reasoning"] else {}
+        except (json.JSONDecodeError, TypeError):
+            reasoning = {"text": str(row["reasoning"])}
+        mutate(reasoning)
+        self._db.execute(
+            "UPDATE trading_signals SET reasoning = ? WHERE id = ?",
+            (json.dumps(reasoning, ensure_ascii=False, default=str), db_id),
+        )
+
+    @staticmethod
+    def _position_state(pos: _OpenPosition) -> dict:
+        return {
+            "signal_id": pos.signal_id,
+            "lots": pos.lots,
+            "lot_size": pos.lot_size,
+            "is_hero_zero": pos.is_hero_zero,
+            "spot_entry": pos.entry_price,
+            "spot_stop": pos.current_sl,
+            "spot_target": pos.target_price,
+            "option_type": pos.option_type,
+            "strike": pos.strike,
+            "expiry": pos.expiry.isoformat() if pos.expiry else None,
+            "entry_premium": pos.entry_premium,
+            "premium_mid": pos.premium_mid,
+            "half_spread": pos.half_spread,
+            "premium_stop": pos.premium_stop,
+            "initial_premium_stop": pos.initial_premium_stop,
+            "premium_target": pos.premium_target,
+            "entry_iv": pos.entry_iv,
+            "max_loss_amount": pos.max_loss_amount,
+            "last_premium": pos.last_premium,
+            "exchange": pos.exchange,
+        }
+
+    def _persist_risk_details(
+        self, db_id: int, signal: RefinedSignal, pos: Optional[_OpenPosition] = None,
+    ) -> None:
+        """Store the full executable trade (contract + premium levels) on the row."""
+        try:
+            details = {
+                "signal_id": signal.signal_id,
+                "lots": signal.lots,
+                "refined_entry": signal.refined_entry,
+                "refined_target": signal.refined_target,
+                "refined_stop_loss": signal.refined_stop_loss,
+                "risk_amount": signal.risk_amount,
+                "max_loss_amount": signal.max_loss_amount,
+                "recommended_strike": signal.recommended_strike,
+                "option_premium": signal.option_premium,
+                "premium_rr": signal.premium_rr,
+                "risk_pct_of_capital": signal.risk_pct_of_capital,
+            }
+            if pos is not None:
+                details.update(self._position_state(pos))
+            self._update_reasoning_json(db_id, lambda r: r.__setitem__("risk_details", details))
         except Exception:
-            logger.debug(
-                "Could not persist risk details for signal %s", signal.signal_id,
-                exc_info=True,
+            logger.warning(
+                "Could not persist risk details for signal %s — a restart would "
+                "not restore this position's contract", signal.signal_id, exc_info=True,
             )
+
+    def _persist_position_state(self, pos: _OpenPosition) -> None:
+        """Persist a moved trailing stop so a restart resumes from it."""
+        if pos.db_id <= 0:
+            return
+        try:
+            state = self._position_state(pos)
+
+            def mutate(r: dict) -> None:
+                r.setdefault("risk_details", {}).update(state)
+
+            self._update_reasoning_json(pos.db_id, mutate)
+        except Exception:
+            logger.warning("Could not persist stop for %s", pos.signal_id, exc_info=True)
+
+    def _persist_exit_details(
+        self, pos: _OpenPosition, spot_exit: float, recorded_exit: float, reason: str,
+    ) -> None:
+        def mutate(r: dict) -> None:
+            r["exit_details"] = {
+                "reason": reason,
+                "spot_exit": spot_exit,
+                "exit_price": recorded_exit,
+                "instrument": (
+                    f"{pos.expiry} {pos.strike:.0f}{pos.option_type}" if pos.is_option else "spot"
+                ),
+            }
+
+        try:
+            self._update_reasoning_json(pos.db_id, mutate)
+        except Exception:
+            logger.debug("Could not persist exit details for %s", pos.signal_id, exc_info=True)

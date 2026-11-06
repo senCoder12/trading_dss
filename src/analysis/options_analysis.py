@@ -334,6 +334,10 @@ def calculate_gex(
         return 0.0, "NEUTRAL", spot_price
 
 
+# Minimum number of (daily) IV observations for a meaningful percentile.
+MIN_IV_HISTORY_OBSERVATIONS: int = 60
+
+
 def calculate_iv_percentile(
     current_iv: float,
     historical_ivs: list[float],
@@ -363,7 +367,10 @@ def calculate_iv_percentile(
         return 50.0, 50.0, "NEUTRAL"
 
     hist = [v for v in historical_ivs if v > 0]
-    if not hist:
+    # A percentile of a handful of observations is noise, and a strategy
+    # bias derived from it moved option-buying confidence.  Below the
+    # minimum (daily observations), report neutral.
+    if len(hist) < MIN_IV_HISTORY_OBSERVATIONS:
         return 50.0, 50.0, "NEUTRAL"
 
     # IV Percentile: % of days where IV < current

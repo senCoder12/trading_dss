@@ -1755,9 +1755,13 @@ class SignalGenerator:
         Bypasses the normal vote/score pipeline.
         Hard-caps position size at 25% regardless of regime/volatility modifiers.
         """
-        sl = getattr(hz_result, "stop_loss", spot - 50)
         rr = 1.5
         direction = getattr(hz_result, "signal_direction", "NO_TRADE")
+        # Default stop on the correct side (it used to be spot − 50 for puts
+        # too, i.e. a put "stop" below entry).  The executable stop for a
+        # hero-zero trade is set on the premium by the RiskManager.
+        default_sl = spot - 50 if direction == "BUY_CALL" else spot + 50
+        sl = getattr(hz_result, "stop_loss", None) or default_sl
 
         if direction == "BUY_CALL":
             target = spot + abs(spot - sl) * rr
