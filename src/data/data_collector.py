@@ -1056,14 +1056,20 @@ class DataCollector:
             now = datetime.now(tz=_IST)
             for index_id in ("NIFTY50", "BANKNIFTY"):
                 try:
-                    # Get latest options chain from DB
-                    expiry_rows = self.db.fetch_all(
-                        "SELECT expiry_date FROM options_chain_snapshot WHERE index_id = ? GROUP BY expiry_date ORDER BY expiry_date LIMIT 1",
-                        (index_id,)
-                    )
-                    if not expiry_rows:
+                    # Nearest live expiry. The snapshot table keeps every expiry
+                    # ever stored, so an unfiltered "ORDER BY expiry LIMIT 1"
+                    # picked a long-expired contract. Today's expiry is dead
+                    # after 15:30 IST.
+                    today = now.date().isoformat()
+                    expiries = [
+                        r["expiry_date"]
+                        for r in self.db.fetch_all(Q.LIST_ACTIVE_EXPIRY_DATES, (index_id, today))
+                    ]
+                    if expiries and expiries[0] == today and (now.hour, now.minute) >= (15, 30):
+                        expiries = expiries[1:]
+                    if not expiries:
                         continue
-                    expiry = expiry_rows[0]["expiry_date"]
+                    expiry = expiries[0]
 
                     # Get ATM strikes
                     spot_row = self.db.fetch_one(
