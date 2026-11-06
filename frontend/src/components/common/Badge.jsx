@@ -1,48 +1,51 @@
-const styles = {
-  // Signal types
-  BUY_CALL:   'bg-green-500/20 text-green-400 border-green-500/40',
-  BUY_PUT:    'bg-red-500/20 text-red-400 border-red-500/40',
-  NO_TRADE:   'bg-slate-500/20 text-slate-400 border-slate-500/40',
-  // Directions
-  BUY:        'bg-green-500/20 text-green-400 border-green-500/40',
-  SELL:       'bg-red-500/20 text-red-400 border-red-500/40',
-  HOLD:       'bg-yellow-500/20 text-yellow-400 border-yellow-500/40',
-  // Confidence
-  HIGH:       'bg-green-500/20 text-green-400 border-green-500/40',
-  MEDIUM:     'bg-yellow-500/20 text-yellow-400 border-yellow-500/40',
-  LOW:        'bg-blue-500/20 text-blue-400 border-blue-500/40',
-  // Sentiment
-  BULLISH:    'bg-green-500/20 text-green-400 border-green-500/40',
-  BEARISH:    'bg-red-500/20 text-red-400 border-red-500/40',
-  NEUTRAL:    'bg-slate-500/20 text-slate-400 border-slate-500/40',
-  SLIGHTLY_BULLISH: 'bg-green-500/10 text-green-300 border-green-500/30',
-  SLIGHTLY_BEARISH: 'bg-red-500/10 text-red-300 border-red-500/30',
-  // Outcomes
-  WIN:        'bg-green-500/20 text-green-400 border-green-500/40',
-  LOSS:       'bg-red-500/20 text-red-400 border-red-500/40',
-  OPEN:       'bg-blue-500/20 text-blue-400 border-blue-500/40',
-  EXPIRED:    'bg-slate-500/20 text-slate-400 border-slate-500/40',
-  // Health
-  OK:         'bg-green-500/20 text-green-400 border-green-500/40',
-  HEALTHY:    'bg-green-500/20 text-green-400 border-green-500/40',
-  WARNING:    'bg-yellow-500/20 text-yellow-400 border-yellow-500/40',
-  DEGRADED:   'bg-yellow-500/20 text-yellow-400 border-yellow-500/40',
-  ERROR:      'bg-red-500/20 text-red-400 border-red-500/40',
-  UNHEALTHY:  'bg-red-500/20 text-red-400 border-red-500/40',
-  UNKNOWN:    'bg-slate-500/20 text-slate-400 border-slate-500/40',
-  // Decision source (LIVE engine vs SHADOW model — must never look alike)
-  LIVE:       'bg-emerald-500/20 text-emerald-300 border-emerald-500/50',
-  SHADOW:     'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/50 border-dashed',
-  // Severity
-  CRITICAL:   'bg-red-600/30 text-red-300 border-red-600/50',
-  NOISE:      'bg-slate-600/20 text-slate-500 border-slate-600/30',
+const TONES = {
+  success: 'bg-up/10 text-up ring-up/25',
+  danger: 'bg-down/10 text-down ring-down/25',
+  warning: 'bg-warn/10 text-warn ring-warn/25',
+  info: 'bg-info/10 text-info ring-info/25',
+  brand: 'bg-brand/10 text-brand ring-brand/25',
+  violet: 'bg-violet/10 text-violet ring-violet/25',
+  neutral: 'bg-ink/5 text-ink-muted ring-ink/10',
 };
 
-export function Badge({ variant, children, className = '', size = 'sm' }) {
-  const style = styles[variant?.toUpperCase()] ?? 'bg-slate-500/20 text-slate-400 border-slate-500/40';
-  const sz = size === 'xs' ? 'px-1.5 py-0 text-[10px]' : 'px-2 py-0.5 text-xs';
+// Domain value → tone. Lets callers pass raw API enums as `variant`.
+const VARIANT_TONE = {
+  BUY_CALL: 'success', BUY_PUT: 'danger', NO_TRADE: 'neutral',
+  BUY: 'success', SELL: 'danger', HOLD: 'warning',
+  HIGH: 'success', MEDIUM: 'warning', LOW: 'neutral',
+  BULLISH: 'success', BEARISH: 'danger', NEUTRAL: 'neutral',
+  SLIGHTLY_BULLISH: 'success', SLIGHTLY_BEARISH: 'danger',
+  WIN: 'success', LOSS: 'danger', OPEN: 'info', EXPIRED: 'neutral',
+  OK: 'success', HEALTHY: 'success', RUNNING: 'success',
+  WARNING: 'warning', DEGRADED: 'warning',
+  ERROR: 'danger', UNHEALTHY: 'danger', UNKNOWN: 'neutral',
+  CRITICAL: 'danger', NOISE: 'neutral',
+  PRIORITY: 'success', ACTIVE: 'brand', WATCHLIST: 'neutral',
+};
+
+// Severity reads differently from confidence: HIGH severity is bad.
+const SEVERITY_TONE = { CRITICAL: 'danger', HIGH: 'danger', MEDIUM: 'warning', LOW: 'info', NOISE: 'neutral' };
+
+export function toneFor(variant, kind) {
+  const key = variant?.toUpperCase?.();
+  if (kind === 'severity') return SEVERITY_TONE[key] ?? 'neutral';
+  return VARIANT_TONE[key] ?? 'neutral';
+}
+
+/**
+ * Small status pill.
+ *   <Badge variant="BUY_CALL">Buy Call</Badge>          — tone from domain enum
+ *   <Badge variant="HIGH" kind="severity">High</Badge>   — severity semantics
+ *   <Badge tone="info">Live</Badge>                      — explicit tone
+ */
+export function Badge({ variant, kind, tone, children, className = '', size = 'sm', dot = false }) {
+  const t = tone ?? toneFor(variant, kind);
+  const sz = size === 'xs' ? 'px-1.5 h-5 text-[10.5px]' : 'px-2 h-[22px] text-2xs';
   return (
-    <span className={`inline-flex items-center ${sz} rounded-full font-medium border ${style} ${className}`}>
+    <span
+      className={`inline-flex items-center gap-1 ${sz} rounded-md font-medium ring-1 ring-inset whitespace-nowrap ${TONES[t]} ${className}`}
+    >
+      {dot && <span className="w-1.5 h-1.5 rounded-full bg-current" />}
       {children}
     </span>
   );

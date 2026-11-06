@@ -1,61 +1,58 @@
-import { useMemo, useRef } from 'react';
+import { useMemo } from 'react';
+import { Search, X } from 'lucide-react';
+import { Segmented } from '../common/Segmented';
 
-const TIER_COLORS = {
-  PRIORITY: 'bg-green-500',
-  ACTIVE: 'bg-blue-500',
-  WATCHLIST: 'bg-slate-500',
+const TIERS = ['PRIORITY', 'ACTIVE', 'WATCHLIST'];
+
+const TIER_META = {
+  PRIORITY: { label: 'Priority', range: 'Rank 1–15', dot: 'bg-up', text: 'text-up', bar: 'bg-up' },
+  ACTIVE: { label: 'Active', range: 'Rank 16–50', dot: 'bg-brand', text: 'text-brand', bar: 'bg-brand' },
+  WATCHLIST: { label: 'Watchlist', range: 'Rank 50+', dot: 'bg-ink-ghost', text: 'text-ink-muted', bar: 'bg-ink-faint' },
 };
 
-const TIER_LABELS = {
-  PRIORITY: 'Priority (1–15)',
-  ACTIVE: 'Active (16–50)',
-  WATCHLIST: 'Watchlist',
-};
+const FILTERS = [
+  { value: 'all', label: 'All' },
+  { value: 'priority', label: 'Priority' },
+  { value: 'oi_up', label: 'OI ↑', title: 'OI change score above 75' },
+  { value: 'iv_up', label: 'IV ↑', title: 'IV change score above 75' },
+];
+
+function Metric({ label, value, tone = 'text-ink' }) {
+  return (
+    <div className="rounded-lg bg-surface border border-line px-3 py-2 min-w-0">
+      <div className="text-[10.5px] text-ink-faint truncate">{label}</div>
+      <div className={`text-[15px] font-semibold num truncate capitalize ${tone}`}>{value}</div>
+    </div>
+  );
+}
 
 function StockRow({ stock, selected, onSelect }) {
-  const scoreColor = stock.tier === 'PRIORITY'
-    ? 'text-green-400'
-    : stock.tier === 'ACTIVE'
-    ? 'text-blue-400'
-    : 'text-slate-400';
-
-  const barColor = stock.tier === 'PRIORITY'
-    ? 'bg-green-500/30'
-    : stock.tier === 'ACTIVE'
-    ? 'bg-blue-500/30'
-    : 'bg-slate-500/30';
+  const meta = TIER_META[stock.tier] ?? TIER_META.WATCHLIST;
+  const score = stock.composite_score;
+  const lot = stock.lot_size != null ? Number(stock.lot_size).toLocaleString('en-IN') : '—';
 
   return (
-    <div
+    <button
       onClick={onSelect}
-      className={`px-3 py-2.5 border-b border-slate-700 cursor-pointer transition-colors ${
-        selected ? 'bg-blue-500/20' : 'hover:bg-slate-800'
+      className={`relative w-full text-left flex items-center gap-3 px-4 py-2.5 border-b border-line/60 transition-colors ${
+        selected ? 'bg-surface-3' : 'hover:bg-surface-2'
       }`}
     >
-      <div className="flex items-center gap-2">
-        {/* Tier dot */}
-        <div className={`w-2 h-2 rounded-full ${TIER_COLORS[stock.tier]}`} />
-
-        {/* Symbol + sector + lot size */}
-        <div className="flex-1 min-w-0">
-          <div className="font-bold text-sm text-slate-100">{stock.symbol}</div>
-          <div className="text-xs text-slate-500">
-            {stock.sector} • {stock.lot_size.toLocaleString()}L
-          </div>
+      {selected && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-brand" />}
+      <div className="min-w-0 flex-1">
+        <div className={`text-[13px] font-medium truncate ${selected ? 'text-ink' : 'text-ink'}`}>{stock.symbol}</div>
+        <div className="text-2xs text-ink-faint truncate">
+          {stock.sector ?? '—'} · Lot {lot}
         </div>
-
-        {/* Score on right */}
-        <div className="text-right">
-          <div className={`font-bold text-sm ${scoreColor}`}>
-            {stock.composite_score.toFixed(1)}
-          </div>
-          <div className={`h-1 w-10 rounded mt-1 ${barColor}`} />
-        </div>
-
-        {/* Rank (muted) */}
-        <div className="text-xs text-slate-600 w-6 text-right">#{stock.rank}</div>
       </div>
-    </div>
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        <span className={`text-[13px] font-semibold num ${meta.text}`}>{score != null ? score.toFixed(1) : '—'}</span>
+        <span className="w-12 h-1 rounded-full bg-surface-3 overflow-hidden">
+          <span className={`block h-full rounded-full ${meta.bar}`} style={{ width: `${Math.max(0, Math.min(100, score ?? 0))}%` }} />
+        </span>
+      </div>
+      <span className="w-8 text-right text-2xs text-ink-ghost num flex-shrink-0">#{stock.rank ?? '—'}</span>
+    </button>
   );
 }
 
@@ -64,118 +61,90 @@ export default function LeftPanel({
   filteredUniverse,
   activeFilter,
   onFilterChange,
+  search,
+  onSearchChange,
   selectedSymbol,
   onSelectSymbol,
+  refreshedAt,
 }) {
-  const scrollRef = useRef(null);
-
-  // Group by tier for visual separators
-  const groupedStocks = useMemo(() => {
+  const grouped = useMemo(() => {
     const groups = {};
-    filteredUniverse.forEach(stock => {
-      if (!groups[stock.tier]) groups[stock.tier] = [];
-      groups[stock.tier].push(stock);
-    });
+    filteredUniverse.forEach((s) => { (groups[s.tier] ??= []).push(s); });
+    Object.values(groups).forEach((g) => g.sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity)));
     return groups;
   }, [filteredUniverse]);
 
-  // Summary metrics
-  const metrics = useMemo(() => {
-    if (!universeData?.active_universe) {
-      return { active: 0, priority: 0, liquid: 0, sector: '' };
-    }
-    const priority = universeData.active_universe.filter(s => s.tier === 'PRIORITY').length;
-    const active = universeData.active_universe.length;
-    return {
-      active,
-      priority,
-      liquid: universeData.total_liquid || 0,
-      sector: universeData.top_sector || '—',
-    };
-  }, [universeData]);
-
-  const lastRefreshTime = useMemo(() => {
-    if (!universeData?.timestamp) return '—';
-    const date = new Date(universeData.timestamp);
-    return date.toLocaleTimeString('en-IN');
-  }, [universeData?.timestamp]);
+  const all = universeData?.active_universe ?? [];
+  const priority = all.filter((s) => s.tier === 'PRIORITY').length;
+  const topSector = universeData?.top_sector && universeData.top_sector !== 'unknown' ? universeData.top_sector : '—';
 
   return (
-    <div className="w-[280px] border-r border-slate-700 flex flex-col bg-slate-900 overflow-hidden">
+    <aside className="w-[300px] flex-shrink-0 border-r border-line bg-panel/50 flex flex-col min-h-0">
       {/* Header */}
-      <div className="border-b border-slate-700 p-3">
-        <h2 className="font-bold text-sm text-slate-100">F&O Universe</h2>
-        <div className="text-xs text-slate-500 mt-1">Last refresh: {lastRefreshTime}</div>
+      <div className="px-4 pt-4 pb-3 border-b border-line space-y-3 flex-shrink-0">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm font-semibold text-ink">Universe</span>
+          <span className="text-2xs text-ink-faint num truncate">{all.length} stocks · {refreshedAt}</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Metric label="Active" value={all.length} />
+          <Metric label="Priority" value={priority} tone="text-up" />
+          <Metric label="Liquid" value={universeData?.total_liquid ?? '—'} tone="text-brand" />
+          <Metric label="Top sector" value={topSector} />
+        </div>
+
+        <div className="relative">
+          <Search className="w-4 h-4 text-ink-ghost absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search symbol or sector"
+            className="input h-8 pl-9 pr-8 text-[13px]"
+            aria-label="Search stocks"
+          />
+          {search && (
+            <button onClick={() => onSearchChange('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink" aria-label="Clear search">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        <Segmented size="xs" ariaLabel="Filter" options={FILTERS} value={activeFilter} onChange={onFilterChange} />
       </div>
 
-      {/* Summary metrics grid */}
-      <div className="grid grid-cols-2 gap-2 p-3 border-b border-slate-700 bg-slate-800/50">
-        <div>
-          <div className="text-2xl font-bold text-slate-100">{metrics.active}</div>
-          <div className="text-xs text-slate-500">Active Universe</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-green-400">{metrics.priority}</div>
-          <div className="text-xs text-slate-500">Priority List</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-blue-400">{metrics.liquid}</div>
-          <div className="text-xs text-slate-500">Liquidity Passed</div>
-        </div>
-        <div>
-          <div className="text-2xl font-bold text-slate-100">{metrics.sector}</div>
-          <div className="text-xs text-slate-500">Top Sector</div>
-        </div>
-      </div>
-
-      {/* Filter pills */}
-      <div className="flex gap-2 p-3 border-b border-slate-700 overflow-x-auto">
-        {[
-          { key: 'all', label: `All ${metrics.active}` },
-          { key: 'priority', label: 'Priority' },
-          { key: 'oi_up', label: 'OI↑' },
-          { key: 'iv_up', label: 'IV↑' },
-        ].map(pill => (
-          <button
-            key={pill.key}
-            onClick={() => onFilterChange(pill.key)}
-            className={`px-2.5 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap ${
-              activeFilter === pill.key
-                ? 'bg-blue-500/30 text-blue-400 border border-blue-500/50'
-                : 'text-slate-400 hover:text-slate-200 bg-slate-700 hover:bg-slate-600'
-            }`}
-          >
-            {pill.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Stock list */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {['PRIORITY', 'ACTIVE', 'WATCHLIST'].map(tier => {
-          const stocks = groupedStocks[tier] || [];
-          if (stocks.length === 0) return null;
-
-          return (
-            <div key={tier}>
-              {/* Tier separator */}
-              <div className="sticky top-0 bg-slate-800 border-b border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                {TIER_LABELS[tier]}
+      {/* List */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {filteredUniverse.length === 0 ? (
+          <div className="px-6 py-10 text-center text-xs text-ink-faint">No stocks match this filter.</div>
+        ) : (
+          TIERS.map((tier) => {
+            const list = grouped[tier] ?? [];
+            if (!list.length) return null;
+            const meta = TIER_META[tier];
+            return (
+              <div key={tier}>
+                <div className="sticky top-0 z-10 flex items-center justify-between px-4 h-8 bg-panel/95 backdrop-blur border-b border-line">
+                  <span className="flex items-center gap-2 label">
+                    <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
+                    {meta.label}
+                    <span className="normal-case tracking-normal text-ink-ghost font-normal">{meta.range}</span>
+                  </span>
+                  <span className="text-2xs text-ink-faint num">{list.length}</span>
+                </div>
+                {list.map((stock) => (
+                  <StockRow
+                    key={stock.symbol}
+                    stock={stock}
+                    selected={selectedSymbol === stock.symbol}
+                    onSelect={() => onSelectSymbol(stock.symbol)}
+                  />
+                ))}
               </div>
-
-              {/* Stocks in this tier */}
-              {stocks.map(stock => (
-                <StockRow
-                  key={stock.symbol}
-                  stock={stock}
-                  selected={selectedSymbol === stock.symbol}
-                  onSelect={() => onSelectSymbol(stock.symbol)}
-                />
-              ))}
-            </div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
-    </div>
+    </aside>
   );
 }

@@ -1,200 +1,263 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState } from 'react';
+import { Layers } from 'lucide-react';
+import { Tabs } from '../common/Tabs';
+import { Badge } from '../common/Badge';
+import { Delta } from '../common/Delta';
+import { Segmented } from '../common/Segmented';
 import { Spinner } from '../common/Spinner';
+import { EmptyState } from '../common/EmptyState';
+import { formatNumber } from '../../utils/formatters';
 
-function ScoreCell({ label, value }) {
-  let color = 'text-red-400';
-  if (value >= 70) color = 'text-green-400';
-  else if (value >= 50) color = 'text-amber-400';
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
+const isNum = (v) => typeof v === 'number' && !Number.isNaN(v);
+const num = (v, dec = 2) => (isNum(v) ? formatNumber(v, dec) : '—');
+const fmtK = (v) => {
+  if (!isNum(v)) return '—';
+  const a = Math.abs(v);
+  if (a >= 1e7) return `${(v / 1e7).toFixed(2)}Cr`;
+  if (a >= 1e5) return `${(v / 1e5).toFixed(2)}L`;
+  if (a >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  return String(v);
+};
+const signColour = (v) => (!isNum(v) || v === 0 ? 'text-ink-faint' : v > 0 ? 'text-up' : 'text-down');
+
+const scoreTone = (v) => (!isNum(v) ? 'neutral' : v >= 70 ? 'up' : v >= 50 ? 'warn' : 'down');
+const TONE_TEXT = { up: 'text-up', warn: 'text-warn', down: 'text-down', neutral: 'text-ink-faint' };
+const TONE_BAR = { up: 'bg-up', warn: 'bg-warn', down: 'bg-down', neutral: 'bg-ink-ghost' };
+const TONE_BADGE = { up: 'success', warn: 'warning', down: 'danger', neutral: 'neutral' };
+
+const SCORE_COMPONENTS = [
+  { key: 'oi_score', label: 'Open interest', hint: 'Depth of outstanding option positions' },
+  { key: 'oi_change_score', label: 'OI change', hint: 'Fresh positioning since previous session' },
+  { key: 'volume_score', label: 'Volume', hint: 'Traded option volume vs. average' },
+  { key: 'price_move_score', label: 'Price move', hint: 'Underlying momentum / range expansion' },
+  { key: 'iv_change_score', label: 'IV change', hint: 'Shift in implied volatility' },
+  { key: 'spread_score', label: 'Spread', hint: 'Bid-ask tightness — higher is cheaper to trade' },
+];
+
+function formatExpiry(exp) {
+  const d = new Date(exp);
+  if (Number.isNaN(d.getTime())) return exp;
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+}
+
+// ── Score breakdown ──────────────────────────────────────────────────────────
+
+function ScoreBreakdown({ stock }) {
   return (
-    <div className="text-center">
-      <div className="text-xs text-slate-500 font-medium">{label}</div>
-      <div className={`text-lg font-bold ${color}`}>{value.toFixed(0)}</div>
+    <div className="card divide-y divide-line">
+      {SCORE_COMPONENTS.map(({ key, label, hint }) => {
+        const v = stock[key];
+        const tone = scoreTone(v);
+        return (
+          <div key={key} className="flex items-center gap-4 px-5 py-3.5">
+            <div className="w-44 min-w-0 flex-shrink-0">
+              <div className="text-[13px] font-medium text-ink">{label}</div>
+              <div className="text-2xs text-ink-faint truncate" title={hint}>{hint}</div>
+            </div>
+            <div className="flex-1 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+              <div className={`h-full rounded-full ${TONE_BAR[tone]}`} style={{ width: `${isNum(v) ? Math.max(0, Math.min(100, v)) : 0}%` }} />
+            </div>
+            <span className={`w-10 text-right text-[15px] font-semibold num ${TONE_TEXT[tone]}`}>
+              {isNum(v) ? v.toFixed(0) : '—'}
+            </span>
+          </div>
+        );
+      })}
+      <div className="flex items-center gap-4 px-5 py-2.5 text-2xs text-ink-faint">
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-up" />≥ 70 strong</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-warn" />50–69 fair</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-down" />&lt; 50 weak</span>
+      </div>
     </div>
   );
 }
 
-function OptionsChainTable({ chainData, maxVisibleRows = 11 }) {
-  const [showMoreAbove, setShowMoreAbove] = useState(0);
-  const [showMoreBelow, setShowMoreBelow] = useState(0);
+// ── Option chain ─────────────────────────────────────────────────────────────
 
-  if (!chainData?.strikes || chainData.strikes.length === 0) {
-    return <div className="p-4 text-slate-400">No options chain data available</div>;
+function MiniStat({ label, value, sub, tone = 'text-ink' }) {
+  return (
+    <div className="card px-4 py-3 min-w-0">
+      <div className="label truncate">{label}</div>
+      <div className={`mt-1 text-[17px] font-semibold num truncate ${tone}`}>{value}</div>
+      {sub && <div className="text-2xs text-ink-faint truncate">{sub}</div>}
+    </div>
+  );
+}
+
+const DEFAULT_ROWS = 11;
+
+function nearestIndex(strikes, target) {
+  if (!isNum(target)) return Math.floor(strikes.length / 2);
+  let best = 0;
+  let bestDist = Infinity;
+  strikes.forEach((s, i) => {
+    const d = Math.abs((s.strike ?? 0) - target);
+    if (d < bestDist) { bestDist = d; best = i; }
+  });
+  return best;
+}
+
+function ChainTable({ chainData }) {
+  const [moreAbove, setMoreAbove] = useState(0);
+  const [moreBelow, setMoreBelow] = useState(0);
+  const strikes = chainData?.strikes ?? [];
+
+  const maxCe = useMemo(() => Math.max(...strikes.map((s) => s.ce_oi || 0), 1), [strikes]);
+  const maxPe = useMemo(() => Math.max(...strikes.map((s) => s.pe_oi || 0), 1), [strikes]);
+
+  if (!strikes.length) {
+    return <EmptyState icon={Layers} title="No option chain" message="No strikes returned for this expiry." />;
   }
 
-  // Find ATM strike
-  const atmStrike = chainData.atm_strike || chainData.spot_price;
+  const atmTarget = chainData.atm_strike ?? chainData.spot_price;
+  const atmIdx = nearestIndex(strikes, atmTarget);
+  const half = Math.floor(DEFAULT_ROWS / 2);
+  const start = Math.max(0, atmIdx - half - moreAbove);
+  const end = Math.min(strikes.length, atmIdx + half + 1 + moreBelow);
+  const visible = strikes.slice(start, end);
+  const spot = chainData.spot_price;
+  const maxPain = chainData.max_pain_strike;
 
-  // Compute OI bar widths
-  const allOI = chainData.strikes.reduce((acc, s) => {
-    acc.ce.push(s.ce_oi);
-    acc.pe.push(s.pe_oi);
-    return acc;
-  }, { ce: [], pe: [] });
-
-  const maxCEOI = Math.max(...allOI.ce, 1);
-  const maxPEOI = Math.max(...allOI.pe, 1);
-
-  // Find ATM index and visible range
-  const atmIndex = chainData.strikes.findIndex(s => Math.abs(s.strike - atmStrike) < 0.01);
-  const defaultRows = 11;
-  const aboveATM = Math.floor(defaultRows / 2);
-  const belowATM = Math.floor(defaultRows / 2);
-
-  const startIdx = Math.max(0, atmIndex - aboveATM - showMoreAbove);
-  const endIdx = Math.min(chainData.strikes.length, atmIndex + belowATM + 1 + showMoreBelow);
-
-  const visibleStrikes = chainData.strikes.slice(startIdx, endIdx);
+  const th = 'px-3 h-8 text-2xs font-medium uppercase tracking-wider text-ink-faint bg-surface border-b border-line whitespace-nowrap';
+  const td = 'px-3 py-2 border-b border-line/60';
 
   return (
-    <div className="space-y-3">
-      {/* OI Summary */}
-      <div className="grid grid-cols-4 gap-3">
-        {[
-          { label: 'Total CE OI', value: chainData.total_ce_oi.toLocaleString() },
-          { label: 'Total PE OI', value: chainData.total_pe_oi.toLocaleString() },
-          {
-            label: 'PCR',
-            value: `${chainData.pcr.toFixed(2)} ${chainData.pcr > 1 ? '(bullish)' : '(bearish)'}`,
-          },
-          { label: 'Max Pain', value: chainData.max_pain_strike.toFixed(0) },
-        ].map(card => (
-          <div key={card.label} className="bg-slate-800 rounded border border-slate-700 p-2">
-            <div className="text-xs text-slate-500 font-medium">{card.label}</div>
-            <div className="text-sm font-bold text-slate-100 mt-1">{card.value}</div>
-          </div>
-        ))}
+    <div className="card overflow-hidden">
+      {start > 0 && (
+        <button onClick={() => setMoreAbove((p) => p + 5)} className="w-full h-8 text-2xs font-medium text-ink-faint hover:text-brand hover:bg-surface-2 border-b border-line transition-colors">
+          Show 5 more strikes above
+        </button>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full border-separate border-spacing-0 text-[12.5px] num min-w-[720px]">
+          <thead>
+            <tr>
+              <th className={`${th} text-right text-down/80`}>OI</th>
+              <th className={`${th} text-right`}>OI Chg</th>
+              <th className={`${th} text-right`}>Volume</th>
+              <th className={`${th} text-right`}>IV</th>
+              <th className={`${th} text-right text-down/80`}>Call LTP</th>
+              <th className={`${th} text-center bg-surface-2 border-x`}>Strike</th>
+              <th className={`${th} text-left text-up/80`}>Put LTP</th>
+              <th className={`${th} text-left`}>IV</th>
+              <th className={`${th} text-left`}>Volume</th>
+              <th className={`${th} text-left`}>OI Chg</th>
+              <th className={`${th} text-left text-up/80`}>OI</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((s) => {
+              const idx = strikes.indexOf(s);
+              const isAtm = idx === atmIdx;
+              const isPain = isNum(maxPain) && Math.abs(s.strike - maxPain) < 0.01;
+              const ceItm = isNum(spot) && s.strike < spot && !isAtm;
+              const peItm = isNum(spot) && s.strike > spot && !isAtm;
+              const ceBar = ((s.ce_oi || 0) / maxCe) * 100;
+              const peBar = ((s.pe_oi || 0) / maxPe) * 100;
+              const ce = ceItm ? 'bg-down/[0.04]' : '';
+              const pe = peItm ? 'bg-up/[0.04]' : '';
+              return (
+                <tr key={s.strike} className={`hover:bg-surface-2/70 transition-colors ${isAtm ? 'bg-warn/[0.06]' : ''}`}>
+                  <td className={`${td} ${ce} relative text-right text-ink-muted`}>
+                    <span aria-hidden className="absolute bottom-1 right-3 h-[3px] rounded-full bg-down/45" style={{ width: `calc((100% - 1.5rem) * ${ceBar / 100})` }} />
+                    {fmtK(s.ce_oi)}
+                  </td>
+                  <td className={`${td} ${ce} text-right ${signColour(s.ce_oi_change)}`}>{isNum(s.ce_oi_change) ? `${s.ce_oi_change > 0 ? '+' : ''}${fmtK(s.ce_oi_change)}` : '—'}</td>
+                  <td className={`${td} ${ce} text-right text-ink-faint`}>{fmtK(s.ce_volume)}</td>
+                  <td className={`${td} ${ce} text-right text-violet`}>{isNum(s.ce_iv) && s.ce_iv ? `${s.ce_iv.toFixed(1)}%` : '—'}</td>
+                  <td className={`${td} ${ce} text-right text-ink font-medium`}>{num(s.ce_ltp)}</td>
+                  <td className={`${td} text-center font-semibold border-x border-line ${isAtm ? 'text-warn bg-warn/[0.08]' : 'text-ink bg-surface-2/60'}`}>
+                    <span className="inline-flex items-center gap-1.5">
+                      {isAtm && <span className="w-1.5 h-1.5 rounded-full bg-warn" />}
+                      {num(s.strike, 0)}
+                      {isPain && <span className="text-[10px] font-semibold text-warn/80" title="Max pain">MP</span>}
+                    </span>
+                  </td>
+                  <td className={`${td} ${pe} text-left text-ink font-medium`}>{num(s.pe_ltp)}</td>
+                  <td className={`${td} ${pe} text-left text-violet`}>{isNum(s.pe_iv) && s.pe_iv ? `${s.pe_iv.toFixed(1)}%` : '—'}</td>
+                  <td className={`${td} ${pe} text-left text-ink-faint`}>{fmtK(s.pe_volume)}</td>
+                  <td className={`${td} ${pe} text-left ${signColour(s.pe_oi_change)}`}>{isNum(s.pe_oi_change) ? `${s.pe_oi_change > 0 ? '+' : ''}${fmtK(s.pe_oi_change)}` : '—'}</td>
+                  <td className={`${td} ${pe} relative text-left text-ink-muted`}>
+                    <span aria-hidden className="absolute bottom-1 left-3 h-[3px] rounded-full bg-up/45" style={{ width: `calc((100% - 1.5rem) * ${peBar / 100})` }} />
+                    {fmtK(s.pe_oi)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-
-      {/* Options Chain Table */}
-      <div className="border border-slate-700 rounded overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-slate-800 border-b border-slate-700">
-                <th className="px-2 py-1.5 text-right text-slate-400 font-medium">CE OI</th>
-                <th className="px-2 py-1.5 text-right text-slate-400 font-medium">CE Chg</th>
-                <th className="px-2 py-1.5 text-right text-slate-400 font-medium">CE Vol</th>
-                <th className="px-2 py-1.5 text-right text-slate-400 font-medium">CE IV%</th>
-                <th className="px-2 py-1.5 text-right text-slate-400 font-medium">CE LTP</th>
-                <th className="px-2 py-1.5 text-center text-slate-400 font-medium">Strike</th>
-                <th className="px-2 py-1.5 text-left text-slate-400 font-medium">PE LTP</th>
-                <th className="px-2 py-1.5 text-left text-slate-400 font-medium">PE IV%</th>
-                <th className="px-2 py-1.5 text-left text-slate-400 font-medium">PE Vol</th>
-                <th className="px-2 py-1.5 text-left text-slate-400 font-medium">PE Chg</th>
-                <th className="px-2 py-1.5 text-left text-slate-400 font-medium">PE OI</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleStrikes.map((strike, idx) => {
-                const isATM = Math.abs(strike.strike - atmStrike) < 0.01;
-                const isMaxPain = Math.abs(strike.strike - chainData.max_pain_strike) < 0.01;
-
-                const bgClass = isATM
-                  ? 'bg-green-900/20'
-                  : isMaxPain
-                  ? 'bg-green-900/10'
-                  : 'hover:bg-slate-800';
-
-                const ceBgWidth = (strike.ce_oi / maxCEOI) * 100;
-                const peBgWidth = (strike.pe_oi / maxPEOI) * 100;
-
-                return (
-                  <tr key={idx} className={`border-b border-slate-700 ${bgClass}`}>
-                    <td className="px-2 py-1.5 text-right text-green-400 font-mono relative">
-                      <div
-                        className="absolute inset-y-0 left-0 bg-green-500/20"
-                        style={{ width: `${ceBgWidth}%` }}
-                      />
-                      <span className="relative">{strike.ce_oi.toLocaleString()}</span>
-                    </td>
-                    <td className="px-2 py-1.5 text-right text-green-400 font-mono">
-                      {strike.ce_oi_change > 0 ? '+' : ''}
-                      {strike.ce_oi_change.toLocaleString()}
-                    </td>
-                    <td className="px-2 py-1.5 text-right text-green-400 font-mono">
-                      {strike.ce_volume.toLocaleString()}
-                    </td>
-                    <td className="px-2 py-1.5 text-right text-green-400 font-mono">
-                      {strike.ce_iv.toFixed(1)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right text-green-400 font-mono">
-                      {strike.ce_ltp.toFixed(2)}
-                    </td>
-
-                    <td className="px-2 py-1.5 text-center text-slate-100 font-bold bg-slate-800">
-                      {strike.strike.toFixed(0)}
-                      {isATM && <span className="text-slate-400 ml-1">◀</span>}
-                    </td>
-
-                    <td className="px-2 py-1.5 text-left text-red-400 font-mono">
-                      {strike.pe_ltp.toFixed(2)}
-                    </td>
-                    <td className="px-2 py-1.5 text-left text-red-400 font-mono">
-                      {strike.pe_iv.toFixed(1)}
-                    </td>
-                    <td className="px-2 py-1.5 text-left text-red-400 font-mono">
-                      {strike.pe_volume.toLocaleString()}
-                    </td>
-                    <td className="px-2 py-1.5 text-left text-red-400 font-mono">
-                      {strike.pe_oi_change > 0 ? '+' : ''}
-                      {strike.pe_oi_change.toLocaleString()}
-                    </td>
-                    <td className="px-2 py-1.5 text-left text-red-400 font-mono relative">
-                      <div
-                        className="absolute inset-y-0 right-0 bg-red-500/20"
-                        style={{ width: `${peBgWidth}%` }}
-                      />
-                      <span className="relative">{strike.pe_oi.toLocaleString()}</span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Show more button */}
-        {endIdx < chainData.strikes.length || startIdx > 0 ? (
-          <div className="flex justify-center gap-3 p-2 bg-slate-800 border-t border-slate-700">
-            {startIdx > 0 && (
-              <button
-                onClick={() => setShowMoreAbove(prev => prev + 5)}
-                className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded text-slate-300"
-              >
-                Show more above
-              </button>
-            )}
-            {endIdx < chainData.strikes.length && (
-              <button
-                onClick={() => setShowMoreBelow(prev => prev + 5)}
-                className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 rounded text-slate-300"
-              >
-                Show more below
-              </button>
-            )}
-          </div>
-        ) : null}
-      </div>
-
-      {/* Legend */}
-      <div className="flex gap-4 text-xs text-slate-400 pt-2">
-        <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded bg-green-500/30" />
-          <span>CE OI</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <div className="w-3 h-3 rounded bg-red-500/30" />
-          <span>PE OI</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="font-bold">◀</span>
-          <span>ATM</span>
-        </div>
+      {end < strikes.length && (
+        <button onClick={() => setMoreBelow((p) => p + 5)} className="w-full h-8 text-2xs font-medium text-ink-faint hover:text-brand hover:bg-surface-2 border-t border-line transition-colors">
+          Show 5 more strikes below
+        </button>
+      )}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 px-4 py-2.5 border-t border-line text-2xs text-ink-faint">
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-warn/40" />ATM</span>
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-down/25" />Call ITM</span>
+        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-up/25" />Put ITM</span>
+        <span className="flex items-center gap-1.5"><span className="font-semibold text-warn/80">MP</span>Max pain</span>
+        <span className="ml-auto num">{visible.length} of {strikes.length} strikes</span>
       </div>
     </div>
   );
 }
+
+function OptionChainTab({ chainData, chainLoading, selectedExpiry, onExpiryChange }) {
+  const expiries = chainData?.available_expiries ?? [];
+  const pcr = chainData?.pcr;
+  const pcrHint = !isNum(pcr) ? null : pcr > 1.3 ? 'Put-heavy' : pcr < 0.7 ? 'Call-heavy' : 'Balanced';
+  const pcrTone = !isNum(pcr) ? 'text-ink' : pcr > 1.3 ? 'text-up' : pcr < 0.7 ? 'text-down' : 'text-ink';
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {expiries.length > 0 ? (
+          <Segmented
+            size="xs"
+            ariaLabel="Expiry"
+            options={expiries.map((e) => ({ value: e, label: formatExpiry(e) }))}
+            value={selectedExpiry}
+            onChange={onExpiryChange}
+          />
+        ) : <span />}
+        <div className="flex items-center gap-3 text-xs text-ink-faint num">
+          {chainLoading && chainData && <Spinner size="xs" />}
+          <span>Spot <span className="text-ink font-medium">{num(chainData?.spot_price)}</span></span>
+          <span className="h-3 border-l border-line" />
+          <span>Lot <span className="text-ink font-medium">{chainData?.lot_size ?? '—'}</span></span>
+        </div>
+      </div>
+
+      {chainLoading && !chainData ? (
+        <div className="flex justify-center py-16"><Spinner /></div>
+      ) : !chainData ? (
+        <EmptyState icon={Layers} title="No option chain available" message="The chain for this stock could not be fetched." />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <MiniStat label="Call OI" value={fmtK(chainData.total_ce_oi)} tone="text-down" />
+            <MiniStat label="Put OI" value={fmtK(chainData.total_pe_oi)} tone="text-up" />
+            <MiniStat label="Put / call ratio" value={isNum(pcr) ? pcr.toFixed(2) : '—'} sub={pcrHint} tone={pcrTone} />
+            <MiniStat
+              label="Max pain"
+              value={num(chainData.max_pain_strike, 0)}
+              tone="text-warn"
+              sub={isNum(chainData.max_pain_strike) && isNum(chainData.spot_price) && chainData.spot_price
+                ? `${(((chainData.max_pain_strike - chainData.spot_price) / chainData.spot_price) * 100).toFixed(2)}% from spot`
+                : null}
+            />
+          </div>
+          <ChainTable key={selectedExpiry ?? 'default'} chainData={chainData} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Panel ────────────────────────────────────────────────────────────────────
 
 export default function RightPanel({
   symbol,
@@ -204,120 +267,71 @@ export default function RightPanel({
   selectedExpiry,
   onExpiryChange,
 }) {
-  // Get stock details from universe data
-  const stockDetail = useMemo(() => {
-    if (!universeData?.active_universe) return null;
-    return universeData.active_universe.find(s => s.symbol === symbol);
-  }, [universeData?.active_universe, symbol]);
+  const [tab, setTab] = useState('score');
+  const stock = useMemo(
+    () => universeData?.active_universe?.find((s) => s.symbol === symbol) ?? null,
+    [universeData?.active_universe, symbol],
+  );
 
-  if (!stockDetail) {
+  if (!stock) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Spinner />
+        <EmptyState title={`${symbol} is no longer in the universe`} message="It may have dropped out on the latest refresh." />
       </div>
     );
   }
 
-  const rankColor = stockDetail.tier === 'PRIORITY'
-    ? 'bg-green-500/20 text-green-400 border-green-500/30'
-    : stockDetail.tier === 'ACTIVE'
-    ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-    : 'bg-slate-700 text-slate-400 border-slate-600';
-
-  const scoreColor = stockDetail.composite_score >= 70
-    ? 'bg-green-500/20 text-green-400 border-green-500/30'
-    : stockDetail.composite_score >= 50
-    ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
-    : 'bg-red-500/20 text-red-400 border-red-500/30';
+  const score = stock.composite_score;
+  const tierTone = stock.tier === 'PRIORITY' ? 'success' : stock.tier === 'ACTIVE' ? 'brand' : 'neutral';
 
   return (
-    <div className="flex-1 flex flex-col bg-slate-900 overflow-hidden">
-      {/* Header — fixed */}
-      <div className="border-b border-slate-700 p-4 bg-slate-800">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h2 className="text-2xl font-bold text-slate-100">{symbol}</h2>
-            <div className="text-sm text-slate-500">{stockDetail.company_name}</div>
+    <div className="flex-1 min-w-0 flex flex-col min-h-0">
+      {/* Header */}
+      <div className="px-6 pt-5 flex-shrink-0">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-xl font-semibold text-ink tracking-tight">{symbol}</h2>
+              {stock.tier && <Badge tone={tierTone}>{stock.tier.charAt(0) + stock.tier.slice(1).toLowerCase()}</Badge>}
+            </div>
+            <div className="text-[13px] text-ink-faint mt-0.5 truncate">
+              {[stock.company_name, stock.sector].filter(Boolean).join(' · ') || '—'}
+            </div>
           </div>
           <div className="text-right">
-            <div className="text-2xl font-bold text-slate-100">
-              ₹{stockDetail.ltp.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-            </div>
-            <div
-              className={`text-sm font-semibold ${
-                stockDetail.price_change_pct >= 0 ? 'text-green-400' : 'text-red-400'
-              }`}
-            >
-              {stockDetail.price_change_pct >= 0 ? '+' : ''}
-              {stockDetail.price_change_pct.toFixed(2)}%
-            </div>
+            <div className="text-xl font-semibold num text-ink">{isNum(stock.ltp) ? `₹${formatNumber(stock.ltp, 2)}` : '—'}</div>
+            {isNum(stock.price_change_pct) && <Delta value={stock.price_change_pct} className="text-[13px] font-medium justify-end" />}
           </div>
         </div>
 
-        {/* Badges */}
-        <div className="flex gap-2">
-          <div
-            className={`px-2 py-1 rounded text-xs font-semibold border ${rankColor}`}
-          >
-            Rank #{stockDetail.rank}
-          </div>
-          <div
-            className={`px-2 py-1 rounded text-xs font-semibold border ${scoreColor}`}
-          >
-            Score {stockDetail.composite_score.toFixed(1)}
-          </div>
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          <Badge tone="neutral">Rank #{stock.rank ?? '—'}</Badge>
+          <Badge tone={TONE_BADGE[scoreTone(score)]}>Score {isNum(score) ? score.toFixed(1) : '—'}</Badge>
+          {stock.lot_size != null && <Badge tone="neutral">Lot {Number(stock.lot_size).toLocaleString('en-IN')}</Badge>}
         </div>
+
+        <Tabs
+          className="mt-4 -mx-6 px-6"
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { id: 'score', label: 'Score breakdown' },
+            { id: 'chain', label: 'Option chain' },
+          ]}
+        />
       </div>
 
-      {/* Score breakdown — fixed */}
-      <div className="border-b border-slate-700 p-4 grid grid-cols-6 gap-3">
-        <ScoreCell label="OI" value={stockDetail.oi_score} />
-        <ScoreCell label="OI Change" value={stockDetail.oi_change_score} />
-        <ScoreCell label="Volume" value={stockDetail.volume_score} />
-        <ScoreCell label="Price Move" value={stockDetail.price_move_score} />
-        <ScoreCell label="IV Change" value={stockDetail.iv_change_score} />
-        <ScoreCell label="Spread" value={stockDetail.spread_score} />
-      </div>
-
-      {/* Options chain — scrollable */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {/* Chain header and expiry pills */}
-        <div className="mb-4">
-          <h3 className="font-semibold text-slate-100 mb-2">Options Chain</h3>
-          <div className="flex items-center gap-2">
-            <div className="flex gap-2">
-              {chainData?.available_expiries?.map(expiry => (
-                <button
-                  key={expiry}
-                  onClick={() => onExpiryChange(expiry)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
-                    selectedExpiry === expiry
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                  }`}
-                >
-                  {new Date(expiry).toLocaleDateString('en-IN', {
-                    month: 'short',
-                    day: 'numeric',
-                  })}
-                </button>
-              ))}
-            </div>
-            <div className="ml-auto text-xs text-slate-400">
-              Spot: ₹{chainData?.spot_price?.toFixed(2)} | Lot: {chainData?.lot_size}
-            </div>
-          </div>
-        </div>
-
-        {/* Chain table */}
-        {chainLoading ? (
-          <div className="flex justify-center p-8">
-            <Spinner />
-          </div>
-        ) : chainData ? (
-          <OptionsChainTable chainData={chainData} />
+      {/* Body */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+        {tab === 'score' ? (
+          <ScoreBreakdown stock={stock} />
         ) : (
-          <div className="text-slate-400 text-sm">No options chain data available</div>
+          <OptionChainTab
+            chainData={chainData}
+            chainLoading={chainLoading}
+            selectedExpiry={selectedExpiry}
+            onExpiryChange={onExpiryChange}
+          />
         )}
       </div>
     </div>

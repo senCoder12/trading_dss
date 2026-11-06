@@ -1,123 +1,139 @@
 import { useState } from 'react';
+import { BellRing, AlertOctagon, AlertTriangle, Info, ShieldCheck, PieChart } from 'lucide-react';
 import { usePolling } from '../../hooks/usePolling';
+import { useIndexMeta, indexLabel } from '../../hooks/useIndexMeta';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
-import { Spinner } from '../common/Spinner';
+import { StatTile } from '../common/StatTile';
+import { Tabs, useTabParam } from '../common/Tabs';
+import { Segmented } from '../common/Segmented';
 import { EmptyState } from '../common/EmptyState';
+import { RowSkeleton } from '../common/Skeleton';
 import { RefreshIndicator } from '../common/RefreshIndicator';
+import { Page, Toolbar } from '../layout/Page';
 import { AnomalyCard } from './AnomalyCard';
 import { REFRESH_INTERVALS } from '../../utils/constants';
-import { CheckCircle } from 'lucide-react';
 
-const SEV_OPTS = [null, 'HIGH', 'MEDIUM', 'LOW'];
-const SEV_ORDER = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+const SEV_OPTS = [
+  { value: 'ALL', label: 'All' },
+  { value: 'HIGH', label: 'High' },
+  { value: 'MEDIUM', label: 'Medium+' },
+  { value: 'LOW', label: 'Low+' },
+];
+const SEV_ORDER = { CRITICAL: -1, HIGH: 0, MEDIUM: 1, LOW: 2 };
 
-export default function AnomalyPage() {
-  const [minSev, setMinSev] = useState(null);
-
-  const { data: dashboard } = usePolling(
-    api.getAnomalyDashboard, REFRESH_INTERVALS.anomalies,
+/** Horizontal bar list: label, count, proportional bar. */
+function BarList({ entries, labelFor = (k) => k, barClass = 'bg-brand/70' }) {
+  const max = Math.max(1, ...entries.map(([, v]) => v));
+  return (
+    <ul className="space-y-3.5">
+      {entries.map(([k, v]) => (
+        <li key={k}>
+          <div className="flex items-center justify-between text-[13px] mb-1.5">
+            <span className="text-ink-muted truncate">{labelFor(k)}</span>
+            <span className="text-ink font-medium num">{v}</span>
+          </div>
+          <div className="h-1.5 rounded-full bg-surface-3 overflow-hidden">
+            <div className={`h-full rounded-full ${barClass}`} style={{ width: `${(v / max) * 100}%` }} />
+          </div>
+        </li>
+      ))}
+    </ul>
   );
-  const { data, loading, error, lastUpdated } = usePolling(
-    api.getActiveAnomalies,
-    REFRESH_INTERVALS.anomalies,
-  );
+}
 
-  const allAnomalies = data?.anomalies ?? [];
-  const anomalies = minSev
-    ? allAnomalies.filter(a => (SEV_ORDER[a.severity] ?? 2) <= (SEV_ORDER[minSev] ?? 2))
-    : allAnomalies;
+function ActiveTab({ data, loading, error, lastUpdated }) {
+  const [minSev, setMinSev] = useState('ALL');
+  const all = data?.anomalies ?? [];
+  const anomalies = minSev === 'ALL'
+    ? all
+    : all.filter((a) => (SEV_ORDER[a.severity] ?? 2) <= (SEV_ORDER[minSev] ?? 2));
 
   return (
-    <div className="p-4 space-y-4">
-      {/* Dashboard summary */}
-      {dashboard && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {[
-            { label: 'Total Active', value: dashboard.total_active, color: dashboard.total_active > 0 ? 'text-red-400' : 'text-green-400' },
-            { label: 'High Severity', value: dashboard.high_severity, color: dashboard.high_severity > 0 ? 'text-red-400' : 'text-slate-200' },
-            { label: 'Medium', value: dashboard.medium_severity, color: dashboard.medium_severity > 0 ? 'text-yellow-400' : 'text-slate-200' },
-            { label: 'Low', value: dashboard.low_severity, color: dashboard.low_severity > 0 ? 'text-blue-400' : 'text-slate-200' },
-          ].map(({ label, value, color }) => (
-            <div key={label} className="bg-slate-800 border border-slate-700 rounded-lg p-3 text-center">
-              <div className={`font-bold text-2xl ${color}`}>{value}</div>
-              <div className="text-slate-500 text-xs mt-0.5">{label}</div>
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="space-y-4">
+      <Toolbar right={<RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />}>
+        <Segmented size="xs" ariaLabel="Minimum severity" options={SEV_OPTS} value={minSev} onChange={setMinSev} />
+      </Toolbar>
 
-      {/* By category + by index */}
-      {dashboard && (Object.keys(dashboard.by_category ?? {}).length > 0 || Object.keys(dashboard.by_index ?? {}).length > 0) && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {Object.keys(dashboard.by_category ?? {}).length > 0 && (
-            <Card title="By Category" className="">
-              <div className="space-y-2">
-                {Object.entries(dashboard.by_category).map(([cat, cnt]) => (
-                  <div key={cat} className="flex items-center justify-between text-sm">
-                    <span className="text-slate-400">{cat}</span>
-                    <span className="text-slate-100 font-semibold">{cnt}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-          {Object.keys(dashboard.by_index ?? {}).length > 0 && (
-            <Card title="By Index" className="">
-              <div className="space-y-2">
-                {Object.entries(dashboard.by_index).map(([idx, cnt]) => (
-                  <div key={idx} className="flex items-center justify-between text-sm">
-                    <span className="text-slate-400">{idx}</span>
-                    <span className="text-slate-100 font-semibold">{cnt}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-        </div>
-      )}
-
-      {/* Active alerts list */}
-      <Card
-        title={`Active Alerts${anomalies.length > 0 ? ` (${anomalies.length})` : ''}`}
-        padding={false}
-        actions={<RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />}
-      >
-        <div className="px-4 py-2.5 border-b border-slate-700 flex items-center gap-2">
-          <span className="text-slate-500 text-xs">Min Severity:</span>
-          {SEV_OPTS.map((s) => (
-            <button
-              key={String(s)}
-              onClick={() => setMinSev(s)}
-              className={`px-2.5 py-0.5 rounded text-xs font-medium transition-colors ${
-                minSev === s
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-              }`}
-            >
-              {s ?? 'All'}
-            </button>
-          ))}
-        </div>
-
-        <div className="p-4">
-          {loading ? (
-            <div className="flex justify-center p-8"><Spinner /></div>
-          ) : !anomalies.length ? (
-            <EmptyState
-              icon={CheckCircle}
-              title="No active alerts"
-              message="All clear — no anomalies detected"
-            />
-          ) : (
-            <div className="space-y-3">
-              {anomalies.map((a) => (
-                <AnomalyCard key={a.id ?? `${a.index_id}-${a.timestamp}`} anomaly={a} />
-              ))}
-            </div>
-          )}
-        </div>
+      <Card padding={false}>
+        {loading && !data ? (
+          <RowSkeleton rows={4} />
+        ) : !anomalies.length ? (
+          <EmptyState
+            icon={ShieldCheck}
+            title="All clear — no anomalies detected"
+            message={all.length
+              ? 'Nothing matches this severity filter.'
+              : 'Volume spikes, OI shifts and price dislocations will show up here as soon as the detector flags them.'}
+          />
+        ) : (
+          <ul className="divide-y divide-line">
+            {anomalies.map((a) => (
+              <AnomalyCard key={a.id ?? `${a.index_id}-${a.timestamp}`} anomaly={a} />
+            ))}
+          </ul>
+        )}
       </Card>
     </div>
+  );
+}
+
+function BreakdownTab({ dashboard }) {
+  const meta = useIndexMeta();
+  const byCat = Object.entries(dashboard?.by_category ?? {}).sort((a, b) => b[1] - a[1]);
+  const byIdx = Object.entries(dashboard?.by_index ?? {}).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <Card title="By category" subtitle="Active anomalies per detector category">
+        {byCat.length
+          ? <BarList entries={byCat} labelFor={(k) => k.replace(/_/g, ' ')} barClass="bg-warn/70" />
+          : <EmptyState icon={PieChart} title="No categories to show" message="Breakdown fills in when anomalies are active." className="py-8" />}
+      </Card>
+      <Card title="By index" subtitle="Where anomalies are concentrated">
+        {byIdx.length
+          ? <BarList entries={byIdx} labelFor={(k) => indexLabel(meta, k)} />
+          : <EmptyState icon={PieChart} title="No indices affected" message="Every tracked index is behaving normally." className="py-8" />}
+      </Card>
+    </div>
+  );
+}
+
+export default function AnomalyPage() {
+  const [tab, setTab] = useTabParam('active');
+  const { data: dashboard } = usePolling(api.getAnomalyDashboard, REFRESH_INTERVALS.anomalies);
+  const { data, loading, error, lastUpdated } = usePolling(api.getActiveAnomalies, REFRESH_INTERVALS.anomalies);
+
+  const d = dashboard ?? {};
+  const has = dashboard != null;
+
+  return (
+    <Page>
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        <StatTile
+          label="Active"
+          icon={BellRing}
+          value={has ? d.total_active ?? 0 : '—'}
+          tone={d.total_active > 0 ? 'brand' : 'default'}
+          sub={has ? (d.total_active > 0 ? 'Open anomalies' : 'Nothing flagged') : null}
+        />
+        <StatTile label="High severity" icon={AlertOctagon} value={has ? d.high_severity ?? 0 : '—'} tone={d.high_severity > 0 ? 'down' : 'default'} />
+        <StatTile label="Medium" icon={AlertTriangle} value={has ? d.medium_severity ?? 0 : '—'} tone={d.medium_severity > 0 ? 'warn' : 'default'} />
+        <StatTile label="Low" icon={Info} value={has ? d.low_severity ?? 0 : '—'} tone={d.low_severity > 0 ? 'info' : 'default'} />
+      </div>
+
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { id: 'active', label: 'Active', count: (data?.anomalies?.length) || undefined },
+          { id: 'breakdown', label: 'Breakdown' },
+        ]}
+      />
+
+      {tab === 'breakdown'
+        ? <BreakdownTab dashboard={dashboard} />
+        : <ActiveTab data={data} loading={loading} error={error} lastUpdated={lastUpdated} />}
+    </Page>
   );
 }

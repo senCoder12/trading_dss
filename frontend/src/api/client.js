@@ -23,6 +23,9 @@ async function del(path) {
 }
 
 export const api = {
+  // Index registry (display names, categories, F&O flag)
+  getIndices: () => get('/indices/'),
+
   // Market
   getMarketPrices: () => get('/market/prices'),
   getIndexPrice: (id) => get(`/market/prices/${id}`),
@@ -38,12 +41,6 @@ export const api = {
 
   // Signals
   getCurrentSignals: () => get('/signals/current'),
-
-  // Shadow model (evaluation only — never traded)
-  getShadowLatest: () => get('/shadow/latest'),
-  getShadowSummary: (date) => get(`/shadow/summary${date ? `?date=${date}` : ''}`),
-  getShadowHistory: (indexId, limit = 200) =>
-    get(`/shadow/history?limit=${limit}${indexId ? `&index_id=${indexId}` : ''}`),
   getSignalDetail: (id) => get(`/signals/current/${id}`),
   getSignalHistory: (days = 7, indexId) =>
     get(`/signals/history?days=${days}${indexId ? `&index_id=${indexId}` : ''}`),

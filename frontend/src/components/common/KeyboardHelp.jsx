@@ -1,35 +1,30 @@
-import { Keyboard } from 'lucide-react';
+import { X } from 'lucide-react';
 
+/** Centered modal listing keyboard shortcuts. Opened with "?" or from the sidebar. */
 export default function KeyboardHelp({ shortcuts, isOpen, onClose }) {
-  return (
-    <>
-      {/* Floating ? button in bottom-right corner */}
-      <button
-        onClick={onClose}
-        className="fixed bottom-4 right-4 z-30 w-8 h-8 rounded-full bg-slate-700 border border-slate-600 text-slate-400 hover:text-slate-200 hover:bg-slate-600 flex items-center justify-center text-xs font-bold transition-colors"
-        title="Keyboard shortcuts (?)"
-      >
-        <Keyboard className="w-4 h-4" />
-      </button>
+  if (!isOpen) return null;
 
-      {/* Shortcuts popup */}
-      {isOpen && (
-        <div className="fixed bottom-14 right-4 z-40 bg-slate-800 border border-slate-700 rounded-lg shadow-xl p-4 w-56">
-          <h3 className="text-slate-100 text-xs font-semibold mb-3 tracking-wide uppercase">
-            Keyboard Shortcuts
-          </h3>
-          <div className="space-y-1.5">
-            {shortcuts.map(({ key, label }) => (
-              <div key={key} className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">{label}</span>
-                <kbd className="px-1.5 py-0.5 bg-slate-700 border border-slate-600 rounded text-slate-300 font-mono text-[10px]">
-                  {key}
-                </kbd>
-              </div>
-            ))}
-          </div>
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="relative card shadow-pop w-full max-w-sm animate-fade-in">
+        <div className="card-header">
+          <h3 className="card-title">Keyboard shortcuts</h3>
+          <button onClick={onClose} className="icon-btn w-7 h-7" aria-label="Close">
+            <X className="w-4 h-4" />
+          </button>
         </div>
-      )}
-    </>
+        <div className="p-2">
+          {shortcuts.map(({ key, label }) => (
+            <div key={key} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-surface-2 text-[13px]">
+              <span className="text-ink-muted">{label}</span>
+              <kbd className="min-w-[24px] h-6 px-1.5 inline-flex items-center justify-center rounded-md bg-surface-3 border border-line-strong text-ink-muted font-mono text-2xs">
+                {key}
+              </kbd>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

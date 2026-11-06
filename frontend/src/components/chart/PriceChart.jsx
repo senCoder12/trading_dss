@@ -4,6 +4,7 @@ import { api } from '../../api/client';
 import { applyIndicators, toChartTime } from './IndicatorOverlay';
 import ChartLegend from './ChartLegend';
 import { Spinner } from '../common/Spinner';
+import { COLORS, CHART_COLORS } from '../../utils/constants';
 
 // All indicators fetched at once so toggling never re-fetches
 const ALL_INDICATOR_IDS = ['ema9', 'ema20', 'ema50', 'ema200', 'bb', 'vwap'];
@@ -17,20 +18,16 @@ const LIVE_UPDATE_MS = 10_000;
 /** Transform API price history → lightweight-charts OHLCV array */
 function transformPriceData(data, timeframe) {
   const isDaily = timeframe === '1d';
-  return (data?.bars ?? [])
-    .filter(b => b.open != null && b.close != null)
-    .map(b => ({
-      time: toChartTime(b.timestamp, isDaily),
-      open:   b.open,
-      high:   b.high,
-      low:    b.low,
-      close:  b.close,
-      volume: b.volume ?? 0,
-    }))
-    .filter(b => b.time != null)
-    .sort((a, b) =>
-      typeof a.time === 'string' ? a.time.localeCompare(b.time) : a.time - b.time,
-    );
+  const seen = new Map();
+  for (const b of (data?.bars ?? [])) {
+    if (b.open == null || b.close == null) continue;
+    const time = toChartTime(b.timestamp, isDaily);
+    if (time == null) continue;
+    seen.set(time, { time, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume ?? 0 });
+  }
+  return [...seen.values()].sort((a, b) =>
+    typeof a.time === 'string' ? a.time.localeCompare(b.time) : a.time - b.time,
+  );
 }
 
 /** Round a Unix-second timestamp down to the nearest timeframe boundary */
@@ -115,21 +112,22 @@ export default function PriceChart({
       width:  el.clientWidth,
       height,
       layout: {
-        background: { type: ColorType.Solid, color: '#0f172a' },
-        textColor: '#94a3b8',
+        background: { type: ColorType.Solid, color: COLORS.surface },
+        textColor: COLORS.inkFaint,
         fontSize: 11,
+        fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
       },
       grid: {
-        vertLines: { color: '#1e293b' },
-        horzLines: { color: '#1e293b' },
+        vertLines: { color: CHART_COLORS.grid },
+        horzLines: { color: CHART_COLORS.grid },
       },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: {
-        borderColor: '#334155',
+        borderColor: COLORS.line,
         scaleMargins: { top: 0.05, bottom: 0.2 },
       },
       timeScale: {
-        borderColor: '#334155',
+        borderColor: COLORS.line,
         timeVisible: !isDaily,
         secondsVisible: false,
         rightOffset: 8,
@@ -140,12 +138,12 @@ export default function PriceChart({
 
     // ── Candlestick series ───────────────────────────────────────────────────
     const candleSeries = chart.addCandlestickSeries({
-      upColor:        '#22c55e',
-      downColor:      '#ef4444',
-      borderUpColor:  '#22c55e',
-      borderDownColor:'#ef4444',
-      wickUpColor:    '#22c55e',
-      wickDownColor:  '#ef4444',
+      upColor:        COLORS.up,
+      downColor:      COLORS.down,
+      borderUpColor:  COLORS.up,
+      borderDownColor:COLORS.down,
+      wickUpColor:    COLORS.up,
+      wickDownColor:  COLORS.down,
     });
     candleSeries.setData(priceData);
 
@@ -154,6 +152,8 @@ export default function PriceChart({
       const volSeries = chart.addHistogramSeries({
         priceFormat:  { type: 'volume' },
         priceScaleId: 'volume',
+        lastValueVisible: false,
+        priceLineVisible: false,
       });
       try {
         volSeries.priceScale().applyOptions({
@@ -165,7 +165,7 @@ export default function PriceChart({
         priceData.map(d => ({
           time:  d.time,
           value: d.volume,
-          color: d.close >= d.open ? '#22c55e28' : '#ef444428',
+          color: d.close >= d.open ? `${COLORS.up}30` : `${COLORS.down}30`,
         })),
       );
     }
@@ -255,13 +255,13 @@ export default function PriceChart({
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="bg-slate-900 rounded-lg border border-slate-700 overflow-hidden relative">
+    <div className="relative overflow-hidden">
       <ChartLegend values={legendValues} />
 
       {/* Loading spinner */}
       {loading && (
         <div
-          className="absolute inset-0 top-7 flex items-center justify-center z-10 bg-slate-900/70"
+          className="absolute inset-0 top-8 flex items-center justify-center z-10 bg-surface/70"
         >
           <Spinner />
         </div>
@@ -270,16 +270,16 @@ export default function PriceChart({
       {/* Empty state */}
       {!loading && priceData.length === 0 && indexId && (
         <div
-          className="flex items-center justify-center text-slate-500 text-sm"
+          className="flex items-center justify-center text-ink-faint text-sm"
           style={{ height }}
         >
-          No price data available for {indexId} · {timeframe}
+          No price data for {indexId} on the {timeframe} timeframe
         </div>
       )}
 
       {!indexId && (
         <div
-          className="flex items-center justify-center text-slate-600 text-sm"
+          className="flex items-center justify-center text-ink-faint text-sm"
           style={{ height }}
         >
           Select an index to view the price chart

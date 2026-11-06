@@ -2,34 +2,93 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Dark scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #1e293b; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #475569; }
-* { scrollbar-width: thin; scrollbar-color: #334155 #1e293b; }
-
-/* Smooth number transitions */
-.num-transition {
-  transition: color 0.3s ease;
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-canvas text-ink antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  ::selection { background: rgb(91 140 255 / 0.3); }
 }
 
-/* Table hover */
-.table-row-hover:hover { background-color: rgba(51, 65, 85, 0.4); }
+/* Scrollbars */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #232b37; border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #313b4a; background-clip: content-box; border: 2px solid transparent; }
+* { scrollbar-width: thin; scrollbar-color: #232b37 transparent; }
 
-/* Price tick flash — broker-style green/red highlight on every update */
+/* ── Components ───────────────────────────────────────────────────────────── */
+@layer components {
+  .num { font-variant-numeric: tabular-nums; }
+
+  .card { @apply bg-surface border border-line rounded-xl; }
+  .card-header { @apply flex items-center justify-between gap-3 px-5 py-3.5 border-b border-line; }
+  .card-title { @apply text-sm font-semibold text-ink tracking-tight; }
+
+  .label { @apply text-2xs font-medium uppercase tracking-wider text-ink-faint; }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium
+      transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40
+      disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary   { @apply bg-brand text-white hover:bg-brand-strong; }
+  .btn-secondary { @apply bg-surface-2 border border-line text-ink hover:bg-surface-3 hover:border-line-strong; }
+  .btn-ghost     { @apply text-ink-muted hover:text-ink hover:bg-surface-2; }
+  .btn-danger    { @apply bg-down/10 text-down border border-down/30 hover:bg-down/20; }
+  .btn-success   { @apply bg-up/10 text-up border border-up/30 hover:bg-up/20; }
+  .icon-btn {
+    @apply inline-flex items-center justify-center w-8 h-8 rounded-lg text-ink-faint
+      hover:text-ink hover:bg-surface-2 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40;
+  }
+
+  .input {
+    @apply h-9 w-full rounded-lg bg-canvas border border-line px-3 text-sm text-ink
+      placeholder:text-ink-ghost focus:outline-none focus:border-brand/70 focus:ring-2 focus:ring-brand/20 transition-colors;
+  }
+  .select { @apply input pr-8 appearance-none cursor-pointer; }
+
+  /* Data table */
+  .tbl { @apply w-full text-[13px] border-collapse; }
+  .tbl thead th {
+    @apply px-4 py-2.5 text-2xs font-medium uppercase tracking-wider text-ink-faint text-left
+      bg-surface border-b border-line whitespace-nowrap;
+  }
+  .tbl tbody td { @apply px-4 py-3 border-b border-line/70 text-ink-muted whitespace-nowrap; }
+  .tbl tbody tr { @apply transition-colors; }
+  .tbl tbody tr:hover { @apply bg-surface-2/70; }
+  .tbl tbody tr:last-child td { @apply border-b-0; }
+  .tbl .r { @apply text-right; }
+}
+
+/* ── Animations ───────────────────────────────────────────────────────────── */
+
+/* Price tick flash — green/red highlight on every update */
 @keyframes flash-up {
-  0%   { color: #86efac; background-color: rgba(74, 222, 128, 0.18); }
+  0%   { color: #5ee0b0; background-color: rgb(34 195 142 / 0.18); }
   100% { color: inherit; background-color: transparent; }
 }
 @keyframes flash-down {
-  0%   { color: #fca5a5; background-color: rgba(248, 113, 113, 0.18); }
+  0%   { color: #ff8a8f; background-color: rgb(240 82 90 / 0.18); }
   100% { color: inherit; background-color: transparent; }
 }
 
-/* Notification toast slide-in */
 @keyframes slide-in {
-  from { transform: translateX(100%); opacity: 0; }
+  from { transform: translateX(16px); opacity: 0; }
   to   { transform: translateX(0);    opacity: 1; }
 }
-.animate-slide-in { animation: slide-in 0.3s ease-out; }
+.animate-slide-in { animation: slide-in 0.25s ease-out; }
+
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.animate-drawer-in { animation: drawer-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fade-in 0.2s ease-out; }

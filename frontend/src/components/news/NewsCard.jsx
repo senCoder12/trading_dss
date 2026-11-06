@@ -1,78 +1,85 @@
 import { ExternalLink } from 'lucide-react';
 import { Badge } from '../common/Badge';
 import { timeAgo } from '../../utils/formatters';
-import { SENTIMENT_LABELS } from '../../utils/constants';
 
-function sentimentBar(score) {
-  // score: -1 to 1
-  const pct = ((score + 1) / 2) * 100;
-  const color = score > 0.1 ? 'bg-green-500' : score < -0.1 ? 'bg-red-500' : 'bg-slate-500';
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="text-slate-500 text-[10px]">Bear</span>
-      <div className="flex-1 h-1 bg-slate-700 rounded-full overflow-hidden">
-        <div className={`h-full ${color}`} style={{ width: `${Math.max(2, pct)}%` }} />
-      </div>
-      <span className="text-slate-500 text-[10px]">Bull</span>
-    </div>
-  );
+function sentimentInfo(score) {
+  if (score == null) return null;
+  if (score > 0.2) return { label: 'Bullish', cls: 'bg-up/10 text-up ring-up/25' };
+  if (score > 0.05) return { label: 'Mild bull', cls: 'bg-up/10 text-up ring-up/20' };
+  if (score < -0.2) return { label: 'Bearish', cls: 'bg-down/10 text-down ring-down/25' };
+  if (score < -0.05) return { label: 'Mild bear', cls: 'bg-down/10 text-down ring-down/20' };
+  return { label: 'Neutral', cls: 'bg-ink/5 text-ink-muted ring-ink/10' };
 }
 
-export function NewsCard({ article }) {
-  const { title, summary, source, url, published_at, sentiment, impact_category, related_indices } = article;
+/** Feeds often repeat the headline as the summary — strip it so rows don't say everything twice. */
+function cleanSummary(title, summary) {
+  if (!summary) return null;
+  const norm = (x) => x.toLowerCase().replace(/\s+/g, ' ').trim();
+  const t = norm(title ?? '');
+  let s = summary.trim();
+  if (t && norm(s).startsWith(t)) s = s.slice(title.trim().length).replace(/^[\s:.\-–—|]+/, '');
+  return s.length >= 24 ? s : null;
+}
 
-  const sentLabel = sentiment != null
-    ? (sentiment > 0.2 ? 'BULLISH' : sentiment > 0.05 ? 'SLIGHTLY_BULLISH' : sentiment < -0.2 ? 'BEARISH' : sentiment < -0.05 ? 'SLIGHTLY_BEARISH' : 'NEUTRAL')
-    : 'NEUTRAL';
-  const sentInfo = SENTIMENT_LABELS[sentLabel] ?? SENTIMENT_LABELS.NEUTRAL;
+/** One news row inside a divide-y list — no own border. */
+export function NewsCard({ article }) {
+  const { title, source, url, published_at, sentiment, impact_category, related_indices } = article;
+  const summary = cleanSummary(title, article.summary);
+  const sent = sentimentInfo(sentiment);
+  const related = related_indices ?? [];
+  const shown = related.slice(0, 3);
+  const extra = related.length - shown.length;
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-lg p-3 space-y-2 hover:border-slate-600 transition-colors">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2 flex-1 min-w-0">
+    <li className="flex items-start gap-4 px-5 py-4 hover:bg-surface-2/50 transition-colors">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start gap-2.5">
           {impact_category && (
-            <Badge variant={impact_category} size="xs" className="flex-shrink-0 mt-0.5">
+            <Badge variant={impact_category} kind="severity" size="xs" className="mt-0.5 flex-shrink-0">
               {impact_category}
             </Badge>
           )}
-          <h4 className="text-slate-200 text-sm leading-snug">{title}</h4>
+          {url ? (
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="group text-[13.5px] font-medium text-ink leading-snug hover:text-brand transition-colors"
+            >
+              {title}
+              <ExternalLink className="inline w-3 h-3 ml-1.5 -mt-0.5 text-ink-ghost group-hover:text-brand" />
+            </a>
+          ) : (
+            <h4 className="text-[13.5px] font-medium text-ink leading-snug">{title}</h4>
+          )}
         </div>
-        {url && (
-          <a href={url} target="_blank" rel="noreferrer" className="text-slate-500 hover:text-blue-400 flex-shrink-0">
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
+
+        {summary && (
+          <p className="text-[13px] text-ink-faint leading-relaxed line-clamp-2 mt-1.5">{summary}</p>
         )}
+
+        <div className="flex items-center gap-2 flex-wrap mt-2 text-2xs text-ink-faint">
+          {source && <span className="text-ink-muted">{source}</span>}
+          {source && <span className="text-ink-ghost">·</span>}
+          <span>{timeAgo(published_at)}</span>
+          {shown.length > 0 && <span className="text-ink-ghost">·</span>}
+          {shown.map((id) => (
+            <Badge key={id} tone="neutral" size="xs">{id.replace(/_/g, ' ')}</Badge>
+          ))}
+          {extra > 0 && <span className="text-ink-ghost">+{extra}</span>}
+        </div>
       </div>
 
-      {/* Summary */}
-      {summary && (
-        <p className="text-slate-400 text-xs leading-relaxed line-clamp-2">{summary}</p>
-      )}
-
-      {/* Sentiment bar */}
-      {sentiment != null && (
-        <div className="space-y-1">
-          {sentimentBar(sentiment)}
-          <div className="flex items-center justify-between text-[10px]">
-            <span className={sentInfo.color}>{sentInfo.label}</span>
-            <span className="text-slate-600 font-mono">{sentiment.toFixed(3)}</span>
-          </div>
+      {sent && (
+        <div className="flex flex-col items-end gap-1 flex-shrink-0 pt-0.5">
+          <span className={`inline-flex items-center h-[22px] px-2 rounded-md text-2xs font-medium ring-1 ring-inset ${sent.cls}`}>
+            {sent.label}
+          </span>
+          <span className="text-2xs text-ink-ghost num">
+            {sentiment > 0 ? '+' : ''}{sentiment.toFixed(2)}
+          </span>
         </div>
       )}
-
-      {/* Footer */}
-      <div className="flex items-center gap-2 flex-wrap text-[10px] text-slate-500">
-        {source && <span>{source}</span>}
-        <span>·</span>
-        <span>{timeAgo(published_at)}</span>
-        {related_indices?.length > 0 && (
-          <>
-            <span>·</span>
-            <span className="text-slate-400">{related_indices.join(', ')}</span>
-          </>
-        )}
-      </div>
-    </div>
+    </li>
   );
 }

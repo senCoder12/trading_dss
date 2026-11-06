@@ -1,194 +1,265 @@
 import { useState } from 'react';
+import { Power, PowerOff, AlertTriangle, Store, CalendarClock, Timer, Clock3, Server, Database } from 'lucide-react';
 import { usePolling } from '../../hooks/usePolling';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
-import { Spinner } from '../common/Spinner';
 import { Badge } from '../common/Badge';
+import { StatTile } from '../common/StatTile';
+import { Tabs, useTabParam } from '../common/Tabs';
+import { EmptyState } from '../common/EmptyState';
+import { Skeleton } from '../common/Skeleton';
 import { RefreshIndicator } from '../common/RefreshIndicator';
+import { Page, Toolbar } from '../layout/Page';
 import { ComponentHealth } from './ComponentHealth';
 import { REFRESH_INTERVALS } from '../../utils/constants';
-import { AlertTriangle, Power, PowerOff, Database, Activity } from 'lucide-react';
-import { timeAgo } from '../../utils/formatters';
+import { formatISTDateTime } from '../../utils/formatters';
 
-function DataFreshnessRow({ row }) {
-  const age = row.age_seconds;
-  const stale = age != null && age > 300;
-  const fresh = age != null && age < 60;
+function formatAge(sec) {
+  if (sec == null) return '—';
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+  return `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h`;
+}
+
+function freshness(sec, marketOpen) {
+  if (sec == null) return { label: 'Unknown', tone: 'neutral', cls: 'text-ink-faint' };
+  if (sec < 60) return { label: 'Fresh', tone: 'success', cls: 'text-up' };
+  if (sec < 300) return { label: 'Lagging', tone: 'warning', cls: 'text-warn' };
+  // Outside market hours old data is expected — don't paint it as an error.
+  return marketOpen
+    ? { label: 'Stale', tone: 'danger', cls: 'text-down' }
+    : { label: 'Idle', tone: 'neutral', cls: 'text-ink-muted' };
+}
+
+const titleCase = (s) => s?.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+function KillSwitchCard({ status, onChanged }) {
+  const [reason, setReason] = useState('');
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const active = status?.kill_switch_active ?? false;
+
+  async function run(fn) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+      onChanged?.();
+    } catch (e) {
+      setErr(e.message || 'Request failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const activate = () => run(async () => {
+    await api.activateKillSwitch(reason.trim() || 'Manual activation');
+    setReason('');
+    setConfirming(false);
+  });
+  const deactivate = () => run(async () => {
+    await api.deactivateKillSwitch();
+    setConfirming(false);
+  });
+
   return (
-    <div className="flex items-center justify-between py-1.5 border-b border-slate-700/30 text-xs">
-      <div className="flex items-center gap-2">
-        <Database className="w-3.5 h-3.5 text-slate-500" />
-        <span className="text-slate-400 font-mono">{row.table}</span>
+    <section className={`card p-5 ${active ? 'border-down/40 bg-down/[0.05]' : ''}`}>
+      <div className="flex flex-wrap items-center gap-4">
+        <div className={`w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0 ${active ? 'bg-down/15 text-down' : 'bg-up/10 text-up'}`}>
+          {active ? <PowerOff className="w-5 h-5" /> : <Power className="w-5 h-5" />}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-ink">Kill switch</h3>
+            <Badge tone={active ? 'danger' : 'success'} size="xs" dot>{active ? 'Active' : 'Inactive'}</Badge>
+          </div>
+          <p className={`text-[13px] mt-0.5 ${active ? 'text-down' : 'text-ink-faint'}`}>
+            {active
+              ? `All trading halted — ${status?.kill_switch_reason ?? 'no reason given'}`
+              : 'Trading allowed. Activate to halt all new signals and entries immediately.'}
+          </p>
+          {err && <p className="text-xs text-down mt-1">{err}</p>}
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {active ? (
+            <button onClick={deactivate} disabled={busy} className="btn btn-success">
+              <Power className="w-4 h-4" />
+              {busy ? 'Working…' : 'Deactivate'}
+            </button>
+          ) : confirming ? (
+            <>
+              <input
+                autoFocus
+                className="input h-8 w-56"
+                placeholder="Reason (required)"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && reason.trim()) activate();
+                  if (e.key === 'Escape') { setConfirming(false); setReason(''); }
+                }}
+              />
+              <button onClick={activate} disabled={busy || !reason.trim()} className="btn btn-danger">
+                {busy ? 'Activating…' : 'Confirm'}
+              </button>
+              <button onClick={() => { setConfirming(false); setReason(''); }} className="btn btn-ghost">
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button onClick={() => setConfirming(true)} className="btn btn-danger">
+              <AlertTriangle className="w-4 h-4" />
+              Activate kill switch
+            </button>
+          )}
+        </div>
       </div>
-      <div className={`font-mono ${fresh ? 'text-green-400' : stale ? 'text-red-400' : 'text-yellow-400'}`}>
-        {age != null ? (age < 60 ? `${age}s` : `${Math.floor(age / 60)}m ${age % 60}s`) : '--'}
-      </div>
+    </section>
+  );
+}
+
+function ComponentsTab({ health, loading, error, lastUpdated }) {
+  const components = health?.components ?? [];
+  return (
+    <div className="space-y-4">
+      <Toolbar right={<RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />}>
+        {health?.overall_status && (
+          <div className="flex items-center gap-2 text-[13px]">
+            <span className="text-ink-faint">Overall</span>
+            <Badge variant={health.overall_status} dot>{health.overall_status}</Badge>
+          </div>
+        )}
+        {health?.db_size && (
+          <div className="flex items-center gap-1.5 text-[13px] text-ink-faint">
+            <Database className="w-3.5 h-3.5" />
+            Database <span className="text-ink-muted num">{health.db_size}</span>
+          </div>
+        )}
+      </Toolbar>
+
+      {loading && !health ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }, (_, i) => <Skeleton key={i} height="84px" className="rounded-xl" />)}
+        </div>
+      ) : components.length ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {components.map((c) => <ComponentHealth key={c.component} component={c} />)}
+        </div>
+      ) : (
+        <Card><EmptyState icon={Server} title="No component data" message="Components report in once the engine is running." /></Card>
+      )}
     </div>
   );
 }
 
-export default function SystemPage() {
-  const [killReason, setKillReason] = useState('');
-  const [confirming, setConfirming] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
+function FreshnessTab({ rows, marketOpen }) {
+  const stale = (rows ?? []).filter((r) => r.age_seconds >= 300).length;
+  const subtitle = rows?.length
+    ? `${stale} of ${rows.length} tables older than 5 min${!marketOpen && stale ? ' — expected while the market is closed' : ''}`
+    : 'Age of the newest row in each table';
+  return (
+    <Card
+      title="Data freshness"
+      subtitle={subtitle}
+      padding={false}
+      actions={
+        <div className="hidden sm:flex items-center gap-3 text-2xs text-ink-faint">
+          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-up" />&lt; 1m</span>
+          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-warn" />&lt; 5m</span>
+          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-down" />older</span>
+        </div>
+      }
+    >
+      {!rows?.length ? (
+        <EmptyState icon={Database} title="No freshness data" />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Table</th>
+                <th>Latest row</th>
+                <th className="r">Age</th>
+                <th className="r">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const f = freshness(r.age_seconds, marketOpen);
+                return (
+                  <tr key={r.table}>
+                    <td className="font-mono text-xs text-ink">{r.table}</td>
+                    <td className="num">{r.latest_timestamp ? formatISTDateTime(r.latest_timestamp) : '—'}</td>
+                    <td className={`r num font-medium ${f.cls}`}>{formatAge(r.age_seconds)}</td>
+                    <td className="r"><Badge tone={f.tone} size="xs">{f.label}</Badge></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
 
+export default function SystemPage() {
+  const [tab, setTab] = useTabParam('components');
   const { data: health, loading: healthLoading, lastUpdated: healthTs, error: healthErr } = usePolling(
     api.getSystemHealth, REFRESH_INTERVALS.system,
   );
-  const { data: status, loading: statusLoading, lastUpdated: statusTs } = usePolling(
-    api.getSystemStatus, REFRESH_INTERVALS.system,
-  );
+  const { data: status, refetch: refetchStatus } = usePolling(api.getSystemStatus, REFRESH_INTERVALS.system);
 
-  const killActive = status?.kill_switch_active ?? false;
-
-  async function handleKillSwitch() {
-    if (!killActive && !killReason.trim()) return;
-    setActionLoading(true);
-    try {
-      if (killActive) {
-        await api.deactivateKillSwitch();
-        setConfirming(false);
-      } else {
-        await api.activateKillSwitch(killReason.trim() || 'Manual activation');
-        setKillReason('');
-        setConfirming(false);
-      }
-    } finally {
-      setActionLoading(false);
-    }
-  }
+  const up = status?.uptime_seconds;
+  const isOpen = status?.market_status === 'OPEN';
 
   return (
-    <div className="p-4 space-y-4">
-      {/* Kill switch — MOST PROMINENT */}
-      <div className={`rounded-lg border p-4 ${killActive
-        ? 'bg-red-500/10 border-red-500/50'
-        : 'bg-slate-800 border-slate-700'}`}
-      >
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-3">
-            {killActive ? (
-              <PowerOff className="w-6 h-6 text-red-400" />
-            ) : (
-              <Power className="w-6 h-6 text-green-400" />
-            )}
-            <div>
-              <div className="text-slate-100 font-bold">Kill Switch</div>
-              <div className={`text-sm ${killActive ? 'text-red-400' : 'text-green-400'}`}>
-                {killActive ? `ACTIVE — ${status.kill_switch_reason ?? 'All trading halted'}` : 'INACTIVE — Trading allowed'}
-              </div>
-            </div>
-          </div>
+    <Page>
+      <KillSwitchCard status={status} onChanged={refetchStatus} />
 
-          {killActive ? (
-            <button
-              onClick={() => { setConfirming(false); handleKillSwitch(); }}
-              disabled={actionLoading}
-              className="px-4 py-2 bg-green-500/20 text-green-400 border border-green-500/40 rounded text-sm font-medium hover:bg-green-500/30 transition-colors disabled:opacity-50"
-            >
-              {actionLoading ? 'Working...' : 'Deactivate'}
-            </button>
-          ) : confirming ? (
-            <div className="flex items-center gap-2 flex-wrap">
-              <input
-                className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-slate-200 w-48 focus:outline-none focus:border-red-500"
-                placeholder="Reason..."
-                value={killReason}
-                onChange={(e) => setKillReason(e.target.value)}
-              />
-              <button
-                onClick={handleKillSwitch}
-                disabled={actionLoading || !killReason.trim()}
-                className="px-3 py-1.5 bg-red-500/20 text-red-400 border border-red-500/40 rounded text-sm font-medium hover:bg-red-500/30 transition-colors disabled:opacity-50"
-              >
-                {actionLoading ? 'Activating...' : 'Confirm'}
-              </button>
-              <button
-                onClick={() => { setConfirming(false); setKillReason(''); }}
-                className="px-3 py-1.5 text-slate-400 hover:text-slate-200 text-sm"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirming(true)}
-              className="px-4 py-2 bg-red-500/20 text-red-400 border border-red-500/40 rounded text-sm font-medium hover:bg-red-500/30 transition-colors"
-            >
-              <div className="flex items-center gap-1.5">
-                <AlertTriangle className="w-4 h-4" /> Activate Kill Switch
-              </div>
-            </button>
-          )}
-        </div>
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        <StatTile
+          label="Market"
+          icon={Store}
+          value={status ? (isOpen ? 'Open' : titleCase(status.market_status?.toLowerCase()) ?? '—') : '—'}
+          tone={isOpen ? 'up' : 'default'}
+          sub={status ? 'NSE / BSE cash & F&O' : null}
+        />
+        <StatTile
+          label="Session"
+          icon={CalendarClock}
+          value={status?.market_session ? titleCase(status.market_session) : '—'}
+        />
+        <StatTile
+          label="Uptime"
+          icon={Timer}
+          value={up != null ? `${Math.floor(up / 3600)}h ${Math.floor((up % 3600) / 60)}m` : '—'}
+          sub={up != null ? 'Since last engine start' : null}
+        />
+        <StatTile
+          label="Next event"
+          icon={Clock3}
+          value={status?.time_remaining ?? '—'}
+          sub={status?.next_event ? `until ${status.next_event.replace(/_/g, ' ')}` : null}
+        />
       </div>
 
-      {/* Market + system status */}
-      {status && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {[
-            { label: 'Market', value: status.market_status, color: status.market_status === 'OPEN' ? 'text-green-400' : 'text-slate-400' },
-            { label: 'Uptime', value: status.uptime_seconds != null ? `${Math.floor(status.uptime_seconds / 3600)}h ${Math.floor((status.uptime_seconds % 3600) / 60)}m` : '--', color: 'text-slate-200' },
-            { label: 'Session', value: status.market_session ?? '--', color: 'text-slate-300' },
-            { label: 'Time Remaining', value: status.time_remaining ?? '--', color: 'text-slate-300' },
-          ].map(({ label, value, color }) => (
-            <div key={label} className="bg-slate-800 border border-slate-700 rounded-lg p-3 text-center">
-              <div className={`font-bold text-base ${color}`}>{value}</div>
-              <div className="text-slate-500 text-xs mt-0.5">{label}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { id: 'components', label: 'Components', count: health?.components?.length || undefined },
+          { id: 'freshness', label: 'Data freshness' },
+        ]}
+      />
 
-      {/* Component health grid */}
-      <Card
-        title="Component Health"
-        padding={false}
-        actions={<RefreshIndicator lastUpdated={healthTs} error={healthErr} loading={healthLoading} />}
-      >
-        <div className="p-4">
-          {healthLoading && !health ? (
-            <div className="flex justify-center p-6"><Spinner /></div>
-          ) : (
-            <>
-              {health?.overall_status && (
-                <div className="flex items-center gap-2 mb-4">
-                  <span className="text-slate-400 text-xs">Overall:</span>
-                  <Badge variant={health.overall_status}>{health.overall_status}</Badge>
-                  {health.db_size && (
-                    <span className="text-slate-500 text-xs ml-auto">DB size: {health.db_size}</span>
-                  )}
-                </div>
-              )}
-              {health?.components?.length ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {health.components.map((c) => (
-                    <ComponentHealth key={c.component} component={c} />
-                  ))}
-                </div>
-              ) : (
-                <div className="text-slate-500 text-sm text-center py-4">No component data</div>
-              )}
-            </>
-          )}
-        </div>
-      </Card>
-
-      {/* Data freshness */}
-      {status?.data_freshness?.length > 0 && (
-        <Card title="Data Freshness" padding={false}>
-          <div className="px-4 py-2">
-            <div className="flex items-center gap-3 text-[10px] text-slate-500 mb-2">
-              <span className="text-green-400">● &lt; 1m</span>
-              <span className="text-yellow-400">● 1-5m</span>
-              <span className="text-red-400">● &gt; 5m</span>
-            </div>
-            {status.data_freshness.map((row) => (
-              <DataFreshnessRow key={row.table} row={row} />
-            ))}
-          </div>
-        </Card>
-      )}
-    </div>
+      {tab === 'freshness'
+        ? <FreshnessTab rows={status?.data_freshness} marketOpen={isOpen} />
+        : <ComponentsTab health={health} loading={healthLoading} error={healthErr} lastUpdated={healthTs} />}
+    </Page>
   );
 }

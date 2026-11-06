@@ -1,35 +1,31 @@
 import { formatPrice } from '../../utils/formatters';
 
 /**
- * Compact OHLC overlay shown at the top of the chart.
- * `values` is the object set by subscribeCrosshairMove:
+ * OHLC readout above the chart. `values` comes from subscribeCrosshairMove:
  *   { open, high, low, close, time }
  */
 export default function ChartLegend({ values }) {
   if (!values) {
     return (
-      <div className="px-3 h-7 flex items-center border-b border-slate-800/60">
-        <span className="text-slate-600 text-[11px] font-mono select-none">
-          Hover chart to see OHLC values
-        </span>
+      <div className="px-1 h-8 flex items-center">
+        <span className="text-ink-ghost text-2xs select-none">Hover the chart for OHLC</span>
       </div>
     );
   }
 
   const isUp = values.close >= values.open;
-
   const items = [
-    { label: 'O', value: formatPrice(values.open),  cls: 'text-slate-300' },
-    { label: 'H', value: formatPrice(values.high),  cls: 'text-green-400' },
-    { label: 'L', value: formatPrice(values.low),   cls: 'text-red-400'   },
-    { label: 'C', value: formatPrice(values.close), cls: isUp ? 'text-green-400' : 'text-red-400' },
+    { label: 'O', value: formatPrice(values.open), cls: 'text-ink-muted' },
+    { label: 'H', value: formatPrice(values.high), cls: 'text-up' },
+    { label: 'L', value: formatPrice(values.low), cls: 'text-down' },
+    { label: 'C', value: formatPrice(values.close), cls: isUp ? 'text-up' : 'text-down' },
   ];
 
   return (
-    <div className="px-3 h-7 flex items-center gap-4 border-b border-slate-800/60">
+    <div className="px-1 h-8 flex items-center gap-4">
       {items.map(({ label, value, cls }) => (
-        <span key={label} className="flex items-center gap-1 text-[11px] font-mono">
-          <span className="text-slate-500">{label}</span>
+        <span key={label} className="flex items-center gap-1.5 text-xs num">
+          <span className="text-ink-ghost">{label}</span>
           <span className={cls}>{value}</span>
         </span>
       ))}

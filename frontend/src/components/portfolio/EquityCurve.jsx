@@ -2,66 +2,52 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip,
   CartesianGrid, ReferenceLine, ResponsiveContainer,
 } from 'recharts';
-import { formatCurrency, formatPnL } from '../../utils/formatters';
+import { LineChart } from 'lucide-react';
+import { EmptyState } from '../common/EmptyState';
+import { formatCurrency } from '../../utils/formatters';
+import { COLORS, CHART_COLORS, TOOLTIP_STYLE } from '../../utils/constants';
 
-const INITIAL = 100_000;
+export function EquityCurve({ history, initial = 100_000, height = 260 }) {
+  if (!history?.length) {
+    return (
+      <EmptyState
+        icon={LineChart}
+        title="No equity history yet"
+        message="The curve starts plotting once the first trade closes."
+        className="py-14"
+      />
+    );
+  }
 
-export function EquityCurve({ history }) {
-  if (!history?.length) return (
-    <div className="flex items-center justify-center h-48 text-slate-500 text-sm">
-      No equity history available
-    </div>
-  );
-
-  const max = Math.max(...history.map((d) => d.capital));
-  const min = Math.min(...history.map((d) => d.capital));
-  const domain = [Math.min(min * 0.998, INITIAL * 0.995), max * 1.002];
-
-  const isProfit = (history[history.length - 1]?.capital ?? INITIAL) >= INITIAL;
-  const stroke = isProfit ? '#22c55e' : '#ef4444';
-  const gradId = isProfit ? 'eqGreenGrad' : 'eqRedGrad';
+  const values = history.map((d) => d.capital);
+  const domain = [Math.min(...values, initial) * 0.998, Math.max(...values, initial) * 1.002];
+  const isProfit = (history[history.length - 1]?.capital ?? initial) >= initial;
+  const stroke = isProfit ? COLORS.up : COLORS.down;
+  const gradId = isProfit ? 'eqUp' : 'eqDown';
 
   return (
-    <div className="h-52">
+    <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={history} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={stroke} stopOpacity={0.25} />
-              <stop offset="95%" stopColor={stroke} stopOpacity={0.02} />
+              <stop offset="0%" stopColor={stroke} stopOpacity={0.22} />
+              <stop offset="100%" stopColor={stroke} stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-          <XAxis
-            dataKey="date"
-            tick={{ fontSize: 10, fill: '#94a3b8' }}
-            tickLine={false}
-            axisLine={false}
-            interval="preserveStartEnd"
-          />
+          <CartesianGrid vertical={false} stroke={CHART_COLORS.grid} />
+          <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_COLORS.text }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={24} />
           <YAxis
             domain={domain}
-            tick={{ fontSize: 10, fill: '#94a3b8' }}
+            tick={{ fontSize: 11, fill: CHART_COLORS.text }}
             tickLine={false}
             axisLine={false}
-            tickFormatter={(v) => '₹' + (v / 1000).toFixed(0) + 'K'}
+            tickFormatter={(v) => `₹${(v / 1000).toFixed(0)}K`}
             width={52}
           />
-          <ReferenceLine y={INITIAL} stroke="#334155" strokeDasharray="4 4" />
-          <Tooltip
-            contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 6, fontSize: 11 }}
-            formatter={(v, n) => [formatCurrency(v), 'Equity']}
-            labelStyle={{ color: '#94a3b8', marginBottom: 2 }}
-          />
-          <Area
-            type="monotone"
-            dataKey="capital"
-            stroke={stroke}
-            strokeWidth={2}
-            fill={`url(#${gradId})`}
-            dot={false}
-            isAnimationActive={false}
-          />
+          <ReferenceLine y={initial} stroke={COLORS.lineStrong} strokeDasharray="4 4" />
+          <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [formatCurrency(v), 'Equity']} />
+          <Area type="monotone" dataKey="capital" stroke={stroke} strokeWidth={2} fill={`url(#${gradId})`} dot={false} isAnimationActive={false} />
         </AreaChart>
       </ResponsiveContainer>
     </div>

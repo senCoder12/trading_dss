@@ -1,11 +1,16 @@
 import { useState } from 'react';
+import { Wallet, TrendingUp, Briefcase, Target, Download } from 'lucide-react';
 import { usePolling } from '../../hooks/usePolling';
 import { useApi } from '../../hooks/useApi';
 import { api } from '../../api/client';
 import { Card } from '../common/Card';
 import { ErrorBoundary } from '../common/ErrorBoundary';
-import { Spinner } from '../common/Spinner';
+import { StatTile, signTone } from '../common/StatTile';
+import { Tabs, useTabParam } from '../common/Tabs';
+import { Segmented } from '../common/Segmented';
 import { RefreshIndicator } from '../common/RefreshIndicator';
+import { RowSkeleton, Skeleton } from '../common/Skeleton';
+import { Page, Toolbar } from '../layout/Page';
 import { EquityCurve } from './EquityCurve';
 import { PositionsList } from './PositionsList';
 import { TradeHistory } from './TradeHistory';
@@ -13,160 +18,133 @@ import { PerformanceStats } from './PerformanceStats';
 import { formatCurrency, formatPercentage, formatPnL } from '../../utils/formatters';
 import { REFRESH_INTERVALS } from '../../utils/constants';
 
-const PERIODS = [7, 14, 30, 90];
-const EQ_PERIODS = [7, 30, 90];
+const PERIODS = [7, 14, 30, 90].map((d) => ({ value: d, label: `${d}D` }));
+const EQ_PERIODS = [7, 30, 90].map((d) => ({ value: d, label: `${d}D` }));
 
-export default function PortfolioPage() {
-  const [tradeDays, setTradeDays] = useState(7);
-  const [eqDays, setEqDays] = useState(30);
-  const [perfDays, setPerfDays] = useState(30);
-
-  const { data: portfolio, loading: portLoading, lastUpdated } = usePolling(
-    api.getPortfolio, REFRESH_INTERVALS.portfolio,
-  );
-  const { data: histData, loading: histLoading } = useApi(
-    () => api.getEquityHistory(eqDays), [eqDays],
-  );
-  const { data: tradesData, loading: tradesLoading } = useApi(
-    () => api.getTrades(tradeDays), [tradeDays],
-  );
-  const { data: perf, loading: perfLoading } = useApi(
-    () => api.getPerformance(perfDays), [perfDays],
-  );
-
-  const history = histData?.history ?? [];
-  const trades = tradesData?.trades ?? [];
-  const positions = portfolio?.open_positions ?? [];
-  const todayPnlColor = (portfolio?.today_pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400';
-  const totalRetColor = (portfolio?.total_return_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400';
+function OverviewTab({ portfolio }) {
+  const [days, setDays] = useState(30);
+  const { data, loading } = useApi(() => api.getEquityHistory(days), [days]);
 
   return (
-    <div className="p-4 space-y-4">
-      {/* Portfolio header stats */}
-      <Card padding={false}>
-        <div className="p-4">
-          {portLoading && !portfolio ? (
-            <div className="flex justify-center p-6"><Spinner /></div>
-          ) : (
-            <div className="flex flex-wrap items-center gap-6 justify-between">
-              <div>
-                <div className="text-slate-400 text-xs mb-0.5">Total Capital</div>
-                <div className="text-slate-100 font-mono font-bold text-2xl">
-                  {formatCurrency(portfolio?.capital)}
-                </div>
-                <div className={`text-sm font-medium ${totalRetColor}`}>
-                  {formatPercentage(portfolio?.total_return_pct)} overall
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-slate-400 text-xs mb-0.5">Today's P&L</div>
-                <div className={`font-mono font-bold text-xl ${todayPnlColor}`}>
-                  {formatPnL(portfolio?.today_pnl)}
-                </div>
-                <div className={`text-xs ${todayPnlColor}`}>
-                  {formatPercentage(portfolio?.today_pnl_pct)}
-                </div>
-              </div>
-              <div className="flex gap-6">
-                {[
-                  { label: 'Open', value: positions.length },
-                  { label: 'Win Rate', value: portfolio?.overall_win_rate != null ? `${portfolio.overall_win_rate.toFixed(0)}%` : '--' },
-                  { label: 'Trades (All)', value: portfolio?.total_closed_trades ?? '--' },
-                ].map(({ label, value }) => (
-                  <div key={label} className="text-center">
-                    <div className="text-slate-100 font-semibold text-sm">{value}</div>
-                    <div className="text-slate-500 text-xs">{label}</div>
-                  </div>
-                ))}
-              </div>
-              <RefreshIndicator lastUpdated={lastUpdated} />
-            </div>
-          )}
-        </div>
-      </Card>
+    <Card
+      title="Equity curve"
+      subtitle={portfolio?.initial_capital ? `Dashed line = starting capital ${formatCurrency(portfolio.initial_capital, 0)}` : undefined}
+      actions={<Segmented size="xs" options={EQ_PERIODS} value={days} onChange={setDays} ariaLabel="Period" />}
+    >
+      {loading ? <Skeleton height="260px" /> : (
+        <EquityCurve history={data?.history ?? []} initial={portfolio?.initial_capital ?? 100_000} />
+      )}
+    </Card>
+  );
+}
 
-      {/* Equity curve */}
-      <ErrorBoundary>
-        <Card title="Equity Curve" padding={false}>
-          <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
-            {EQ_PERIODS.map((d) => (
-              <button
-                key={d}
-                onClick={() => setEqDays(d)}
-                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                  eqDays === d
-                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-                }`}
-              >
-                {d}d
-              </button>
-            ))}
-          </div>
-          <div className="px-4 py-3">
-            {histLoading ? <div className="flex justify-center p-6"><Spinner /></div>
-              : <EquityCurve history={history} />}
-          </div>
-        </Card>
-      </ErrorBoundary>
+function TradesTab() {
+  const [days, setDays] = useState(7);
+  const { data, loading } = useApi(() => api.getTrades(days), [days]);
+  const trades = data?.trades ?? [];
 
-      {/* Open positions */}
-      <ErrorBoundary>
-        <Card title={`Open Positions (${positions.length})`} padding={false}>
-          <PositionsList positions={positions} />
-        </Card>
-      </ErrorBoundary>
-
-      {/* Performance stats */}
-      <ErrorBoundary>
-        <Card title="Performance Statistics" padding={false}>
-          <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
-            {PERIODS.map((d) => (
-              <button
-                key={d}
-                onClick={() => setPerfDays(d)}
-                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                  perfDays === d
-                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-                }`}
-              >
-                {d}d
-              </button>
-            ))}
-          </div>
-          <div className="p-4">
-            {perfLoading ? <div className="flex justify-center p-4"><Spinner /></div>
-              : <PerformanceStats stats={perf} />}
-          </div>
-        </Card>
-      </ErrorBoundary>
-
-      {/* Trade history */}
-      <ErrorBoundary>
-      <Card title="Trade History" padding={false}>
-        <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
-          {PERIODS.map((d) => (
+  return (
+    <div className="space-y-4">
+      <Toolbar
+        right={
+          <>
+            {data?.total != null && <span className="text-xs text-ink-faint">{data.total} trades</span>}
             <button
-              key={d}
-              onClick={() => setTradeDays(d)}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                tradeDays === d
-                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-              }`}
+              onClick={() => window.open(`/api/portfolio/trades/export?days=${days}`, '_blank')}
+              disabled={!trades.length}
+              className="btn btn-secondary h-7 text-xs"
             >
-              {d}d
+              <Download className="w-3.5 h-3.5" /> Export CSV
             </button>
-          ))}
-          {tradesData?.total != null && (
-            <span className="ml-auto text-slate-500 text-xs">{tradesData.total} total</span>
-          )}
-        </div>
-        {tradesLoading ? <div className="flex justify-center p-6"><Spinner /></div>
-          : <TradeHistory trades={trades} days={tradeDays} />}
+          </>
+        }
+      >
+        <Segmented size="xs" options={PERIODS} value={days} onChange={setDays} ariaLabel="Period" />
+      </Toolbar>
+      <Card padding={false}>
+        {loading ? <RowSkeleton rows={5} /> : <TradeHistory trades={trades} days={days} />}
       </Card>
-      </ErrorBoundary>
     </div>
+  );
+}
+
+function StatsTab() {
+  const [days, setDays] = useState(30);
+  const { data, loading } = useApi(() => api.getPerformance(days), [days]);
+  return (
+    <div className="space-y-4">
+      <Toolbar>
+        <Segmented size="xs" options={PERIODS} value={days} onChange={setDays} ariaLabel="Period" />
+      </Toolbar>
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          {Array.from({ length: 3 }, (_, i) => <Skeleton key={i} height="230px" className="rounded-xl" />)}
+        </div>
+      ) : (
+        <PerformanceStats stats={data} />
+      )}
+    </div>
+  );
+}
+
+export default function PortfolioPage() {
+  const [tab, setTab] = useTabParam('overview');
+  const { data: portfolio, loading, error, lastUpdated } = usePolling(api.getPortfolio, REFRESH_INTERVALS.portfolio);
+  const positions = portfolio?.open_positions ?? [];
+
+  return (
+    <Page>
+      {/* KPIs — always visible, one number each */}
+      {loading && !portfolio ? (
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} height="92px" className="rounded-xl" />)}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          <StatTile
+            label="Capital"
+            icon={Wallet}
+            value={formatCurrency(portfolio?.capital, 0)}
+            sub={`${formatPercentage(portfolio?.total_return_pct)} all-time`}
+            subTone={signTone(portfolio?.total_return_pct)}
+          />
+          <StatTile
+            label="Today's P&L"
+            icon={TrendingUp}
+            value={formatPnL(portfolio?.today_pnl)}
+            tone={signTone(portfolio?.today_pnl)}
+            sub={`${formatPercentage(portfolio?.today_pnl_pct)} · ${portfolio?.today_trades ?? 0} trades`}
+          />
+          <StatTile label="Open positions" icon={Briefcase} value={positions.length} sub="Live exposure" />
+          <StatTile
+            label="Win rate"
+            icon={Target}
+            value={portfolio?.overall_win_rate != null ? `${portfolio.overall_win_rate.toFixed(0)}%` : '—'}
+            sub={`${portfolio?.total_closed_trades ?? 0} closed trades`}
+          />
+        </div>
+      )}
+
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        right={<RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />}
+        tabs={[
+          { id: 'overview', label: 'Equity' },
+          { id: 'positions', label: 'Positions', count: positions.length || undefined },
+          { id: 'trades', label: 'Trade log' },
+          { id: 'stats', label: 'Statistics' },
+        ]}
+      />
+
+      <ErrorBoundary>
+        {tab === 'overview' && <OverviewTab portfolio={portfolio} />}
+        {tab === 'positions' && (
+          <Card padding={false}><PositionsList positions={positions} /></Card>
+        )}
+        {tab === 'trades' && <TradesTab />}
+        {tab === 'stats' && <StatsTab />}
+      </ErrorBoundary>
+    </Page>
   );
 }

@@ -40,21 +40,24 @@ export function DataStoreProvider({ children, onExternalEvent }) {
 
   const { connected } = useWebSocket(handleWsMessage);
 
-  // Fetch initial prices once on mount
+  // Poll prices every 30s — covers WS dead/disconnected scenarios as fallback
+  const pricesPoll = usePolling(api.getMarketPrices, 30_000);
+
   useEffect(() => {
-    api.getMarketPrices()
-      .then(data => {
-        setPriceData(data);
-        setPriceLastUpdated(Date.now());
-        setPriceError(null);
-      })
-      .catch(err => {
-        setPriceError(err.message || 'Failed to fetch prices');
-      })
-      .finally(() => {
-        setPriceLoading(false);
-      });
-  }, []);
+    if (pricesPoll.data != null) {
+      setPriceData(pricesPoll.data);
+      setPriceLastUpdated(Date.now());
+      setPriceError(null);
+      setPriceLoading(false);
+    }
+  }, [pricesPoll.data]);
+
+  useEffect(() => {
+    if (pricesPoll.error) {
+      setPriceError(pricesPoll.error);
+      setPriceLoading(false);
+    }
+  }, [pricesPoll.error]);
 
   // Other data sources still use polling
   const signals = usePolling(api.getCurrentSignals, REFRESH_INTERVALS.signals);

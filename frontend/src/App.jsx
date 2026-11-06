@@ -3,7 +3,6 @@ import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-route
 
 import Header from './components/layout/Header';
 import Sidebar from './components/layout/Sidebar';
-import StatusBar from './components/layout/StatusBar';
 import NotificationBanner from './components/common/NotificationBanner';
 import QuickSettings from './components/settings/QuickSettings';
 import KeyboardHelp from './components/common/KeyboardHelp';
@@ -19,76 +18,84 @@ import OptionsChainPage from './components/options/OptionsChainPage';
 import UniversePage from './components/universe/UniversePage';
 
 import { useNotification } from './hooks/useNotification';
-import { DataStoreProvider, useDataStore } from './hooks/useDataStore';
+import { DataStoreProvider } from './hooks/useDataStore';
+import { NAV_ITEMS } from './routes';
 
 const SHORTCUTS = [
-  { key: '1', label: 'Dashboard' },
-  { key: '2', label: 'Signals' },
-  { key: '3', label: 'Portfolio' },
-  { key: '4', label: 'Market' },
-  { key: '5', label: 'News' },
-  { key: '6', label: 'Anomalies' },
-  { key: '7', label: 'System' },
-  { key: '8', label: 'Options Chain' },
-  { key: '9', label: 'F&O Universe' },
-  { key: 'S', label: 'Settings' },
+  ...[...NAV_ITEMS].sort((a, b) => a.key.localeCompare(b.key)).map((i) => ({ key: i.key, label: i.label })),
+  { key: 'S', label: 'Quick settings' },
+  { key: '[', label: 'Toggle sidebar' },
   { key: 'Esc', label: 'Close panel' },
-  { key: '?', label: 'This help' },
+  { key: '?', label: 'Keyboard shortcuts' },
 ];
 
-function KeyboardShortcuts({ setSettingsOpen }) {
+const ROUTE_BY_KEY = Object.fromEntries(NAV_ITEMS.map((i) => [i.key, i.to]));
+
+function KeyboardShortcuts({ setSettingsOpen, showHelp, setShowHelp, toggleCollapsed }) {
   const navigate = useNavigate();
-  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Don't trigger in input fields
+      // Don't trigger in input fields or with modifiers
       const tag = e.target.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.metaKey || e.ctrlKey || e.altKey) return;
 
+      if (ROUTE_BY_KEY[e.key]) { navigate(ROUTE_BY_KEY[e.key]); return; }
       switch (e.key) {
-        case '1': navigate('/'); break;
-        case '2': navigate('/signals'); break;
-        case '3': navigate('/portfolio'); break;
-        case '4': navigate('/market'); break;
-        case '5': navigate('/news'); break;
-        case '6': navigate('/anomalies'); break;
-        case '7': navigate('/system'); break;
-        case '8': navigate('/options'); break;
-        case '9': navigate('/universe'); break;
-        case 's': setSettingsOpen(true); break;
+        case 's': case 'S': setSettingsOpen(true); break;
+        case '[': toggleCollapsed(); break;
         case 'Escape':
           setSettingsOpen(false);
           setShowHelp(false);
           break;
         case '?': setShowHelp((prev) => !prev); break;
-        default: return;
+        default:
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigate, setSettingsOpen]);
+  }, [navigate, setSettingsOpen, setShowHelp, toggleCollapsed]);
 
   return <KeyboardHelp shortcuts={SHORTCUTS} isOpen={showHelp} onClose={() => setShowHelp(false)} />;
 }
 
-// Inner layout — inside DataStoreProvider, so it can read `connected` from context
+const COLLAPSE_KEY = 'tdss.sidebarCollapsed';
+
+function readCollapsed() {
+  try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
+}
+
+// Inner layout — inside DataStoreProvider so header/sidebar can read shared data
 function AppLayout({ sidebarOpen, setSidebarOpen, settingsOpen, setSettingsOpen, toasts, onDismissToast }) {
-  const { connected } = useDataStore();
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [showHelp, setShowHelp] = useState(false);
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((c) => {
+      const next = !c;
+      try { localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0'); } catch { /* storage unavailable */ }
+      return next;
+    });
+  }, []);
 
   return (
-    <div className="flex h-screen bg-slate-900 text-slate-100 overflow-hidden">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    <div className="flex h-screen bg-canvas text-ink overflow-hidden">
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+        onShowShortcuts={() => setShowHelp(true)}
+      />
 
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header
           onMenuClick={() => setSidebarOpen(true)}
-          wsConnected={connected}
           onSettingsClick={() => setSettingsOpen(true)}
         />
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 min-h-0 overflow-y-auto">
           <Routes>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/signals" element={<SignalsPage />} />
@@ -102,17 +109,17 @@ function AppLayout({ sidebarOpen, setSidebarOpen, settingsOpen, setSettingsOpen,
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
-
-        <StatusBar />
       </div>
 
-      <NotificationBanner
-        notifications={toasts}
-        onDismiss={onDismissToast}
-      />
+      <NotificationBanner notifications={toasts} onDismiss={onDismissToast} />
 
       <QuickSettings isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <KeyboardShortcuts setSettingsOpen={setSettingsOpen} />
+      <KeyboardShortcuts
+        setSettingsOpen={setSettingsOpen}
+        showHelp={showHelp}
+        setShowHelp={setShowHelp}
+        toggleCollapsed={toggleCollapsed}
+      />
     </div>
   );
 }
@@ -137,8 +144,7 @@ export default function App() {
   const handleExternalEvent = useCallback((message) => {
     if (message.type === 'signal') {
       const { index_id, signal_type, confidence, entry } = message.data;
-      const emoji = signal_type === 'BUY_CALL' ? '\u{1F7E2}' : '\u{1F534}';
-      const title = `${emoji} ${signal_type} — ${index_id}`;
+      const title = `${signal_type === 'BUY_CALL' ? 'Buy Call' : signal_type === 'BUY_PUT' ? 'Buy Put' : signal_type} · ${index_id}`;
       const body = `Confidence: ${confidence} | Entry: ${Number(entry).toLocaleString('en-IN')}`;
 
       notify({ title, body, priority: 'CRITICAL', sound: true });
@@ -152,8 +158,7 @@ export default function App() {
 
     if (message.type === 'position_exit') {
       const { index_id, outcome, pnl } = message.data;
-      const emoji = outcome === 'WIN' ? '✅' : '❌';
-      const title = `${emoji} Position Closed — ${index_id}`;
+      const title = `${index_id} closed · ${outcome === 'WIN' ? 'Win' : 'Loss'}`;
       const body = `P&L: ₹${Number(pnl).toLocaleString('en-IN')}`;
 
       notify({ title, body, priority: 'HIGH', sound: true });

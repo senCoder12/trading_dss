@@ -29,8 +29,8 @@ export function formatPercentage(value, showSign = true) {
 
 export function formatPnL(value) {
   if (value === null || value === undefined || isNaN(value)) return '--';
-  const sign = value >= 0 ? '+' : '';
-  return sign + formatCurrency(value);
+  if (value < 0) return '−' + formatCurrency(Math.abs(value));
+  return (value > 0 ? '+' : '') + formatCurrency(value);
 }
 
 export function formatLargeNumber(value) {
@@ -87,25 +87,25 @@ export function isMarketOpen() {
 export function getMarketTimeInfo() {
   const ist = getIST(new Date());
   const day = ist.getDay();
-  if (day === 0 || day === 6) return { open: false, label: 'CLOSED (Weekend)' };
+  if (day === 0 || day === 6) return { open: false, label: 'CLOSED (Weekend)', detail: 'Weekend' };
 
   const mins = ist.getHours() * 60 + ist.getMinutes();
   const openAt = 9 * 60 + 15;
   const closeAt = 15 * 60 + 30;
+  const dur = (m) => (m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`);
 
   if (mins < openAt) {
     const left = openAt - mins;
-    return { open: false, label: `Opens in ${Math.floor(left / 60)}h ${left % 60}m` };
+    return { open: false, label: `Opens in ${dur(left)}`, detail: `Opens in ${dur(left)}` };
   }
   if (mins > closeAt) {
-    return { open: false, label: 'CLOSED' };
+    return { open: false, label: 'CLOSED', detail: 'Opens 09:15 IST' };
   }
   const remaining = closeAt - mins;
-  const h = Math.floor(remaining / 60);
-  const m = remaining % 60;
   return {
     open: true,
-    label: h > 0 ? `OPEN · ${h}h ${m}m left` : `OPEN · ${m}m left`,
+    label: `OPEN · ${dur(remaining)} left`,
+    detail: `Closes in ${dur(remaining)}`,
   };
 }
 

@@ -1,15 +1,20 @@
 import { timeAgo } from '../../utils/formatters';
 
 export function RefreshIndicator({ lastUpdated, error, loading, className = '' }) {
+  let dot = null;
+  let text = null;
+  if (loading && !lastUpdated) { dot = 'bg-warn animate-pulse'; text = 'Loading'; }
+  else if (error) { dot = 'bg-down'; text = 'Update failed'; }
+  else if (lastUpdated) { dot = 'bg-up'; text = timeAgo(lastUpdated); }
+  if (!dot) return null;
+
   return (
-    <div className={`flex items-center gap-1.5 text-xs ${className}`}>
-      {loading && !lastUpdated ? (
-        <><span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" /><span className="text-slate-500">loading</span></>
-      ) : error ? (
-        <><span className="w-1.5 h-1.5 rounded-full bg-red-400" /><span className="text-red-400">error</span></>
-      ) : lastUpdated ? (
-        <><span className="w-1.5 h-1.5 rounded-full bg-green-400" /><span className="text-slate-500">{timeAgo(lastUpdated)}</span></>
-      ) : null}
+    <div
+      className={`flex items-center gap-1.5 text-2xs text-ink-faint whitespace-nowrap ${className}`}
+      title={error ? String(error) : lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString('en-IN')}` : undefined}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+      <span className={error ? 'text-down' : ''}>{text}</span>
     </div>
   );
 }

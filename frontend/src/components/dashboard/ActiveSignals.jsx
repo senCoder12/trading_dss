@@ -1,103 +1,63 @@
-import { ArrowUpCircle, ArrowDownCircle, MinusCircle } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, Minus, Crosshair } from 'lucide-react';
 import { useDataStore } from '../../hooks/useDataStore';
-import { Card } from '../common/Card';
+import { useIndexMeta, indexLabel } from '../../hooks/useIndexMeta';
 import { Badge } from '../common/Badge';
 import { EmptyState } from '../common/EmptyState';
-import { RefreshIndicator } from '../common/RefreshIndicator';
-import { SignalCardSkeleton } from '../common/Skeleton';
+import { RowSkeleton } from '../common/Skeleton';
 import { formatPrice, formatConfidence, timeAgo } from '../../utils/formatters';
-import { SIGNAL_TYPE_LABELS } from '../../utils/constants';
-import { TrendingUp } from 'lucide-react';
+import { SIGNAL_TYPE_LABELS, SHORT_NAMES } from '../../utils/constants';
 
-const SIGNAL_ICONS = {
-  BUY_CALL: <ArrowUpCircle className="w-4 h-4 text-green-400" />,
-  BUY_PUT: <ArrowDownCircle className="w-4 h-4 text-red-400" />,
-  NO_TRADE: <MinusCircle className="w-4 h-4 text-slate-500" />,
+const ICON = {
+  BUY_CALL: { Icon: ArrowUpRight, cls: 'bg-up/10 text-up' },
+  BUY_PUT: { Icon: ArrowDownRight, cls: 'bg-down/10 text-down' },
+  NO_TRADE: { Icon: Minus, cls: 'bg-surface-3 text-ink-faint' },
 };
 
-export default function ActiveSignals() {
-  const { signals: { data, loading, error, lastUpdated } } = useDataStore();
-  const signals = data?.signals ?? [];
+/** Compact signal rows for the dashboard side panel. Actionable signals first. */
+export default function ActiveSignals({ limit = 6 }) {
+  const { signals: { data, loading } } = useDataStore();
+  const meta = useIndexMeta();
+  const signals = [...(data?.signals ?? [])].sort(
+    (a, b) => (a.signal_type === 'NO_TRADE') - (b.signal_type === 'NO_TRADE'),
+  );
+
+  if (loading && !data) return <RowSkeleton rows={4} />;
+  if (!signals.length) {
+    return <EmptyState icon={Crosshair} title="No signals yet" message="The signal engine has not produced output for this session." />;
+  }
 
   return (
-    <Card
-      title="Active Signals"
-      padding={false}
-      actions={
-        <>
-          <Badge variant="LIVE" size="xs">LIVE engine</Badge>
-          <RefreshIndicator lastUpdated={lastUpdated} error={error} loading={loading} />
-        </>
-      }
-    >
-      {loading && !data ? (
-        <div className="divide-y divide-slate-700/50">
-          {Array.from({ length: 4 }, (_, i) => <SignalCardSkeleton key={i} />)}
-        </div>
-      ) : !signals.length ? (
-        <EmptyState icon={TrendingUp} title="No signals" message="Signal engine may be offline" />
-      ) : (
-        <div className="divide-y divide-slate-700/50">
-          {signals.map((sig) => {
-            const isNoTrade = sig.signal_type === 'NO_TRADE';
-            return (
-              <div
-                key={sig.index_id}
-                className={`p-3 hover:bg-slate-700/30 transition-colors ${isNoTrade ? 'opacity-60' : ''}`}
-              >
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2">
-                    {SIGNAL_ICONS[sig.signal_type] ?? SIGNAL_ICONS.NO_TRADE}
-                    <span className="text-slate-100 font-semibold text-sm">{sig.index_id}</span>
-                    <Badge variant={sig.signal_type}>
-                      {SIGNAL_TYPE_LABELS[sig.signal_type] ?? sig.signal_type}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={sig.confidence_level}>{sig.confidence_level}</Badge>
-                    {sig.confidence_score != null && (
-                      <span className="text-slate-400 text-xs font-mono">
-                        {formatConfidence(sig.confidence_score)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {!isNoTrade && (sig.entry || sig.target || sig.sl) && (
-                  <div className="grid grid-cols-3 gap-1 text-[11px]">
-                    {sig.entry != null && (
-                      <div>
-                        <span className="text-slate-500">Entry </span>
-                        <span className="text-slate-300 font-mono">{formatPrice(sig.entry)}</span>
-                      </div>
-                    )}
-                    {sig.target != null && (
-                      <div>
-                        <span className="text-slate-500">Target </span>
-                        <span className="text-green-400 font-mono">{formatPrice(sig.target)}</span>
-                      </div>
-                    )}
-                    {sig.sl != null && (
-                      <div>
-                        <span className="text-slate-500">SL </span>
-                        <span className="text-red-400 font-mono">{formatPrice(sig.sl)}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {sig.reasoning_summary && (
-                  <p className="text-[11px] text-slate-500 mt-1 line-clamp-1">{sig.reasoning_summary}</p>
-                )}
-
-                {sig.generated_at && (
-                  <div className="text-[10px] text-slate-600 mt-1">{timeAgo(sig.generated_at)}</div>
-                )}
+    <ul className="divide-y divide-line">
+      {signals.slice(0, limit).map((sig) => {
+        const { Icon, cls } = ICON[sig.signal_type] ?? ICON.NO_TRADE;
+        const actionable = sig.signal_type !== 'NO_TRADE';
+        return (
+          <li key={sig.index_id} className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2/60 transition-colors">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${cls}`}>
+              <Icon className="w-4 h-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] font-medium text-ink truncate">
+                  {SHORT_NAMES[sig.index_id] ?? indexLabel(meta, sig.index_id)}
+                </span>
+                {sig.generated_at && <span className="text-2xs text-ink-ghost">{timeAgo(sig.generated_at)}</span>}
               </div>
-            );
-          })}
-        </div>
-      )}
-    </Card>
+              <div className="text-xs text-ink-faint truncate mt-0.5">
+                {actionable && sig.entry
+                  ? <span className="num">Entry {formatPrice(sig.entry)} · Tgt <span className="text-up">{formatPrice(sig.target)}</span> · SL <span className="text-down">{formatPrice(sig.sl)}</span></span>
+                  : (sig.reasoning_summary?.replace(/^NO_TRADE:\s*/, '') ?? sig.regime?.replace(/_/g, ' ').toLowerCase() ?? '—')}
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+              <Badge variant={sig.signal_type} size="xs">{SIGNAL_TYPE_LABELS[sig.signal_type] ?? sig.signal_type}</Badge>
+              {sig.confidence_score != null && (
+                <span className="text-2xs text-ink-faint num">{formatConfidence(sig.confidence_score)} conf.</span>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

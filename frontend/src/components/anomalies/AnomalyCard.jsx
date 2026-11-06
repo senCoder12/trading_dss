@@ -1,52 +1,69 @@
-import { AlertTriangle, Clock } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, ChevronDown } from 'lucide-react';
 import { Badge } from '../common/Badge';
-import { timeAgo } from '../../utils/formatters';
-import { SEVERITY_COLORS } from '../../utils/constants';
+import { timeAgo, formatISTDateTime } from '../../utils/formatters';
 
+const SEV_TINT = {
+  CRITICAL: 'bg-down/10 text-down',
+  HIGH: 'bg-down/10 text-down',
+  MEDIUM: 'bg-warn/10 text-warn',
+  LOW: 'bg-info/10 text-info',
+};
+
+/** One anomaly row inside a divide-y list. Details collapse behind a toggle. */
 export function AnomalyCard({ anomaly }) {
-  const {
-    index_id, anomaly_type, severity, category, message, details, timestamp, is_active,
-  } = anomaly;
-
-  const sevColor = SEVERITY_COLORS[severity] ?? 'text-slate-400';
+  const { index_id, anomaly_type, severity, category, message, details, timestamp, is_active } = anomaly;
+  const [open, setOpen] = useState(false);
+  const hasDetails = details && Object.keys(details).length > 0;
+  const tint = SEV_TINT[severity?.toUpperCase()] ?? 'bg-surface-3 text-ink-faint';
 
   return (
-    <div className={`bg-slate-800 border rounded-lg p-3 space-y-2 ${
-      severity === 'HIGH' ? 'border-red-700/50' : severity === 'MEDIUM' ? 'border-yellow-700/40' : 'border-slate-700'
-    }`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2">
-          <AlertTriangle className={`w-4 h-4 flex-shrink-0 mt-0.5 ${sevColor}`} />
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-slate-100 text-sm font-semibold">{index_id}</span>
-              <Badge variant={severity} size="xs">{severity}</Badge>
-              <Badge variant={category} size="xs">{category}</Badge>
-              {!is_active && <Badge variant="EXPIRED" size="xs">RESOLVED</Badge>}
-            </div>
-            <div className="text-slate-400 text-xs mt-0.5 font-mono">{anomaly_type}</div>
+    <li className="px-5 py-4 hover:bg-surface-2/50 transition-colors">
+      <div className="flex items-start gap-3.5">
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${tint}`}>
+          <AlertTriangle className="w-4 h-4" />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[13px] font-semibold text-ink">{index_id}</span>
+            <span className="text-2xs text-ink-faint font-mono">{anomaly_type?.replace(/_/g, ' ').toLowerCase()}</span>
+            {severity && <Badge variant={severity} kind="severity" size="xs">{severity}</Badge>}
+            {category && <Badge tone="neutral" size="xs">{category}</Badge>}
+            {is_active === false && <Badge tone="neutral" size="xs">Resolved</Badge>}
           </div>
+
+          {message && <p className="text-[13px] text-ink-muted leading-snug mt-1">{message}</p>}
+
+          {hasDetails && (
+            <button
+              onClick={() => setOpen((o) => !o)}
+              className="mt-2 inline-flex items-center gap-1 text-2xs font-medium text-ink-faint hover:text-ink-muted transition-colors"
+              aria-expanded={open}
+            >
+              Details
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+            </button>
+          )}
+
+          {open && hasDetails && (
+            <dl className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 rounded-lg bg-canvas border border-line px-3.5 py-3 animate-fade-in">
+              {Object.entries(details).map(([k, v]) => (
+                <div key={k} className="flex items-center justify-between gap-3 text-xs min-w-0">
+                  <dt className="text-ink-faint capitalize truncate">{k.replace(/_/g, ' ')}</dt>
+                  <dd className="text-ink-muted font-mono num truncate">
+                    {typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(3)) : String(v)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </div>
-        <div className="flex items-center gap-1 text-slate-500 text-[10px] flex-shrink-0">
-          <Clock className="w-3 h-3" />
+
+        <span className="text-2xs text-ink-faint whitespace-nowrap flex-shrink-0" title={formatISTDateTime(timestamp)}>
           {timeAgo(timestamp)}
-        </div>
+        </span>
       </div>
-
-      {message && (
-        <p className="text-slate-300 text-xs leading-snug">{message}</p>
-      )}
-
-      {details && Object.keys(details).length > 0 && (
-        <div className="bg-slate-900/50 rounded p-2 space-y-0.5">
-          {Object.entries(details).slice(0, 6).map(([k, v]) => (
-            <div key={k} className="flex items-center justify-between text-[11px]">
-              <span className="text-slate-500 capitalize">{k.replace(/_/g, ' ')}</span>
-              <span className="text-slate-300 font-mono">{String(v)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    </li>
   );
 }
