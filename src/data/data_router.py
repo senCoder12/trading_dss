@@ -721,8 +721,17 @@ class DataRouter:
         }
 
     def is_using_broker_api(self) -> bool:
-        """True when broker API is active and WebSocket feed is running."""
-        return self.broker_client is not None
+        """True when broker WebSocket is configured AND currently delivering ticks."""
+        if self.broker_client is None or self.ws_feed is None:
+            return False
+        if not self.ws_feed.is_running:
+            return False
+        # If ticks were flowing but stopped for >2 min, treat feed as dead
+        if self._last_tick_times:
+            most_recent = max(self._last_tick_times.values())
+            if time.monotonic() - most_recent > 120:
+                return False
+        return True
 
     def get_data_source(self) -> str:
         if self.broker_client:
