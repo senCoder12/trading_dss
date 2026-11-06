@@ -128,6 +128,19 @@ class MomentumSummary:
 # ---------------------------------------------------------------------------
 
 
+def _roc_noise_band(df: pd.DataFrame, lookback: int) -> float:
+    """Return threshold below which a *lookback*-bar move is noise.
+
+    Half of the typical *lookback*-bar move (median absolute ROC over the
+    available history), floored at 0.05 % so flat series never vote.
+    """
+    closes = df["close"].astype(float)
+    rocs = (closes / closes.shift(lookback) - 1.0).abs().dropna()
+    if rocs.empty:
+        return 0.0005
+    return max(float(rocs.median()) * 0.5, 0.0005)
+
+
 def _prepare_df(df: pd.DataFrame) -> pd.DataFrame:
     """Return a clean copy of *df* with NaNs forward-filled.
 
@@ -379,8 +392,11 @@ class MomentumIndicators:
             fillna=False,
         )
 
-        k_line = stoch.stoch()
-        d_line = stoch.stoch_signal()
+        # Slow stochastic, as documented: %K = SMA(raw %K, smooth_k) and
+        # %D = SMA(%K, d_period).  ta's stoch() is the RAW (fast) %K and
+        # d_period was never used, so crossovers were on the noisiest line.
+        k_line = stoch.stoch().rolling(smooth_k).mean()
+        d_line = k_line.rolling(d_period).mean()
 
         valid_k = k_line.dropna()
         valid_d = d_line.dropna()
@@ -598,48 +614,55 @@ class MomentumIndicators:
         overbought_consensus = sum(overbought_zones) >= 2
         oversold_consensus = sum(oversold_zones) >= 2
 
-        # --- Voting ---------------------------------------------------------
-        bullish_votes = 0
-        bearish_votes = 0
+        # --- Voting: momentum CONTINUATION ----------------------------------
+        # An option buyer needs the move to continue.  The old vote was purely
+        # contrarian (overbought = bearish, oversold = bullish) and so fought
+        # the trend layer on every trending day.  Overbought/oversold are still
+        # reported (consensus flags, reversal warnings) but no longer vote.
+        #   RSI regime   : > 55 bullish, < 45 bearish; beyond 75/25 the move is
+        #                  stretched — no vote rather than a reversal call
+        #   10-bar ROC   : direction of the last 10 bars beyond a noise band
+        #   slow stoch   : %K/%D crossover (weight 1, either zone)
+        votes: list[int] = []
+        rsi_now = rsi_result.current_value
+        if not np.isnan(rsi_now):
+            if 55.0 < rsi_now <= 75.0:
+                votes.append(1)
+            elif 25.0 <= rsi_now < 45.0:
+                votes.append(-1)
+            else:
+                votes.append(0)
 
-        # RSI signals
-        if rsi_result.leaving_oversold:
-            bullish_votes += 1
-        if rsi_result.zone == "OVERSOLD":
-            bullish_votes += 1
-        if rsi_result.entering_overbought:
-            bearish_votes += 1
-        if rsi_result.zone == "OVERBOUGHT":
-            bearish_votes += 1
+        roc_lookback = 10
+        if len(clean) > roc_lookback:
+            past = float(clean["close"].iloc[-1 - roc_lookback])
+            roc = (float(clean["close"].iloc[-1]) - past) / past if past > 0 else 0.0
+            noise = _roc_noise_band(clean, roc_lookback)
+            votes.append(1 if roc > noise else (-1 if roc < -noise else 0))
 
-        # Stochastic signals
         if stoch_result.crossover == "BULLISH_CROSS":
-            bullish_votes += 2 if stoch_result.signal_quality == "STRONG" else 1
+            votes.append(1)
         elif stoch_result.crossover == "BEARISH_CROSS":
-            bearish_votes += 2 if stoch_result.signal_quality == "STRONG" else 1
+            votes.append(-1)
+        elif not np.isnan(stoch_result.current_k):
+            votes.append(0)
 
-        # CCI signals
-        if cci_result.zero_cross == "BULLISH_CROSS":
-            bullish_votes += 1
-        elif cci_result.zero_cross == "BEARISH_CROSS":
-            bearish_votes += 1
-        if cci_result.zone == "OVERSOLD":
-            bullish_votes += 1
-        elif cci_result.zone == "OVERBOUGHT":
-            bearish_votes += 1
-
+        bullish_votes = sum(1 for v in votes if v > 0)
+        bearish_votes = sum(1 for v in votes if v < 0)
         net = bullish_votes - bearish_votes
 
-        if net >= 4:
-            momentum_vote, base_confidence = "STRONG_BULLISH", 0.90
+        if len(votes) < 2:
+            momentum_vote, base_confidence = "NEUTRAL", 0.3
+        elif net >= 3:
+            momentum_vote, base_confidence = "STRONG_BULLISH", 0.85
         elif net >= 2:
             momentum_vote, base_confidence = "BULLISH", 0.70
-        elif net >= -1:
-            momentum_vote, base_confidence = "NEUTRAL", 0.50
-        elif net >= -3:
+        elif net <= -3:
+            momentum_vote, base_confidence = "STRONG_BEARISH", 0.85
+        elif net <= -2:
             momentum_vote, base_confidence = "BEARISH", 0.70
         else:
-            momentum_vote, base_confidence = "STRONG_BEARISH", 0.90
+            momentum_vote, base_confidence = "NEUTRAL", 0.50
 
         # --- Divergence -----------------------------------------------------
         divergence_detected = rsi_result.divergence is not None

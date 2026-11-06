@@ -94,7 +94,8 @@ _MISSING_PRICE_ALERT_CYCLES: int = 2
 # Options stop trading at 15:30 IST — after that today's expiry is dead.
 _OPTIONS_CLOSE_HOUR, _OPTIONS_CLOSE_MINUTE = 15, 30
 # Intraday series: stored 5m history + 5m bars built from recent 1m bars.
-_INTRADAY_5M_BARS: int = 100
+# 300 bars (~4 sessions): EMA200 and MACD warm up on 5m data
+_INTRADAY_5M_BARS: int = 300
 _RECENT_1M_BARS: int = 1500          # ~4 sessions of 375 one-minute bars
 _SESSION_OPEN_MIN = 9 * 60 + 15
 _SESSION_CLOSE_MIN = 15 * 60 + 30
@@ -162,6 +163,30 @@ def merge_intraday_5m(
             older.append(r)
     merged_desc = list(reversed(built)) + older        # newest first
     return merged_desc[:limit]
+
+
+def resample_session_bars(df: Optional[pd.DataFrame], rule: str) -> Optional[pd.DataFrame]:
+    """Aggregate intraday OHLCV bars to a coarser timeframe within sessions.
+
+    Bars never straddle two trading days.  Returns ``None`` when there is
+    nothing usable to resample.
+    """
+    if df is None or df.empty or "timestamp" not in df.columns:
+        return None
+    work = df.copy()
+    work["timestamp"] = pd.to_datetime(work["timestamp"], errors="coerce")
+    work = work.dropna(subset=["timestamp"]).sort_values("timestamp")
+    if work.empty:
+        return None
+    work["_bucket"] = work["timestamp"].dt.floor(rule)
+    agg = (
+        work.groupby("_bucket", sort=True)
+        .agg(open=("open", "first"), high=("high", "max"), low=("low", "min"),
+             close=("close", "last"), volume=("volume", "sum"))
+        .reset_index()
+        .rename(columns={"_bucket": "timestamp"})
+    )
+    return agg if len(agg) >= 2 else None
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +709,10 @@ class DecisionEngine:
         htf_rows = mtf.get("1h") or mtf.get("15m") or []
         ltf_rows = mtf.get("1m") or []
         htf_df = self._rows_to_df(htf_rows) if htf_rows else None
+        if htf_df is None and timeframe_label == "5m":
+            # No stored 15m/1h bars exist, so multi-timeframe confirmation
+            # was always UNKNOWN.  Build 15m bars from the 5m series.
+            htf_df = resample_session_bars(price_df, "15min")
         ltf_df = self._rows_to_df(ltf_rows) if ltf_rows else None
         orb_data = self._get_orb(index_id, now)
 
@@ -1725,6 +1754,7 @@ class DecisionEngine:
                 gex_value=gex_value,
                 ad_ratio=ad_ratio,
                 futures_basis=futures_basis,
+                as_of=ref_now,
             )
         except Exception:
             logger.exception("Step 5: regime detection failed for %s", index_id)

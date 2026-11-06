@@ -1,0 +1,375 @@
+{
+  "version": 1,
+  "generated_at": "2026-11-06T09:24:10.992245+05:30",
+  "label": {
+    "horizon_bars": 12,
+    "bar": "5m",
+    "target_atr": 1.5,
+    "stop_atr": 1.0,
+    "entry": "next bar open",
+    "window_bars": 300,
+    "entry_window": "09:30:00-14:25:00"
+  },
+  "models": {
+    "NIFTY50": {
+      "bins": [
+        {
+          "lo": 0.25,
+          "hi": 0.4,
+          "n": 10,
+          "wins": 4,
+          "p_win": 0.3304
+        },
+        {
+          "lo": 0.4,
+          "hi": 0.55,
+          "n": 554,
+          "wins": 181,
+          "p_win": 0.3304
+        },
+        {
+          "lo": 0.55,
+          "hi": 0.7,
+          "n": 154,
+          "wins": 61,
+          "p_win": 0.3344
+        },
+        {
+          "lo": 0.7,
+          "hi": 0.9,
+          "n": 325,
+          "wins": 124,
+          "p_win": 0.3344
+        },
+        {
+          "lo": 0.9,
+          "hi": 1.2,
+          "n": 271,
+          "wins": 85,
+          "p_win": 0.3344
+        },
+        {
+          "lo": 1.2,
+          "hi": 99.0,
+          "n": 436,
+          "wins": 124,
+          "p_win": 0.3344
+        }
+      ],
+      "validated": false,
+      "meta": {
+        "validation_note": "only 0 OOS tradeable samples (< 30); OOS win rate nan < 0.45",
+        "n_samples": 2500,
+        "train_n": 1750,
+        "test_n": 750,
+        "train_base_rate": 0.3309,
+        "oos_brier": 0.24754,
+        "oos_brier_base": 0.24794,
+        "oos_tradeable_n": 0,
+        "oos_tradeable_win_rate": null,
+        "oos_by_bin": [
+          {
+            "lo": 0.25,
+            "hi": 0.4,
+            "fit_p": 0.3304,
+            "train_n": 10,
+            "oos_n": 4,
+            "oos_win": 0.5
+          },
+          {
+            "lo": 0.4,
+            "hi": 0.55,
+            "fit_p": 0.3304,
+            "train_n": 554,
+            "oos_n": 223,
+            "oos_win": 0.39
+          },
+          {
+            "lo": 0.55,
+            "hi": 0.7,
+            "fit_p": 0.3344,
+            "train_n": 154,
+            "oos_n": 44,
+            "oos_win": 0.523
+          },
+          {
+            "lo": 0.7,
+            "hi": 0.9,
+            "fit_p": 0.3344,
+            "train_n": 325,
+            "oos_n": 137,
+            "oos_win": 0.409
+          },
+          {
+            "lo": 0.9,
+            "hi": 1.2,
+            "fit_p": 0.3344,
+            "train_n": 271,
+            "oos_n": 141,
+            "oos_win": 0.447
+          },
+          {
+            "lo": 1.2,
+            "hi": 99.0,
+            "fit_p": 0.3344,
+            "train_n": 436,
+            "oos_n": 201,
+            "oos_win": 0.378
+          }
+        ],
+        "by_direction": {
+          "BUY_CALL": {
+            "n": 1215,
+            "win": 0.304
+          },
+          "BUY_PUT": {
+            "n": 1285,
+            "win": 0.402
+          }
+        },
+        "first_ts": "2026-04-02T09:30:00+05:30",
+        "last_ts": "2026-11-05T14:15:00+05:30"
+      }
+    },
+    "BANKNIFTY": {
+      "bins": [
+        {
+          "lo": 0.25,
+          "hi": 0.4,
+          "n": 13,
+          "wins": 6,
+          "p_win": 0.3158
+        },
+        {
+          "lo": 0.4,
+          "hi": 0.55,
+          "n": 540,
+          "wins": 176,
+          "p_win": 0.3158
+        },
+        {
+          "lo": 0.55,
+          "hi": 0.7,
+          "n": 160,
+          "wins": 60,
+          "p_win": 0.3158
+        },
+        {
+          "lo": 0.7,
+          "hi": 0.9,
+          "n": 264,
+          "wins": 78,
+          "p_win": 0.3158
+        },
+        {
+          "lo": 0.9,
+          "hi": 1.2,
+          "n": 256,
+          "wins": 88,
+          "p_win": 0.3158
+        },
+        {
+          "lo": 1.2,
+          "hi": 99.0,
+          "n": 456,
+          "wins": 121,
+          "p_win": 0.3158
+        }
+      ],
+      "validated": false,
+      "meta": {
+        "validation_note": "only 0 OOS tradeable samples (< 30); OOS win rate nan < 0.45",
+        "n_samples": 2414,
+        "train_n": 1689,
+        "test_n": 725,
+        "train_base_rate": 0.3132,
+        "oos_brier": 0.22067,
+        "oos_brier_base": 0.22074,
+        "oos_tradeable_n": 0,
+        "oos_tradeable_win_rate": null,
+        "oos_by_bin": [
+          {
+            "lo": 0.25,
+            "hi": 0.4,
+            "fit_p": 0.3158,
+            "train_n": 13,
+            "oos_n": 3,
+            "oos_win": 0.0
+          },
+          {
+            "lo": 0.4,
+            "hi": 0.55,
+            "fit_p": 0.3158,
+            "train_n": 540,
+            "oos_n": 200,
+            "oos_win": 0.33
+          },
+          {
+            "lo": 0.55,
+            "hi": 0.7,
+            "fit_p": 0.3158,
+            "train_n": 160,
+            "oos_n": 63,
+            "oos_win": 0.349
+          },
+          {
+            "lo": 0.7,
+            "hi": 0.9,
+            "fit_p": 0.3158,
+            "train_n": 264,
+            "oos_n": 110,
+            "oos_win": 0.382
+          },
+          {
+            "lo": 0.9,
+            "hi": 1.2,
+            "fit_p": 0.3158,
+            "train_n": 256,
+            "oos_n": 124,
+            "oos_win": 0.371
+          },
+          {
+            "lo": 1.2,
+            "hi": 99.0,
+            "fit_p": 0.3158,
+            "train_n": 456,
+            "oos_n": 225,
+            "oos_win": 0.276
+          }
+        ],
+        "by_direction": {
+          "BUY_CALL": {
+            "n": 1219,
+            "win": 0.304
+          },
+          "BUY_PUT": {
+            "n": 1195,
+            "win": 0.332
+          }
+        },
+        "first_ts": "2026-04-02T09:30:00+05:30",
+        "last_ts": "2026-11-05T14:10:00+05:30"
+      }
+    },
+    "ALL": {
+      "bins": [
+        {
+          "lo": 0.25,
+          "hi": 0.4,
+          "n": 23,
+          "wins": 10,
+          "p_win": 0.324
+        },
+        {
+          "lo": 0.4,
+          "hi": 0.55,
+          "n": 1092,
+          "wins": 356,
+          "p_win": 0.324
+        },
+        {
+          "lo": 0.55,
+          "hi": 0.7,
+          "n": 316,
+          "wins": 123,
+          "p_win": 0.324
+        },
+        {
+          "lo": 0.7,
+          "hi": 0.9,
+          "n": 590,
+          "wins": 203,
+          "p_win": 0.324
+        },
+        {
+          "lo": 0.9,
+          "hi": 1.2,
+          "n": 527,
+          "wins": 173,
+          "p_win": 0.324
+        },
+        {
+          "lo": 1.2,
+          "hi": 99.0,
+          "n": 891,
+          "wins": 245,
+          "p_win": 0.324
+        }
+      ],
+      "validated": false,
+      "meta": {
+        "validation_note": "only 0 OOS tradeable samples (< 30); OOS win rate nan < 0.45",
+        "n_samples": 4914,
+        "train_n": 3439,
+        "test_n": 1475,
+        "train_base_rate": 0.3228,
+        "oos_brier": 0.23456,
+        "oos_brier_base": 0.23467,
+        "oos_tradeable_n": 0,
+        "oos_tradeable_win_rate": null,
+        "oos_by_bin": [
+          {
+            "lo": 0.25,
+            "hi": 0.4,
+            "fit_p": 0.324,
+            "train_n": 23,
+            "oos_n": 7,
+            "oos_win": 0.286
+          },
+          {
+            "lo": 0.4,
+            "hi": 0.55,
+            "fit_p": 0.324,
+            "train_n": 1092,
+            "oos_n": 425,
+            "oos_win": 0.362
+          },
+          {
+            "lo": 0.55,
+            "hi": 0.7,
+            "fit_p": 0.324,
+            "train_n": 316,
+            "oos_n": 105,
+            "oos_win": 0.41
+          },
+          {
+            "lo": 0.7,
+            "hi": 0.9,
+            "fit_p": 0.324,
+            "train_n": 590,
+            "oos_n": 246,
+            "oos_win": 0.394
+          },
+          {
+            "lo": 0.9,
+            "hi": 1.2,
+            "fit_p": 0.324,
+            "train_n": 527,
+            "oos_n": 265,
+            "oos_win": 0.411
+          },
+          {
+            "lo": 1.2,
+            "hi": 99.0,
+            "fit_p": 0.324,
+            "train_n": 891,
+            "oos_n": 427,
+            "oos_win": 0.323
+          }
+        ],
+        "by_direction": {
+          "BUY_CALL": {
+            "n": 2434,
+            "win": 0.304
+          },
+          "BUY_PUT": {
+            "n": 2480,
+            "win": 0.369
+          }
+        },
+        "first_ts": "2026-04-02T09:30:00+05:30",
+        "last_ts": "2026-11-05T14:15:00+05:30"
+      }
+    }
+  }
+}

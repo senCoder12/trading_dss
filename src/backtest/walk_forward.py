@@ -1,12 +1,24 @@
 """
 Walk-Forward Validation Engine — Phase 6 Step 6.5.
 
-Splits historical data into rolling train/test windows, runs a backtest on
-each window, and assesses whether the strategy generalises out-of-sample
-(i.e. is not overfit to the training period).
+Two tools live here:
 
-Usage
------
+1. :func:`nested_walk_forward` — a GENERIC, genuinely out-of-sample walk-forward.
+   Chronological folds (train strictly before test, with an embargo gap),
+   ``fit_fn(train_slice) -> model`` is called on training data only,
+   ``eval_fn(model, test_slice) -> dict`` scores the fitted model on the test
+   fold, and a final untouched HOLDOUT is evaluated exactly once with a model
+   fitted on all pre-holdout data.  Use this for any out-of-sample claim.
+
+2. :class:`WalkForwardValidator` (legacy API, kept for existing callers).
+   It runs ONE fixed configuration on every train and test window — nothing is
+   fitted on the train window — so its "train vs test degradation" and
+   ``overfitting_score`` are a multi-period *stability* heuristic, not
+   out-of-sample evidence.  Calling it emits
+   :class:`FixedConfigWalkForwardWarning`.
+
+Legacy usage
+------------
 ::
 
     validator = WalkForwardValidator(db)
@@ -25,11 +37,16 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
+import statistics
+import warnings
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
+from typing import Any, Callable, Optional, Sequence
 
-from src.backtest.metrics import BacktestMetrics, MetricsCalculator
+import numpy as np
+
+from src.backtest.metrics import BacktestMetrics, MetricsCalculator, _to_date
 from src.backtest.strategy_runner import BacktestConfig, StrategyRunner
 from src.backtest.trade_simulator import SimulatorConfig
 from src.database import queries as Q
@@ -65,6 +82,15 @@ class WalkForwardConfig:
 
     # Robustness checks
     parameter_sensitivity: bool = False  # If True, also test ±20% param variation
+
+    # Gap (trading days) between each train window end and its test start.
+    embargo_days: int = 0
+
+    # Full BacktestConfig carrying every optimised parameter (min_confidence,
+    # signal_cooldown_bars, …).  When given it is used for each window (dates
+    # and simulator_config overridden) instead of rebuilding a BacktestConfig
+    # from the few fields above — which silently dropped optimised params.
+    backtest_template: Optional[BacktestConfig] = None
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +153,22 @@ class WalkForwardResult:
     is_robust: bool
     verdict: str
 
+    # Methodology: False → fixed config on all windows (stability check only).
+    is_out_of_sample: bool = False
+    methodology_note: str = ""
+
+
+class FixedConfigWalkForwardWarning(UserWarning):
+    """Emitted when the legacy fixed-config walk-forward is used."""
+
+
+_FIXED_CONFIG_NOTE = (
+    "Fixed-config walk-forward: the SAME configuration is run on every train "
+    "and test window and nothing is fitted on the train windows, so the "
+    "train→test degradation and overfitting_score are a stability heuristic, "
+    "NOT out-of-sample validation. Use nested_walk_forward() for OOS evidence."
+)
+
 
 # ---------------------------------------------------------------------------
 # Validator
@@ -146,7 +188,14 @@ class WalkForwardValidator:
     # ------------------------------------------------------------------
 
     def run_walk_forward(self, config: WalkForwardConfig) -> WalkForwardResult:
-        """Run walk-forward validation and return a ``WalkForwardResult``."""
+        """Run the fixed-config multi-window check and return a ``WalkForwardResult``.
+
+        .. deprecated::
+            Not an out-of-sample test (see module docstring); emits
+            :class:`FixedConfigWalkForwardWarning`.  Use
+            :func:`nested_walk_forward` for out-of-sample validation.
+        """
+        warnings.warn(_FIXED_CONFIG_NOTE, FixedConfigWalkForwardWarning, stacklevel=2)
         logger.info(
             "Starting walk-forward: %s  %s → %s  train=%d test=%d step=%d",
             config.index_id,
@@ -266,8 +315,8 @@ class WalkForwardValidator:
             if train_end_idx >= len(trading_days):
                 break
 
-            # Test window immediately follows
-            test_start_idx = train_end_idx + 1
+            # Test window follows after the embargo gap
+            test_start_idx = train_end_idx + 1 + max(0, config.embargo_days)
             test_end_idx = test_start_idx + config.test_window_days - 1
 
             if test_end_idx >= len(trading_days):
@@ -296,14 +345,18 @@ class WalkForwardValidator:
     # Backtest execution
     # ------------------------------------------------------------------
 
-    def _run_window_backtest(
-        self,
-        config: WalkForwardConfig,
-        start: date,
-        end: date,
-    ) -> BacktestMetrics:
-        """Run a single-period backtest and return computed metrics."""
-        bt_config = BacktestConfig(
+    @staticmethod
+    def _make_bt_config(config: WalkForwardConfig, start: date, end: date) -> BacktestConfig:
+        """BacktestConfig for one window, preserving every optimised parameter."""
+        if config.backtest_template is not None:
+            return dataclasses.replace(
+                config.backtest_template,
+                start_date=start,
+                end_date=end,
+                simulator_config=config.simulator_config,
+                show_progress=False,
+            )
+        return BacktestConfig(
             index_id=config.index_id,
             start_date=start,
             end_date=end,
@@ -314,6 +367,15 @@ class WalkForwardValidator:
             min_confidence=config.min_confidence,
             show_progress=False,
         )
+
+    def _run_window_backtest(
+        self,
+        config: WalkForwardConfig,
+        start: date,
+        end: date,
+    ) -> BacktestMetrics:
+        """Run a single-period backtest and return computed metrics."""
+        bt_config = self._make_bt_config(config, start, end)
         result = self.strategy_runner.run(bt_config)
         return self.metrics_calculator.calculate_all(
             result.trade_history,
@@ -344,17 +406,7 @@ class WalkForwardValidator:
             )
 
             # Run test period backtest (fresh simulator state)
-            bt_config = BacktestConfig(
-                index_id=config.index_id,
-                start_date=w["test_start"],
-                end_date=w["test_end"],
-                timeframe=config.timeframe,
-                warmup_bars=config.warmup_bars,
-                simulator_config=config.simulator_config,
-                mode=config.mode,
-                min_confidence=config.min_confidence,
-                show_progress=False,
-            )
+            bt_config = self._make_bt_config(config, w["test_start"], w["test_end"])
             test_result = self.strategy_runner.run(bt_config)
             test_metrics = self.metrics_calculator.calculate_all(
                 test_result.trade_history,
@@ -519,7 +571,9 @@ class WalkForwardValidator:
             overfitting_score=score,
             overfitting_assessment=assessment,
             is_robust=is_robust,
-            verdict=verdict,
+            verdict=verdict + "\n\n  NOTE: " + _FIXED_CONFIG_NOTE,
+            is_out_of_sample=False,
+            methodology_note=_FIXED_CONFIG_NOTE,
         )
 
     @staticmethod
@@ -531,7 +585,12 @@ class WalkForwardValidator:
         avg_train_sharpe: float,
         avg_test_sharpe: float,
     ) -> tuple[float, str]:
-        """Compute overfitting score (0–1) and classification label."""
+        """Heuristic stability score (0–1) and label.
+
+        Only meaningful as an overfitting measure when the train metrics come
+        from a configuration FITTED on the train window; for the legacy
+        fixed-config walk-forward it measures period-to-period instability.
+        """
         score = 0.0
 
         # Factor 1: Return degradation (0–0.3)
@@ -619,3 +678,329 @@ class WalkForwardValidator:
                 f"  Avg test return: {avg_test_return:.1f}%.\n"
                 f"  Gather more data before trading."
             )
+
+
+
+# ===========================================================================
+# Generic nested (purged / embargoed) walk-forward
+# ===========================================================================
+
+
+@dataclass
+class Fold:
+    """One chronological train/test split (positions refer to unique days)."""
+
+    fold_id: int
+    train_days: list[date]
+    test_days: list[date]
+    embargo_days: int
+    is_holdout: bool = False
+
+    @property
+    def train_start(self) -> date:
+        return self.train_days[0]
+
+    @property
+    def train_end(self) -> date:
+        return self.train_days[-1]
+
+    @property
+    def test_start(self) -> date:
+        return self.test_days[0]
+
+    @property
+    def test_end(self) -> date:
+        return self.test_days[-1]
+
+
+@dataclass
+class FoldResult:
+    """Out-of-sample evaluation of one fold (or of the holdout)."""
+
+    fold: Fold
+    metrics: dict[str, Any]
+    n_train_obs: int
+    n_test_obs: int
+    model: Any = None
+
+
+@dataclass
+class NestedWalkForwardResult:
+    """Per-fold and aggregate out-of-sample metrics plus the holdout."""
+
+    folds: list[FoldResult]
+    holdout: Optional[FoldResult]
+    oos_summary: dict[str, dict[str, float]]   # metric → {mean, median, std, min, max, n}
+    n_folds: int
+    embargo_days: int
+    holdout_fraction: float
+    expanding: bool
+
+    @property
+    def holdout_metrics(self) -> Optional[dict[str, Any]]:
+        return self.holdout.metrics if self.holdout is not None else None
+
+    def summary(self) -> str:
+        lines = [
+            f"NESTED WALK-FORWARD: {self.n_folds} folds, embargo {self.embargo_days}d, "
+            f"{'expanding' if self.expanding else 'rolling'} train, "
+            f"holdout {self.holdout_fraction:.0%}"
+        ]
+        for fr in self.folds:
+            f = fr.fold
+            lines.append(
+                f"  Fold {f.fold_id}: train {f.train_start}→{f.train_end} | "
+                f"test {f.test_start}→{f.test_end} | {_fmt_metrics(fr.metrics)}"
+            )
+        for k, st in self.oos_summary.items():
+            lines.append(
+                f"  OOS {k}: mean {st['mean']:.4g} median {st['median']:.4g} "
+                f"std {st['std']:.4g} [min {st['min']:.4g}, max {st['max']:.4g}] n={int(st['n'])}"
+            )
+        if self.holdout is not None:
+            h = self.holdout.fold
+            lines.append(
+                f"  HOLDOUT (evaluated once) {h.test_start}→{h.test_end}: "
+                f"{_fmt_metrics(self.holdout.metrics)}"
+            )
+        return "\n".join(lines)
+
+
+def _fmt_metrics(m: dict[str, Any]) -> str:
+    parts = []
+    for k, v in m.items():
+        if isinstance(v, float):
+            parts.append(f"{k}={v:.4g}")
+        elif isinstance(v, (int, str, bool)):
+            parts.append(f"{k}={v}")
+    return ", ".join(parts)
+
+
+def make_walk_forward_folds(
+    days: Sequence[Any],
+    n_folds: Optional[int] = 5,
+    train_days: Optional[int] = None,
+    test_days: Optional[int] = None,
+    embargo_days: int = 1,
+    holdout_fraction: float = 0.2,
+    expanding: bool = True,
+    min_train_days: int = 1,
+) -> tuple[list[Fold], Optional[Fold]]:
+    """Build chronological purged/embargoed folds over unique trading days.
+
+    * The last ``ceil(holdout_fraction · n)`` days form the HOLDOUT; folds only
+      use the days before it.
+    * Fold ``k`` tests on a contiguous block of ``test_days`` days; its training
+      window ends ``embargo_days`` days before the test block starts (the gap is
+      neither trained on nor tested — it purges observations whose outcome
+      horizon could overlap the test block).
+    * ``expanding=True``: training is anchored at the first day (``train_days``
+      then only sets the initial size).  ``expanding=False``: rolling window of
+      ``train_days`` days.
+    * If ``test_days`` is omitted it is derived from ``n_folds``; if
+      ``n_folds`` is omitted as many folds as fit are produced.  Test blocks
+      are aligned so the last one ends right before the holdout.
+    * The holdout fold trains on all pre-holdout days except the final
+      ``embargo_days``.
+    """
+    uniq = sorted({_to_date(d) for d in days})
+    n = len(uniq)
+    if not 0.0 <= holdout_fraction < 1.0:
+        raise ValueError(f"holdout_fraction must be in [0, 1), got {holdout_fraction}")
+    if embargo_days < 0:
+        raise ValueError("embargo_days must be >= 0")
+    if not expanding and not train_days:
+        raise ValueError("Rolling (expanding=False) folds require train_days")
+
+    n_hold = int(math.ceil(n * holdout_fraction)) if holdout_fraction > 0 else 0
+    pre = uniq[: n - n_hold]
+    hold = uniq[n - n_hold:]
+    m = len(pre)
+
+    if test_days is None:
+        if not n_folds:
+            raise ValueError("Provide n_folds or test_days")
+        initial = train_days if train_days else None
+        if initial is None:
+            test_days = (m - embargo_days) // (n_folds + 1)
+        else:
+            test_days = (m - initial - embargo_days) // n_folds
+    if test_days < 1:
+        raise ValueError(
+            f"Not enough pre-holdout data ({m} days) for the requested folds"
+        )
+    if not n_folds:
+        initial = train_days or test_days
+        n_folds = (m - initial - embargo_days) // test_days
+    if n_folds < 1:
+        raise ValueError(f"Not enough pre-holdout data ({m} days) for one fold")
+
+    first_test = m - n_folds * test_days
+    folds: list[Fold] = []
+    for k in range(n_folds):
+        ts = first_test + k * test_days
+        te = ts + test_days
+        tr_end = ts - embargo_days
+        tr_start = 0 if expanding else max(0, tr_end - int(train_days))
+        if tr_end - tr_start < max(1, min_train_days):
+            logger.warning("Fold %d skipped: only %d training days", k, max(tr_end - tr_start, 0))
+            continue
+        folds.append(Fold(
+            fold_id=len(folds) + 1,
+            train_days=pre[tr_start:tr_end],
+            test_days=pre[ts:te],
+            embargo_days=embargo_days,
+        ))
+    if not folds:
+        raise ValueError("No fold has enough training data; reduce n_folds/test_days/embargo")
+
+    holdout: Optional[Fold] = None
+    if hold:
+        h_train_end = m - embargo_days
+        h_train_start = 0 if expanding else max(0, h_train_end - int(train_days))
+        if h_train_end - h_train_start < max(1, min_train_days):
+            raise ValueError("Not enough pre-holdout data to fit the holdout model")
+        holdout = Fold(
+            fold_id=0,
+            train_days=pre[h_train_start:h_train_end],
+            test_days=list(hold),
+            embargo_days=embargo_days,
+            is_holdout=True,
+        )
+    return folds, holdout
+
+
+def _take(items: Any, positions: Sequence[int]) -> Any:
+    """Subset ``items`` by integer positions, preserving its container type."""
+    pos = np.asarray(positions, dtype=np.int64)
+    if hasattr(items, "iloc"):                     # pandas Series / DataFrame
+        return items.iloc[pos]
+    if isinstance(items, np.ndarray):
+        return items[pos]
+    if hasattr(items, "take"):                     # pandas Index
+        return items.take(pos)
+    if isinstance(items, tuple):
+        return tuple(items[i] for i in pos)
+    return [items[i] for i in pos]
+
+
+def _summarise_metrics(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    keys: list[str] = []
+    for r in rows:
+        for k in r:
+            if k not in keys:
+                keys.append(k)
+    out: dict[str, dict[str, float]] = {}
+    for k in keys:
+        vals = [
+            float(r[k]) for r in rows
+            if k in r and isinstance(r[k], (int, float)) and not isinstance(r[k], bool)
+            and math.isfinite(float(r[k]))
+        ]
+        if not vals:
+            continue
+        out[k] = {
+            "mean": statistics.mean(vals),
+            "median": statistics.median(vals),
+            "std": statistics.stdev(vals) if len(vals) > 1 else 0.0,
+            "min": min(vals),
+            "max": max(vals),
+            "n": float(len(vals)),
+        }
+    return out
+
+
+def nested_walk_forward(
+    timestamps_or_dates: Sequence[Any],
+    fit_fn: Callable[[Any], Any],
+    eval_fn: Callable[[Any, Any], dict],
+    n_folds: Optional[int] = 5,
+    train_days: Optional[int] = None,
+    test_days: Optional[int] = None,
+    embargo_days: int = 1,
+    holdout_fraction: float = 0.2,
+    expanding: bool = True,
+    min_train_days: int = 1,
+    keep_models: bool = False,
+) -> NestedWalkForwardResult:
+    """Generic out-of-sample walk-forward with embargo and a final holdout.
+
+    Args:
+        timestamps_or_dates: chronological observations (dates, datetimes,
+            pandas Timestamps, a DatetimeIndex, …).  Several observations may
+            share a day (intraday bars); folds are cut on unique trading days so
+            a day is never split between train and test.
+        fit_fn: ``fit_fn(train_slice) -> model``.  Receives ONLY the training
+            observations of the fold (same container type as the input).
+        eval_fn: ``eval_fn(model, test_slice) -> dict`` of metrics.
+        n_folds / train_days / test_days / embargo_days / holdout_fraction /
+        expanding / min_train_days: see :func:`make_walk_forward_folds`.
+        keep_models: store each fitted model on its :class:`FoldResult`.
+
+    Returns:
+        :class:`NestedWalkForwardResult` with per-fold OOS metrics, their
+        aggregate (mean/median/std/min/max per numeric metric) and the holdout
+        metrics.  The holdout is evaluated exactly once, with a model fitted on
+        all pre-holdout data (less the embargo); it never influences the folds.
+    """
+    items = timestamps_or_dates
+    if not hasattr(items, "__getitem__") or isinstance(items, (str, bytes)):
+        items = list(items)
+    use_index = hasattr(items, "iloc") and not _is_datelike_values(items)
+    item_days = [_to_date(x) for x in (items.index if use_index else items)]
+    for a, b in zip(item_days, item_days[1:]):
+        if b < a:
+            raise ValueError("timestamps_or_dates must be in chronological order")
+
+    folds, holdout_fold = make_walk_forward_folds(
+        item_days, n_folds=n_folds, train_days=train_days, test_days=test_days,
+        embargo_days=embargo_days, holdout_fraction=holdout_fraction,
+        expanding=expanding, min_train_days=min_train_days,
+    )
+
+    positions: dict[date, list[int]] = {}
+    for i, d in enumerate(item_days):
+        positions.setdefault(d, []).append(i)
+
+    def _positions(days: list[date]) -> list[int]:
+        out: list[int] = []
+        for d in days:
+            out.extend(positions[d])
+        return out
+
+    def _run(fold: Fold) -> FoldResult:
+        tr = _positions(fold.train_days)
+        te = _positions(fold.test_days)
+        if not fold.train_end < fold.test_start:
+            raise RuntimeError("fold construction error: train must end before test starts")
+        model = fit_fn(_take(items, tr))
+        metrics = eval_fn(model, _take(items, te))
+        if not isinstance(metrics, dict):
+            raise TypeError(f"eval_fn must return a dict, got {type(metrics).__name__}")
+        return FoldResult(
+            fold=fold, metrics=dict(metrics), n_train_obs=len(tr), n_test_obs=len(te),
+            model=model if keep_models else None,
+        )
+
+    fold_results = [_run(f) for f in folds]
+    holdout_result = _run(holdout_fold) if holdout_fold is not None else None
+
+    return NestedWalkForwardResult(
+        folds=fold_results,
+        holdout=holdout_result,
+        oos_summary=_summarise_metrics([fr.metrics for fr in fold_results]),
+        n_folds=len(fold_results),
+        embargo_days=embargo_days,
+        holdout_fraction=holdout_fraction,
+        expanding=expanding,
+    )
+
+
+def _is_datelike_values(obj: Any) -> bool:
+    """For pandas objects: True if the VALUES (not the index) are dates."""
+    try:
+        first = obj.iloc[0]
+        _to_date(first)
+        return True
+    except Exception:
+        return False

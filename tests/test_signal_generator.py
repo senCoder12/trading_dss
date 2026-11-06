@@ -1,18 +1,16 @@
 """
-Tests for SignalGenerator — Phase 5.2.
+Tests for SignalGenerator — calibrated model (Phase 2).
 
 Covers:
-- BUY_CALL / BUY_PUT / NO_TRADE outcomes across all regimes
-- Safety checks (crash, anomaly extreme, max trades, market close, bad price)
-- Weight redistribution when data is missing
-- Divergence override (RSI + OBV)
-- Confidence floor (0.15) and ceiling (0.92)
-- Entry / stop-loss / target level calculation
-- Reasoning text completeness
-- Expiry day and gap-fill modifiers
-- Smart money conflict warnings
-- Cooldown detection
-- 10+ parametrized scenario matrix
+- The calibrated score (model_score): only measured components score;
+  options/anomaly never add weight
+- Calibrated confidence: P(win) from SignalCalibration, penalties only,
+  no trading without a validated calibration
+- Vetoes from unmeasured components (options positioning, anomaly)
+- Safety checks (crash, choppy, extreme anomaly, max trades, close, price,
+  stale bars) and the fail-closed daily trade count
+- Direction thresholds (same in every regime), levels, R:R gate
+- Weight redistribution, conflicting signals, cooldown, dedup, reasoning
 """
 
 from __future__ import annotations
@@ -37,11 +35,12 @@ from src.analysis.indicators.volume import VolumeSummary
 from src.analysis.news.news_engine import NewsVote
 from src.analysis.technical_aggregator import TechnicalAnalysisResult
 from src.engine.regime_detector import MarketRegime, SignalWeights
+from src.engine.signal_calibration import CALIBRATION_VERSION, SignalCalibration
 from src.engine.signal_generator import (
     SignalGenerator,
     TradingSignal,
-    _CONF_CEILING,
-    _CONF_FLOOR,
+    _CONF_HIGH,
+    _CONF_MEDIUM,
     _SCORE_CALL_THRESHOLD,
     _SCORE_PUT_THRESHOLD,
 )
@@ -240,8 +239,8 @@ def _technical(
     divergence_detected: bool = False,
     rsi_divergence: Optional[str] = None,
     obv_divergence: Optional[str] = None,
-    immediate_support: float = 22_300.0,
-    immediate_resistance: float = 22_700.0,
+    immediate_support: float = 22_380.0,
+    immediate_resistance: float = 22_520.0,
     overall_signal: str = "BUY",
     atr: float = 120.0,
     position_size_modifier: float = 1.0,
@@ -365,1166 +364,279 @@ def _regime(
     )
 
 
-def _mock_db() -> MagicMock:
+def _mock_db(today_count: int = 0) -> MagicMock:
     db = MagicMock()
     db.execute.return_value = MagicMock()
+    db.fetch_one.return_value = {"count": today_count}
     return db
 
 
-def _make_generator() -> SignalGenerator:
-    return SignalGenerator(_mock_db())
+def _calibration(tmp_path, p: float = 0.60, validated: bool = True, index_key: str = "ALL"):
+    """Write a calibration file whose bins all map to *p*."""
+    path = tmp_path / "cal.json"
+    edges = [0.25, 0.5, 1.0, 99.0]
+    path.write_text(json.dumps({
+        "version": CALIBRATION_VERSION,
+        "generated_at": datetime.now(tz=_IST).isoformat(),
+        "models": {index_key: {
+            "bins": [{"lo": lo, "hi": hi, "n": 100, "wins": int(100 * p), "p_win": p}
+                     for lo, hi in zip(edges, edges[1:])],
+            "validated": validated,
+            "meta": {"validation_note": "test"},
+        }},
+    }))
+    return SignalCalibration(path)
 
 
-# ---------------------------------------------------------------------------
-# Common patching decorator: freeze time at 10:30 AM, never near close
-# ---------------------------------------------------------------------------
-
-def morning_patch(fn):
-    """Decorator that patches datetime.now and _is_near_market_close for test."""
-    def wrapper(*args, **kwargs):
-        with patch(
-            "src.engine.signal_generator.SignalGenerator._is_near_market_close",
-            staticmethod(lambda now, minutes=30: False),
-        ):
-            return fn(*args, **kwargs)
-    wrapper.__name__ = fn.__name__
-    return wrapper
+def _gen(tmp_path, p: float = 0.60, validated: bool = True, today_count: int = 0) -> SignalGenerator:
+    return SignalGenerator(_mock_db(today_count), calibration=_calibration(tmp_path, p, validated))
 
 
-# ---------------------------------------------------------------------------
-# ──────────────────────────── Core signal tests ───────────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestBullishSignal:
-    """All-bullish inputs should produce BUY_CALL with HIGH confidence."""
-
-    def test_all_bullish_gives_buy_call(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            options=_options(vote="BULLISH"),
-            smart_money=_smart_money(bias="BULLISH"),
+def _signal(gen, technical=None, anomaly=None, regime=None, now=MORNING, spot=SPOT_PRICE):
+    with patch(
+        "src.engine.signal_generator.SignalGenerator._is_near_market_close",
+        staticmethod(lambda now, minutes=30: False),
+    ):
+        return gen.generate_signal(
+            index_id=INDEX_ID,
+            technical=technical or _technical(),
+            news=None,
+            anomaly=anomaly,
+            regime=regime or _regime(),
+            current_spot_price=spot,
+            timestamp=now,
         )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("STRONG_TREND_UP", position_size_multiplier=1.2),
-                SPOT_PRICE,
-            )
-
-        assert sig.signal_type == "BUY_CALL"
-        assert sig.confidence_level in ("HIGH", "MEDIUM")
-        assert sig.weighted_score > _SCORE_CALL_THRESHOLD
-
-    def test_all_bullish_high_confidence(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            options=_options(vote="BULLISH", confidence=0.80),
-            smart_money=_smart_money(bias="STRONGLY_BULLISH", grade="A+", confidence=0.85),
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("STRONG_BULLISH"), _anomaly("BULLISH"),
-                _regime("STRONG_TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        assert sig.signal_type == "BUY_CALL"
-        assert sig.confidence_score >= _CONF_FLOOR
-        assert sig.confidence_score <= _CONF_CEILING
-
-    def test_buy_call_levels_are_correct(self):
-        """Stop loss should be below entry; target above entry for BUY_CALL."""
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            immediate_support=22_200.0,
-            immediate_resistance=22_800.0,
-            atr=100.0,
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("BULLISH"),
-                _regime("STRONG_TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        if sig.signal_type == "BUY_CALL":
-            assert sig.entry_price == SPOT_PRICE
-            assert sig.stop_loss < sig.entry_price, "Stop must be below entry for CALL"
-            assert sig.target_price > sig.entry_price, "Target must be above entry for CALL"
-            assert sig.risk_reward_ratio > 0
 
 
-class TestBearishSignal:
-    """All-bearish inputs should produce BUY_PUT with HIGH confidence."""
-
-    def test_all_bearish_gives_buy_put(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BEARISH",
-            momentum_vote="BEARISH",
-            volume_vote="BEARISH",
-            options=_options(vote="BEARISH"),
-            smart_money=_smart_money(bias="BEARISH"),
-            overall_signal="SELL",
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BEARISH"), _anomaly("BEARISH"),
-                _regime("STRONG_TREND_DOWN"),
-                SPOT_PRICE,
-            )
-
-        assert sig.signal_type == "BUY_PUT"
-        assert sig.weighted_score < _SCORE_PUT_THRESHOLD
-
-    def test_buy_put_levels_are_correct(self):
-        """Stop loss should be above entry; target below entry for BUY_PUT."""
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BEARISH",
-            momentum_vote="BEARISH",
-            volume_vote="BEARISH",
-            immediate_support=22_000.0,
-            immediate_resistance=22_800.0,
-            atr=100.0,
-            overall_signal="SELL",
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BEARISH"), _anomaly("NEUTRAL"),
-                _regime("STRONG_TREND_DOWN"),
-                SPOT_PRICE,
-            )
-
-        if sig.signal_type == "BUY_PUT":
-            assert sig.stop_loss > sig.entry_price, "Stop must be above entry for PUT"
-            assert sig.target_price < sig.entry_price, "Target must be below entry for PUT"
-            assert sig.risk_reward_ratio > 0
+# ===========================================================================
+# 1. The calibrated score
+# ===========================================================================
 
 
-class TestMixedSignal:
-    """Mixed / conflicting inputs should produce NO_TRADE or LOW confidence."""
+class TestModelScore:
+    def test_options_and_anomaly_do_not_add_weight(self):
+        regime = _regime()
+        bull_opts = _technical(options=_options(vote="STRONG_BULLISH", confidence=0.95))
+        bear_opts = _technical(options=_options(vote="STRONG_BEARISH", confidence=0.95))
+        s1, votes, comps = SignalGenerator.model_score(bull_opts, regime)
+        s2, _, _ = SignalGenerator.model_score(bear_opts, regime)
+        assert s1 == pytest.approx(s2)
+        assert "options" not in votes and "anomaly" not in votes
+        assert comps <= {"trend", "momentum", "volume", "smart_money"}
 
-    def test_perfectly_split_votes_no_trade(self):
-        gen = _make_generator()
-        # Trend strongly bullish, momentum strongly bearish → net cancel
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="STRONG_BEARISH",
-            volume_vote="NEUTRAL",
-        )
-        # Remove options and smart money so fewer votes skew less
-        tech = replace(tech, options=None, smart_money=None)
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, None, None,
-                _regime("RANGE_BOUND"),
-                SPOT_PRICE,
-            )
+    def test_no_volume_scores_on_trend_and_momentum_only(self):
+        tech = replace(_technical(smart_money=_smart_money()), volume_available=False)
+        _, votes, comps = SignalGenerator.model_score(tech, _regime())
+        assert comps == {"trend", "momentum"}
+        assert set(votes) == {"trend", "momentum"}
 
-        # Either NO_TRADE or LOW confidence — not HIGH confidence
-        if sig.signal_type != "NO_TRADE":
-            assert sig.confidence_level in ("LOW", "MEDIUM")
+    def test_failed_component_is_unavailable_not_neutral(self):
+        tech = replace(_technical(), unavailable_components=["momentum"])
+        _, votes, comps = SignalGenerator.model_score(tech, _regime())
+        assert "momentum" not in comps and "momentum" not in votes
 
-    def test_no_trade_when_score_in_dead_zone(self):
-        gen = _make_generator()
-        # All NEUTRAL → score near 0
-        tech = _technical(
-            trend_vote="NEUTRAL",
-            momentum_vote="NEUTRAL",
-            volume_vote="NEUTRAL",
-        )
-        tech = replace(tech, options=None, smart_money=None)
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, None, None,
-                _regime("RANGE_BOUND"),
-                SPOT_PRICE,
-            )
+    def test_weights_renormalised_over_scored_components(self):
+        tech = replace(_technical(), volume_available=False)
+        _, votes, _ = SignalGenerator.model_score(tech, _regime())
+        assert sum(w for _, _, w in votes.values()) == pytest.approx(1.0)
 
+    def test_bearish_inputs_give_negative_score(self):
+        tech = _technical(trend_vote="BEARISH", momentum_vote="BEARISH", volume_vote="BEARISH")
+        score, _, _ = SignalGenerator.model_score(tech, _regime(regime="TREND_DOWN"))
+        assert score < 0
+
+
+class TestDirection:
+    def test_thresholds(self):
+        assert SignalGenerator._determine_direction(0.30) == "BUY_CALL"
+        assert SignalGenerator._determine_direction(-0.30) == "BUY_PUT"
+        assert SignalGenerator._determine_direction(0.10) == "NO_TRADE"
+
+    def test_choppy_has_no_lowered_threshold(self):
+        assert SignalGenerator._determine_direction(0.20, "VOLATILE_CHOPPY") == "NO_TRADE"
+
+    def test_crash_never_calls(self):
+        assert SignalGenerator._determine_direction(1.5, "CRASH") == "NO_TRADE"
+
+
+# ===========================================================================
+# 2. Calibrated confidence
+# ===========================================================================
+
+
+class TestCalibratedConfidence:
+    def test_no_calibration_file_means_no_trade(self, tmp_path):
+        gen = SignalGenerator(_mock_db(), calibration=SignalCalibration(tmp_path / "missing.json"))
+        sig = _signal(gen)
         assert sig.signal_type == "NO_TRADE"
+        assert "calibrate_signal_model" in sig.reasoning
+
+    def test_unvalidated_calibration_means_no_trade(self, tmp_path):
+        sig = _signal(_gen(tmp_path, p=0.70, validated=False))
+        assert sig.signal_type == "NO_TRADE"
+        assert "out-of-sample" in sig.reasoning
+
+    def test_validated_high_probability_trades(self, tmp_path):
+        sig = _signal(_gen(tmp_path, p=0.62))
+        assert sig.signal_type == "BUY_CALL"
+        assert sig.confidence_score == pytest.approx(0.62)
+        assert sig.confidence_level == "HIGH"
+
+    def test_medium_band(self, tmp_path):
+        sig = _signal(_gen(tmp_path, p=0.53))
+        assert sig.signal_type == "BUY_CALL" and sig.confidence_level == "MEDIUM"
+
+    def test_below_medium_is_no_trade(self, tmp_path):
+        sig = _signal(_gen(tmp_path, p=0.45))
+        assert sig.signal_type == "NO_TRADE"
+        assert "Calibrated P(win) 0.45" in sig.reasoning
+
+    def test_haircuts_only_lower_probability(self, tmp_path):
+        gen = _gen(tmp_path, p=0.60)
+        sig = _signal(gen, anomaly=_anomaly(risk_level="HIGH"),
+                      regime=_regime(volatility_regime="EXTREME", regime_changing=True))
+        # 0.60 - 0.05 (anomaly HIGH) - 0.05 (extreme vol) - 0.02 (transition) = 0.48
+        assert sig.signal_type == "NO_TRADE"
+        assert "0.48" in sig.reasoning
+
+    def test_per_index_model_preferred_over_pooled(self, tmp_path):
+        cal = _calibration(tmp_path, p=0.40, index_key="ALL")
+        payload = json.loads((tmp_path / "cal.json").read_text())
+        payload["models"]["NIFTY50"] = {
+            "bins": [{"lo": 0.25, "hi": 99.0, "n": 100, "wins": 60, "p_win": 0.60}],
+            "validated": True, "meta": {},
+        }
+        (tmp_path / "cal.json").write_text(json.dumps(payload))
+        p, _ = SignalCalibration(tmp_path / "cal.json").lookup("NIFTY50", 0.8)
+        assert p == 0.60
+        assert cal.lookup("BANKNIFTY", 0.8)[0] == 0.40
 
 
-# ---------------------------------------------------------------------------
-# ──────────────────────────── Safety check tests ──────────────────────────
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 3. Vetoes
+# ===========================================================================
+
+
+class TestVetoes:
+    def test_options_opposing_vetoes_call(self, tmp_path):
+        tech = _technical(options=_options(vote="BEARISH", confidence=0.7))
+        sig = _signal(_gen(tmp_path), technical=tech)
+        assert sig.signal_type == "NO_TRADE" and "Options positioning opposes" in sig.reasoning
+
+    def test_weak_options_disagreement_does_not_veto(self, tmp_path):
+        tech = _technical(options=_options(vote="BEARISH", confidence=0.4))
+        assert _signal(_gen(tmp_path), technical=tech).signal_type == "BUY_CALL"
+
+    def test_anomaly_high_risk_opposing_vetoes(self, tmp_path):
+        sig = _signal(_gen(tmp_path, p=0.70), anomaly=_anomaly(vote="BEARISH", risk_level="HIGH"))
+        assert sig.signal_type == "NO_TRADE" and "Anomaly engine" in sig.reasoning
+
+    def test_agreeing_options_do_not_boost(self, tmp_path):
+        base = _signal(_gen(tmp_path, p=0.55))
+        with_opts = _signal(_gen(tmp_path, p=0.55),
+                            technical=_technical(options=_options(vote="STRONG_BULLISH", confidence=0.95)))
+        assert with_opts.confidence_score == base.confidence_score
+
+
+# ===========================================================================
+# 4. Safety checks
+# ===========================================================================
 
 
 class TestSafetyChecks:
+    def test_crash_regime_no_trade(self, tmp_path):
+        sig = _signal(_gen(tmp_path), regime=_regime(regime="CRASH"))
+        assert sig.signal_type == "NO_TRADE" and "CRASH" in sig.reasoning
 
-    def test_extreme_anomaly_always_no_trade(self):
-        """Even with all-bullish signals, EXTREME anomaly → NO_TRADE."""
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-        )
-        dangerous_anomaly = _anomaly(risk_level="EXTREME")
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("STRONG_BULLISH"), dangerous_anomaly,
-                _regime("STRONG_TREND_UP"),
-                SPOT_PRICE,
-            )
+    def test_choppy_regime_blocked(self, tmp_path):
+        sig = _signal(_gen(tmp_path, p=0.8), regime=_regime(regime="VOLATILE_CHOPPY"))
+        assert sig.signal_type == "NO_TRADE" and "VOLATILE_CHOPPY" in sig.reasoning
 
-        assert sig.signal_type == "NO_TRADE"
-        assert "extreme anomaly" in sig.reasoning.lower() or "extreme" in " ".join(sig.warnings).lower()
-
-    def test_max_trades_reached_no_trade(self):
-        """When today's count >= max_trades_today → NO_TRADE."""
-        gen = _make_generator()
-        regime = _regime(max_trades_today=2)
-
-        # Pre-fill the cache with 2 signals
-        dummy = TradingSignal(
-            signal_id="x",
-            index_id=INDEX_ID,
-            generated_at=MORNING,
-            signal_type="BUY_CALL",
-            confidence_level="HIGH",
-            confidence_score=0.80,
-            entry_price=SPOT_PRICE,
-            target_price=SPOT_PRICE + 200,
-            stop_loss=SPOT_PRICE - 150,
-            risk_reward_ratio=1.5,
-            regime=regime.regime,
-            weighted_score=1.2,
-            vote_breakdown={},
-            risk_level="NORMAL",
-            position_size_modifier=1.0,
-            suggested_lot_count=1,
-            estimated_max_loss=150.0,
-            estimated_max_profit=200.0,
-            reasoning="",
-            warnings=[],
-        )
-        # Set the date so _refresh_daily_cache doesn't wipe the pre-filled cache
-        gen._today_date = MORNING.strftime("%Y-%m-%d")
-        gen._today_signals[INDEX_ID] = [dummy, dummy]
-
-        tech = _technical(trend_vote="STRONG_BULLISH", momentum_vote="BULLISH", volume_vote="BULLISH")
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                regime,
-                SPOT_PRICE,
-            )
-
-        assert sig.signal_type == "NO_TRADE"
-        assert "max signals" in sig.reasoning.lower() or any("max" in w.lower() for w in sig.warnings)
-
-    def test_crash_regime_no_trade(self):
-        """CRASH regime → RegimeDetector.is_safe_to_trade returns False → NO_TRADE."""
-        gen = _make_generator()
-        crash_regime = _regime(regime="CRASH")
-        tech = _technical(trend_vote="BULLISH", momentum_vote="BULLISH", volume_vote="BULLISH")
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                crash_regime,
-                SPOT_PRICE,
-            )
-
-        assert sig.signal_type == "NO_TRADE"
-        assert "crash" in sig.reasoning.lower() or any(
-            "crash" in w.lower() or "unsafe" in w.lower() for w in sig.warnings
-        )
-
-    def test_invalid_spot_price_no_trade(self):
-        gen = _make_generator()
-        tech = _technical()
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime(),
-                0.0,  # invalid price
-            )
+    def test_extreme_anomaly_no_trade(self, tmp_path):
+        sig = _signal(_gen(tmp_path), anomaly=_anomaly(risk_level="EXTREME"))
         assert sig.signal_type == "NO_TRADE"
 
-    def test_near_market_close_no_trade(self):
-        """If _is_near_market_close returns True → NO_TRADE."""
-        gen = _make_generator()
-        tech = _technical(trend_vote="STRONG_BULLISH", momentum_vote="BULLISH", volume_vote="BULLISH")
-        # Do NOT patch _is_near_market_close — but pass NEAR_CLOSE time via monkeypatching datetime
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=True):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime(),
-                SPOT_PRICE,
-            )
-        assert sig.signal_type == "NO_TRADE"
-        assert any("close" in w.lower() for w in sig.warnings)
-
-    def test_volatile_choppy_high_vol_no_trade(self):
-        """VOLATILE_CHOPPY + HIGH volatility → is_safe_to_trade → False → NO_TRADE."""
-        gen = _make_generator()
-        choppy_regime = _regime(regime="VOLATILE_CHOPPY", volatility_regime="HIGH")
-        tech = _technical(trend_vote="BULLISH", momentum_vote="BULLISH", volume_vote="BULLISH")
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                choppy_regime,
-                SPOT_PRICE,
-            )
-        assert sig.signal_type == "NO_TRADE"
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────────── Weight redistribution tests ─────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestWeightRedistribution:
-
-    def test_options_missing_weights_sum_to_one(self):
-        """When options data is None, redistributed weights should still sum to 1.0."""
-        gen = _make_generator()
-        base_weights = SignalWeights()
-        available = {"trend", "momentum", "volume", "news", "smart_money", "anomaly"}
-        new_weights = gen._redistribute_weights(base_weights, available)
-        total = (
-            new_weights.trend_weight
-            + new_weights.momentum_weight
-            + new_weights.options_weight
-            + new_weights.volume_weight
-            + new_weights.news_weight
-            + new_weights.smart_money_weight
-            + new_weights.anomaly_weight
-        )
-        assert abs(total - 1.0) < 1e-6, f"Weights sum to {total}, not 1.0"
-        assert new_weights.options_weight == 0.0
-
-    def test_options_and_news_missing_weights_sum_to_one(self):
-        gen = _make_generator()
-        base_weights = SignalWeights()
-        available = {"trend", "momentum", "volume", "smart_money", "anomaly"}
-        new_weights = gen._redistribute_weights(base_weights, available)
-        total = sum([
-            new_weights.trend_weight,
-            new_weights.momentum_weight,
-            new_weights.options_weight,
-            new_weights.volume_weight,
-            new_weights.news_weight,
-            new_weights.smart_money_weight,
-            new_weights.anomaly_weight,
-        ])
-        assert abs(total - 1.0) < 1e-6
-        assert new_weights.options_weight == 0.0
-        assert new_weights.news_weight == 0.0
-
-    def test_no_options_still_generates_signal(self):
-        """With options=None, signal generator should still produce a valid signal."""
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-        )
-        # Remove options explicitly
-        tech = replace(tech, options=None)
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("STRONG_TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        # Should still produce a directional signal if conditions are met
-        assert sig.signal_type in ("BUY_CALL", "BUY_PUT", "NO_TRADE")
-
-    def test_all_optional_missing_still_functional(self):
-        """No news, no anomaly, no options, no smart money — still runs."""
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-        )
-        tech = replace(tech, options=None, smart_money=None)
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, None, None,
-                _regime("TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        assert isinstance(sig, TradingSignal)
-        assert sig.signal_type in ("BUY_CALL", "BUY_PUT", "NO_TRADE")
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────────── Divergence override tests ───────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestDivergenceOverride:
-
-    def test_bullish_divergence_boosts_neutral_score(self):
-        """A BULLISH_DIVERGENCE in RSI should push a neutral score toward BUY_CALL."""
-        gen = _make_generator()
-
-        # Create neutral/mildly bearish technical setup
-        tech = _technical(
-            trend_vote="NEUTRAL",
-            momentum_vote="NEUTRAL",
-            volume_vote="SLIGHTLY_BEARISH",
-            divergence_detected=True,
-            rsi_divergence="BULLISH_DIVERGENCE",
-        )
-        tech = replace(tech, options=None, smart_money=None)
-
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, None, None,
-                _regime("RANGE_BOUND"),
-                SPOT_PRICE,
-            )
-
-        # The override boosted the score by 0.3
-        # Even if it's still NO_TRADE, warnings should mention divergence
-        divergence_mentioned = any("divergence" in w.lower() for w in sig.warnings)
-        assert divergence_mentioned or sig.signal_type == "BUY_CALL"
-
-    def test_bearish_divergence_pushes_toward_put(self):
-        """A BEARISH_DIVERGENCE should bias a neutral score toward BUY_PUT."""
-        gen = _make_generator()
-
-        tech = _technical(
-            trend_vote="NEUTRAL",
-            momentum_vote="NEUTRAL",
-            volume_vote="SLIGHTLY_BULLISH",
-            divergence_detected=True,
-            rsi_divergence="BEARISH_DIVERGENCE",
-        )
-        tech = replace(tech, options=None, smart_money=None)
-
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, None, None,
-                _regime("RANGE_BOUND"),
-                SPOT_PRICE,
-            )
-
-        divergence_mentioned = any("divergence" in w.lower() for w in sig.warnings)
-        assert divergence_mentioned or sig.signal_type == "BUY_PUT"
-
-    def test_divergence_override_applied_to_score(self):
-        """Test _apply_divergence_override directly."""
-        gen = _make_generator()
-
-        # Neutral score + bullish divergence → score should increase
-        momentum = _momentum(divergence_detected=True, rsi_divergence="BULLISH_DIVERGENCE")
-        vol = replace(_volume(), obv_divergence=None)
-        tech = replace(
-            _technical(),
-            momentum=momentum,
-            volume=vol,
-        )
-        tech.momentum.divergence_detected = True
-
-        new_score, warnings = gen._apply_divergence_override(0.0, tech)
-        assert new_score > 0.0
-        assert len(warnings) > 0
-        assert "divergence" in warnings[0].lower()
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────── Confidence floor / ceiling tests ────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestConfidence:
-
-    def test_confidence_never_below_floor(self):
-        gen = _make_generator()
-        # Very weak, missing data signal
-        tech = _technical(
-            trend_vote="SLIGHTLY_BULLISH",
-            momentum_vote="NEUTRAL",
-            volume_vote="NEUTRAL",
-        )
-        tech = replace(tech, options=None, smart_money=None, data_completeness=0.4)
-
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, None, _anomaly("CAUTION", risk_level="HIGH"),
-                _regime("VOLATILE_CHOPPY", volatility_regime="NORMAL",
-                        position_size_multiplier=0.4),
-                SPOT_PRICE,
-            )
-
-        # Whether NO_TRADE or not, confidence_score must be >= floor or 0.0 (NO_TRADE)
-        assert sig.confidence_score == 0.0 or sig.confidence_score >= _CONF_FLOOR
-
-    def test_confidence_never_above_ceiling(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="STRONG_BULLISH",
-            volume_vote="STRONG_BULLISH",
-            options=_options(vote="STRONG_BULLISH", confidence=1.0),
-            smart_money=_smart_money(bias="STRONGLY_BULLISH", grade="A+", confidence=1.0),
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("STRONG_BULLISH", confidence=1.0), _anomaly("BULLISH"),
-                _regime("STRONG_TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        if sig.signal_type != "NO_TRADE":
-            assert sig.confidence_score <= _CONF_CEILING
-
-    def test_low_confidence_below_threshold_gives_no_trade(self):
-        """If confidence < 0.30, direction is overridden to NO_TRADE."""
-        gen = _make_generator()
-        # Score just above 0.4 threshold but with many reducers → confidence < 0.30
-        tech = _technical(
-            trend_vote="SLIGHTLY_BULLISH",
-            momentum_vote="NEUTRAL",
-            volume_vote="NEUTRAL",
-        )
-        tech = replace(tech, options=None, smart_money=None, data_completeness=0.3)
-
-        regime = _regime(
-            regime="RANGE_BOUND",
-            volatility_regime="EXTREME",  # -0.10 reducer
-            regime_changing=True,          # -0.05 reducer
-            regime_confidence=0.3,         # -0.05 reducer
-        )
-
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, None,
-                _anomaly("CAUTION", risk_level="HIGH"),  # -0.10 + -0.10 reducers
-                regime,
-                SPOT_PRICE,
-            )
-
-        # With this many reducers, confidence should be very low → NO_TRADE
-        # (or signal with LOW confidence if score passes threshold)
-        assert sig.confidence_score == 0.0 or sig.confidence_score >= _CONF_FLOOR
-
-    def test_confidence_level_matches_score(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            options=_options(vote="BULLISH"),
-            smart_money=_smart_money(bias="BULLISH", grade="A+"),
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("STRONG_TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        if sig.confidence_level == "HIGH":
-            assert sig.confidence_score >= 0.65
-        elif sig.confidence_level == "MEDIUM":
-            assert 0.45 <= sig.confidence_score < 0.65
-        elif sig.confidence_level == "LOW":
-            assert 0.30 <= sig.confidence_score < 0.45
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────────── Reasoning text tests ────────────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestReasoning:
-
-    def test_reasoning_includes_all_categories(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            options=_options("BULLISH"),
-            smart_money=_smart_money("BULLISH"),
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        if sig.signal_type != "NO_TRADE":
-            reasoning = sig.reasoning
-            assert "Trend" in reasoning
-            assert "Momentum" in reasoning
-            assert "Volume" in reasoning
-            assert "Options" in reasoning
-            assert "Smart Money" in reasoning
-            assert "News" in reasoning
-            assert "Anomaly" in reasoning
-            assert "Weighted Score" in reasoning
-            assert "Entry" in reasoning
-            assert "Target" in reasoning
-            assert "Stop Loss" in reasoning
-
-    def test_reasoning_has_header(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        if sig.signal_type == "BUY_CALL":
-            assert "BUY CALL" in sig.reasoning
-            assert INDEX_ID in sig.reasoning
-            assert "Confidence" in sig.reasoning
-
-    def test_reasoning_includes_regime(self):
-        gen = _make_generator()
-        tech = _technical(trend_vote="BULLISH", momentum_vote="BULLISH", volume_vote="BULLISH")
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("TREND_UP"),
-                SPOT_PRICE,
-            )
-        if sig.signal_type != "NO_TRADE":
-            assert "Regime" in sig.reasoning
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────────── Expiry day modifier tests ───────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestExpiryDayModifier:
-
-    def test_expiry_day_after_14_adds_warning(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            options=_options(max_pain=22_500.0, days_to_expiry=0),
-        )
-        expiry_regime = _regime(regime="TREND_UP", event_regime="EVENT_DAY")
-
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            # Pass AFTERNOON_EARLY time (13:45) — expiry warning requires hour >= 14
-            with patch("src.engine.signal_generator.datetime") as mock_dt:
-                mock_dt.now.return_value = AFTERNOON_EARLY
-                sig = gen.generate_signal(
-                    INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                    expiry_regime,
-                    SPOT_PRICE,
-                )
-
-        # At 13:45 — expiry warning should NOT appear (hour < 14)
-        expiry_warnings = [w for w in sig.warnings if "expiry" in w.lower() or "max pain" in w.lower()]
-        assert len(expiry_warnings) == 0 or sig.signal_type == "NO_TRADE"
-
-    def test_expiry_day_at_1400_adds_max_pain_warning(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            options=_options(max_pain=22_500.0, days_to_expiry=0),
-        )
-        expiry_regime = _regime(regime="TREND_UP", event_regime="EVENT_DAY")
-        after_2pm = datetime(2026, 4, 7, 14, 15, 0, tzinfo=_IST)
-
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            with patch("src.engine.signal_generator.datetime") as mock_dt:
-                mock_dt.now.return_value = after_2pm
-                sig = gen.generate_signal(
-                    INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                    expiry_regime,
-                    SPOT_PRICE,
-                )
-
-        expiry_warnings = [
-            w for w in sig.warnings
-            if "expiry" in w.lower() or "max pain" in w.lower()
-        ]
-        # If the signal is directional, we should see the expiry warning
-        if sig.signal_type != "NO_TRADE":
-            assert len(expiry_warnings) >= 1
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────────── Gap fill modifier tests ─────────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestGapFillModifier:
-
-    def test_gap_up_biases_toward_put_for_weak_signal(self):
-        """Gap-up + weak signal → slight bearish bias (score decreases)."""
-        gen = _make_generator()
-        gap_anomaly = _anomaly(
-            vote="NEUTRAL",
-            risk_level="NORMAL",
-            primary_alert_message="GAP_UP detected: +0.8% opening gap",
-        )
-        score_before = 0.3  # weak bullish, below threshold
-
-        new_score, warns = gen._apply_gap_fill_override(score_before, gap_anomaly)
-
-        assert new_score < score_before
-        assert any("gap" in w.lower() for w in warns)
-
-    def test_gap_down_biases_toward_call_for_weak_signal(self):
-        """Gap-down + weak signal → slight bullish bias (score increases)."""
-        gen = _make_generator()
-        gap_anomaly = _anomaly(
-            primary_alert_message="GAP DOWN detected: -0.7% opening gap",
-        )
-        score_before = -0.3
-
-        new_score, warns = gen._apply_gap_fill_override(score_before, gap_anomaly)
-
-        assert new_score > score_before
-        assert any("gap" in w.lower() for w in warns)
-
-    def test_gap_fill_does_not_override_strong_signal(self):
-        """Gap fill override should not affect signals with |score| >= 1.0."""
-        gen = _make_generator()
-        gap_anomaly = _anomaly(
-            primary_alert_message="GAP_UP detected at open",
-        )
-        strong_score = 1.5  # strong bullish
-
-        new_score, warns = gen._apply_gap_fill_override(strong_score, gap_anomaly)
-
-        assert new_score == strong_score  # unchanged
-        assert len(warns) == 0
-
-    def test_no_gap_keyword_in_message_no_effect(self):
-        gen = _make_generator()
-        anomaly_no_gap = _anomaly(primary_alert_message="Volume spike detected")
-        score = 0.3
-        new_score, warns = gen._apply_gap_fill_override(score, anomaly_no_gap)
-        assert new_score == score
-        assert len(warns) == 0
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────────── Smart money conflict tests ──────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestSmartMoneyConflict:
-
-    def test_smart_money_bear_while_calling_adds_warning(self):
-        """Smart money bearish while signal is BUY_CALL → warning."""
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="STRONG_BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            smart_money=_smart_money(bias="STRONGLY_BEARISH", confidence=0.85),
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        if sig.signal_type == "BUY_CALL":
-            conflict_warning = any(
-                "smart money" in w.lower() and "disagree" in w.lower()
-                for w in sig.warnings
-            )
-            assert conflict_warning
-
-    def test_smart_money_a_plus_boosts_confidence(self):
-        """A+ smart money grade aligned with signal → confidence boost."""
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            smart_money=_smart_money(bias="STRONGLY_BULLISH", grade="A+", confidence=0.90),
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        # A+ grade gives +0.10 confidence boost
-        if sig.signal_type == "BUY_CALL":
-            assert sig.confidence_score > 0.0
-
-
-# ---------------------------------------------------------------------------
-# ────────────────── Query methods tests ───────────────────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestQueryMethods:
-
-    def test_get_signals_today_returns_todays_signals(self):
-        gen = _make_generator()
-        tech = _technical(trend_vote="STRONG_BULLISH", momentum_vote="BULLISH", volume_vote="BULLISH")
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("STRONG_TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        today_signals = gen.get_signals_today(INDEX_ID)
-        # May be 0 if NO_TRADE, but should be a list
-        assert isinstance(today_signals, list)
-
-    def test_get_all_active_signals(self):
-        gen = _make_generator()
-        # Insert a fake open signal into the cache
-        active = TradingSignal(
-            signal_id="active-1",
-            index_id=INDEX_ID,
-            generated_at=MORNING,
-            signal_type="BUY_CALL",
-            confidence_level="HIGH",
-            confidence_score=0.80,
-            entry_price=SPOT_PRICE,
-            target_price=SPOT_PRICE + 200,
-            stop_loss=SPOT_PRICE - 150,
-            risk_reward_ratio=1.5,
-            regime="TREND_UP",
-            weighted_score=1.2,
-            vote_breakdown={},
-            risk_level="NORMAL",
-            position_size_modifier=1.0,
-            suggested_lot_count=1,
-            estimated_max_loss=150.0,
-            estimated_max_profit=200.0,
-            reasoning="Test",
-            warnings=[],
-            outcome="OPEN",
-        )
-        gen._today_signals[INDEX_ID] = [active]
-
-        actives = gen.get_all_active_signals()
-        assert len(actives) == 1
-        assert actives[0].signal_id == "active-1"
-
-    def test_no_trade_not_in_active_signals(self):
-        gen = _make_generator()
-        no_trade = TradingSignal(
-            signal_id="nt-1",
-            index_id=INDEX_ID,
-            generated_at=MORNING,
-            signal_type="NO_TRADE",
-            confidence_level="LOW",
-            confidence_score=0.0,
-            entry_price=0.0,
-            target_price=0.0,
-            stop_loss=0.0,
-            risk_reward_ratio=0.0,
-            regime="RANGE_BOUND",
-            weighted_score=0.0,
-            vote_breakdown={},
-            risk_level="NORMAL",
-            position_size_modifier=0.0,
-            suggested_lot_count=0,
-            estimated_max_loss=0.0,
-            estimated_max_profit=0.0,
-            reasoning="NO_TRADE: test",
-            warnings=[],
-        )
-        gen._today_signals[INDEX_ID] = [no_trade]
-        actives = gen.get_all_active_signals()
-        assert len(actives) == 0
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────── Helper unit tests ───────────────────────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestHelpers:
-
-    def test_convert_vote_to_numeric_mapping(self):
-        gen = _make_generator()
-        assert gen._convert_vote_to_numeric("STRONG_BULLISH") == 2.0
-        assert gen._convert_vote_to_numeric("STRONGLY_BULLISH") == 2.0
-        assert gen._convert_vote_to_numeric("STRONG_BUY") == 2.0
-        assert gen._convert_vote_to_numeric("BULLISH") == 1.0
-        assert gen._convert_vote_to_numeric("BUY") == 1.0
-        assert gen._convert_vote_to_numeric("SLIGHTLY_BULLISH") == 0.5
-        assert gen._convert_vote_to_numeric("NEUTRAL") == 0.0
-        assert gen._convert_vote_to_numeric("NO_TRADE") == 0.0
-        assert gen._convert_vote_to_numeric("CAUTION") == 0.0
-        assert gen._convert_vote_to_numeric("SLIGHTLY_BEARISH") == -0.5
-        assert gen._convert_vote_to_numeric("BEARISH") == -1.0
-        assert gen._convert_vote_to_numeric("SELL") == -1.0
-        assert gen._convert_vote_to_numeric("STRONG_BEARISH") == -2.0
-        assert gen._convert_vote_to_numeric("STRONGLY_BEARISH") == -2.0
-        assert gen._convert_vote_to_numeric("STRONG_SELL") == -2.0
-        assert gen._convert_vote_to_numeric("UNKNOWN_VOTE") == 0.0
-
-    def test_determine_direction(self):
-        gen = _make_generator()
-        assert gen._determine_direction(1.0) == "BUY_CALL"
-        assert gen._determine_direction(0.41) == "BUY_CALL"
-        assert gen._determine_direction(0.40) == "NO_TRADE"
-        assert gen._determine_direction(0.0) == "NO_TRADE"
-        assert gen._determine_direction(-0.40) == "NO_TRADE"
-        assert gen._determine_direction(-0.41) == "BUY_PUT"
-        assert gen._determine_direction(-1.0) == "BUY_PUT"
-
-    def test_conflicting_signals_detection(self):
-        gen = _make_generator()
-        # Two strong bulls and two strong bears → conflict
-        conflicting_votes = {
-            "trend": (2.0, 0.8, 0.25),
-            "options": (2.0, 0.7, 0.20),
-            "momentum": (-2.0, 0.7, 0.15),
-            "volume": (-2.0, 0.6, 0.15),
-            "news": (0.5, 0.5, 0.10),
-        }
-        assert gen._has_conflicting_strong_signals(conflicting_votes) is True
-
-        # Only one strong bear — no conflict
-        non_conflicting = {
-            "trend": (2.0, 0.8, 0.25),
-            "options": (2.0, 0.7, 0.20),
-            "momentum": (-2.0, 0.7, 0.15),
-            "volume": (1.0, 0.6, 0.15),
-        }
-        assert gen._has_conflicting_strong_signals(non_conflicting) is False
-
-    def test_is_near_market_close(self):
-        """Static helper correctly identifies pre-close window."""
-        assert SignalGenerator._is_near_market_close(
-            datetime(2026, 4, 7, 15, 5, 0, tzinfo=_IST), minutes=30
-        ) is True
-        assert SignalGenerator._is_near_market_close(
-            datetime(2026, 4, 7, 10, 30, 0, tzinfo=_IST), minutes=30
-        ) is False
-        assert SignalGenerator._is_near_market_close(
-            datetime(2026, 4, 7, 15, 0, 0, tzinfo=_IST), minutes=30
-        ) is True  # exactly 30 min before close
-
-
-# ---------------------------------------------------------------------------
-# ──────────────────── Parametrized scenario matrix ────────────────────────
-# ---------------------------------------------------------------------------
-
-
-SCENARIO_PARAMS = [
-    # (description, regime_name, all_votes, news_vote, anomaly_vote, anomaly_risk,
-    #  expected_signal_type_or_any)
-    (
-        "all_strong_bull_strong_trend_up",
-        "STRONG_TREND_UP", "STRONG_BULLISH", "STRONG_BULLISH", "BULLISH", "NORMAL",
-        "BUY_CALL",
-    ),
-    (
-        "all_strong_bear_strong_trend_down",
-        "STRONG_TREND_DOWN", "STRONG_BEARISH", "STRONG_BEARISH", "BEARISH", "NORMAL",
-        "BUY_PUT",
-    ),
-    (
-        "all_neutral_range_bound",
-        "RANGE_BOUND", "NEUTRAL", "NEUTRAL", "NEUTRAL", "NORMAL",
-        "NO_TRADE",
-    ),
-    (
-        "extreme_anomaly_overrides_bullish",
-        "TREND_UP", "STRONG_BULLISH", "BULLISH", "CAUTION", "EXTREME",
-        "NO_TRADE",
-    ),
-    (
-        "bullish_trend_up_normal",
-        "TREND_UP", "BULLISH", "BULLISH", "NEUTRAL", "NORMAL",
-        "any",  # depends on confidence calculation
-    ),
-    (
-        "bearish_trend_down_normal",
-        "TREND_DOWN", "BEARISH", "BEARISH", "NEUTRAL", "NORMAL",
-        "any",
-    ),
-    (
-        "crash_regime_no_trade",
-        "CRASH", "STRONG_BULLISH", "BULLISH", "BULLISH", "HIGH",
-        "NO_TRADE",
-    ),
-    (
-        "volatile_choppy_high_vol_no_trade",
-        "VOLATILE_CHOPPY", "BULLISH", "NEUTRAL", "NEUTRAL", "NORMAL",
-        "NO_TRADE",
-    ),
-    (
-        "breakout_bullish_gets_boost",
-        "BREAKOUT", "BULLISH", "NEUTRAL", "NEUTRAL", "NORMAL",
-        "any",  # BREAKOUT adds +0.3 boost when direction matches
-    ),
-    (
-        "event_driven_relies_on_news",
-        "EVENT_DRIVEN", "NEUTRAL", "STRONG_BULLISH", "NEUTRAL", "NORMAL",
-        "any",  # heavy news weight in EVENT_DRIVEN regime
-    ),
-    (
-        "high_risk_anomaly_reduces_confidence",
-        "TREND_UP", "BULLISH", "BULLISH", "CAUTION", "HIGH",
-        "any",
-    ),
-    (
-        "all_slightly_bullish_might_no_trade",
-        "RANGE_BOUND", "SLIGHTLY_BULLISH", "SLIGHTLY_BULLISH", "NEUTRAL", "NORMAL",
-        "any",  # slightly bullish scores are near dead zone
-    ),
-]
-
-
-@pytest.mark.parametrize(
-    "description,regime_name,vote,news_v,anomaly_v,risk,expected",
-    SCENARIO_PARAMS,
-    ids=[p[0] for p in SCENARIO_PARAMS],
-)
-def test_scenario_matrix(
-    description,
-    regime_name,
-    vote,
-    news_v,
-    anomaly_v,
-    risk,
-    expected,
-):
-    """Parametrized scenario matrix covering all major regimes."""
-    gen = _make_generator()
-
-    # VOLATILE_CHOPPY with HIGH volatility → is_safe_to_trade → False
-    vol_regime = "HIGH" if regime_name == "VOLATILE_CHOPPY" else "NORMAL"
-    pos_mult = 0.0 if regime_name == "CRASH" else 1.0
-
-    tech = _technical(
-        trend_vote=vote,
-        momentum_vote=vote,
-        volume_vote=vote,
-        options=_options(vote=vote),
-        smart_money=_smart_money(
-            bias="BULLISH" if "BULL" in vote.upper() else
-            ("BEARISH" if "BEAR" in vote.upper() else "NEUTRAL")
-        ),
-        overall_signal=(
-            "STRONG_BUY" if "STRONG_BULL" in vote.upper() else
-            "BUY" if "BULL" in vote.upper() else
-            "STRONG_SELL" if "STRONG_BEAR" in vote.upper() else
-            "SELL" if "BEAR" in vote.upper() else
-            "NEUTRAL"
-        ),
-    )
-
-    regime = _regime(
-        regime=regime_name,
-        volatility_regime=vol_regime,
-        position_size_multiplier=pos_mult,
-    )
-
-    with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-        sig = gen.generate_signal(
-            INDEX_ID,
-            tech,
-            _news(news_v),
-            _anomaly(anomaly_v, risk_level=risk),
-            regime,
-            SPOT_PRICE,
-        )
-
-    assert isinstance(sig, TradingSignal), f"[{description}] Expected TradingSignal"
-    assert sig.signal_type in ("BUY_CALL", "BUY_PUT", "NO_TRADE"), (
-        f"[{description}] Invalid signal_type: {sig.signal_type}"
-    )
-    assert 0.0 <= sig.confidence_score <= 1.0, (
-        f"[{description}] confidence_score out of range: {sig.confidence_score}"
-    )
-
-    if expected == "NO_TRADE":
-        assert sig.signal_type == "NO_TRADE", (
-            f"[{description}] Expected NO_TRADE, got {sig.signal_type}"
-        )
-    elif expected == "BUY_CALL":
-        assert sig.signal_type == "BUY_CALL", (
-            f"[{description}] Expected BUY_CALL, got {sig.signal_type}"
-        )
-    elif expected == "BUY_PUT":
-        assert sig.signal_type == "BUY_PUT", (
-            f"[{description}] Expected BUY_PUT, got {sig.signal_type}"
-        )
-    # "any" → just assert it is a valid TradingSignal (done above)
-
-
-# ---------------------------------------------------------------------------
-# ──────────────── Integration: vote_breakdown completeness ────────────────
-# ---------------------------------------------------------------------------
-
-
-class TestVoteBreakdown:
-
-    def test_vote_breakdown_has_expected_keys(self):
-        gen = _make_generator()
-        tech = _technical(
-            trend_vote="BULLISH",
-            momentum_vote="BULLISH",
-            volume_vote="BULLISH",
-            options=_options("BULLISH"),
-            smart_money=_smart_money("BULLISH"),
-        )
-        with patch.object(SignalGenerator, "_is_near_market_close", return_value=False):
-            sig = gen.generate_signal(
-                INDEX_ID, tech, _news("BULLISH"), _anomaly("NEUTRAL"),
-                _regime("TREND_UP"),
-                SPOT_PRICE,
-            )
-
-        if sig.signal_type != "NO_TRADE":
-            for comp in ("trend", "momentum", "volume", "options", "smart_money", "news", "anomaly"):
-                assert comp in sig.vote_breakdown, f"Missing '{comp}' in vote_breakdown"
-                entry = sig.vote_breakdown[comp]
-                assert "score" in entry
-                assert "confidence" in entry
-                assert "weight" in entry
-                assert "weighted_contribution" in entry
-
-    def test_data_completeness_with_all_inputs(self):
-        gen = _make_generator()
-        tech = _technical(options=_options(), smart_money=_smart_money())
-        tech = replace(tech, data_completeness=1.0)
-        completeness = gen._data_completeness(tech, _news("NEUTRAL"), _anomaly("NEUTRAL"))
-        assert completeness == 1.0
-
-    def test_data_completeness_no_news_no_anomaly(self):
-        gen = _make_generator()
-        tech = replace(_technical(), data_completeness=1.0)
-        completeness = gen._data_completeness(tech, None, None)
-        # 1.0 * 0.5 = 0.5 (no news, no anomaly)
-        assert abs(completeness - 0.5) < 1e-6
-
-    def test_data_completeness_none_technical(self):
-        gen = _make_generator()
-        completeness = gen._data_completeness(None, None, None)
-        assert completeness == 0.0
+    def test_max_trades_reached(self, tmp_path):
+        sig = _signal(_gen(tmp_path, today_count=5), regime=_regime(max_trades_today=5))
+        assert sig.signal_type == "NO_TRADE" and "Max signals" in sig.reasoning
+
+    def test_trade_count_db_error_fails_closed(self, tmp_path):
+        gen = _gen(tmp_path)
+        gen._db.fetch_one.side_effect = RuntimeError("db down")
+        sig = _signal(gen)
+        assert sig.signal_type == "NO_TRADE" and "Cannot verify" in sig.reasoning
+
+    def test_invalid_spot(self, tmp_path):
+        assert _signal(_gen(tmp_path), spot=0.0).signal_type == "NO_TRADE"
+
+    def test_near_close(self, tmp_path):
+        gen = _gen(tmp_path)
+        tech = replace(_technical(), timestamp=NEAR_CLOSE)
+        sig = gen.generate_signal(INDEX_ID, tech, None, None, _regime(),
+                                  SPOT_PRICE, timestamp=NEAR_CLOSE)
+        assert sig.signal_type == "NO_TRADE" and "close" in sig.reasoning.lower()
+
+    def test_stale_bar_rejected(self, tmp_path):
+        tech = replace(_technical(), timeframe="5m", timestamp=MORNING.replace(hour=9, minute=40))
+        sig = _signal(_gen(tmp_path), technical=tech)
+        assert sig.signal_type == "NO_TRADE" and "stale" in sig.reasoning.lower()
+
+
+# ===========================================================================
+# 5. Levels, reasoning, bookkeeping
+# ===========================================================================
+
+
+class TestLevelsAndOutput:
+    def test_call_levels_on_correct_sides(self, tmp_path):
+        sig = _signal(_gen(tmp_path))
+        assert sig.stop_loss < sig.entry_price < sig.target_price
+        assert sig.risk_reward_ratio >= 1.3
+
+    def test_put_levels_on_correct_sides(self, tmp_path):
+        tech = _technical(trend_vote="BEARISH", momentum_vote="BEARISH", volume_vote="BEARISH",
+                          options=_options(vote="NEUTRAL"))
+        sig = _signal(_gen(tmp_path), technical=tech, regime=_regime(regime="TREND_DOWN"))
+        assert sig.signal_type == "BUY_PUT"
+        assert sig.target_price < sig.entry_price < sig.stop_loss
+
+    def test_reasoning_and_breakdown(self, tmp_path):
+        sig = _signal(_gen(tmp_path))
+        assert "BUY CALL" in sig.reasoning and "Weighted Score" in sig.reasoning
+        assert set(sig.vote_breakdown) >= {"trend", "momentum"}
+
+    def test_duplicate_suppressed_within_bucket(self, tmp_path):
+        gen = _gen(tmp_path)
+        first = _signal(gen)
+        second = _signal(gen)
+        assert first.signal_type == "BUY_CALL"
+        assert second.signal_type == "NO_TRADE" and "DUPLICATE_SUPPRESSED" in second.warnings
+
+    def test_conflicting_strong_signals_helper(self):
+        conflicting = {"a": (2.0, 1, 0.25), "b": (2.0, 1, 0.25), "c": (-2.0, 1, 0.25), "d": (-2.0, 1, 0.25)}
+        assert SignalGenerator._has_conflicting_strong_signals(conflicting) is True
+        assert SignalGenerator._has_conflicting_strong_signals({"a": (2.0, 1, 0.5)}) is False
+
+    def test_smart_money_conflict_warning(self):
+        tech = _technical(smart_money=_smart_money(bias="BEARISH"))
+        warns = SignalGenerator._smart_money_warnings("BUY_CALL", tech)
+        assert warns and "disagrees" in warns[0]
+
+
+class TestLevelsMatchCalibration:
+    def test_levels_are_calibrated_atr_multiples(self, tmp_path):
+        sig = _signal(_gen(tmp_path))
+        atr = 120.0
+        assert sig.entry_price - sig.stop_loss == pytest.approx(1.0 * atr, abs=0.01)
+        assert sig.target_price - sig.entry_price == pytest.approx(1.5 * atr, abs=0.01)
+        assert sig.risk_reward_ratio == pytest.approx(1.5)
+
+    def test_custom_label_multiples_are_used(self, tmp_path):
+        _calibration(tmp_path, p=0.6)
+        payload = json.loads((tmp_path / "cal.json").read_text())
+        payload["label"] = {"stop_atr": 0.8, "target_atr": 1.6}
+        (tmp_path / "cal.json").write_text(json.dumps(payload))
+        gen = SignalGenerator(_mock_db(), calibration=SignalCalibration(tmp_path / "cal.json"))
+        sig = _signal(gen)
+        assert sig.entry_price - sig.stop_loss == pytest.approx(0.8 * 120.0, abs=0.01)
+        assert sig.risk_reward_ratio == pytest.approx(2.0)

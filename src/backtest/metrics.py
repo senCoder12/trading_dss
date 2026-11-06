@@ -1,11 +1,207 @@
+"""
+Backtest performance metrics.
+
+Annualisation convention
+------------------------
+Sharpe, Sortino, annualised return, Calmar and the information ratio are all
+computed on **daily** returns: the equity curve (whatever its bar frequency) is
+reduced to one close-to-close return per trading day, and trading days inside
+the test span on which nothing happened contribute a zero return.  Daily
+statistics are then annualised with ``sqrt(252)`` / ``252``.  The annual
+risk-free rate is converted to a per-day rate (``rf / 252``) before it is
+subtracted, so numerator and denominator are in the same units.
+
+Undefined ratios
+----------------
+Ratios with a zero denominator (profit factor / payoff with no losing trades,
+Sortino with no downside deviation, Sharpe with < 2 observations or zero
+dispersion) are never replaced by a large sentinel.  They are reported as
+``float('inf')`` (or 0.0 when the numerator is also zero) **and** their names
+are listed in ``BacktestMetrics.undefined_metrics`` so that constraint checks
+can treat them as failing.
+"""
+
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional, Any
+from datetime import date, datetime, timedelta
+from typing import Any, Iterable, Optional, Sequence
 import math
 import statistics
 from collections import defaultdict
 
 from src.backtest.trade_simulator import ClosedTrade, EquityPoint
+
+TRADING_DAYS_PER_YEAR = 252
+
+
+# ---------------------------------------------------------------------------
+# Daily-return helpers
+# ---------------------------------------------------------------------------
+
+
+def _to_date(ts: Any) -> date:
+    """Coerce a datetime / date / pandas Timestamp / ISO string to a date."""
+    if isinstance(ts, datetime):
+        return ts.date()
+    if isinstance(ts, date):
+        return ts
+    if isinstance(ts, str):
+        return date.fromisoformat(ts[:10])
+    if hasattr(ts, "date") and callable(ts.date):
+        return ts.date()
+    try:  # numpy.datetime64
+        import numpy as np
+
+        if isinstance(ts, np.datetime64):
+            return ts.astype("datetime64[D]").item()
+    except Exception:  # pragma: no cover - numpy always present
+        pass
+    raise TypeError(f"Cannot interpret {ts!r} as a date")
+
+
+def session_days(
+    first: date,
+    last: date,
+    trading_days: Optional[Iterable[Any]] = None,
+) -> list[date]:
+    """Trading days in ``[first, last]``.
+
+    Uses ``trading_days`` (an exchange calendar) when given, otherwise
+    Monday–Friday (exchange holidays then appear as zero-return days, which
+    slightly understates volatility per day but never inflates Sharpe).
+    """
+    if trading_days is not None:
+        return sorted({d for d in (_to_date(x) for x in trading_days) if first <= d <= last})
+    out: list[date] = []
+    cur = first
+    while cur <= last:
+        if cur.weekday() < 5:
+            out.append(cur)
+        cur += timedelta(days=1)
+    return out
+
+
+def daily_returns_from_equity(
+    equity_curve: Sequence[EquityPoint],
+    trading_days: Optional[Iterable[Any]] = None,
+) -> tuple[list[date], list[float]]:
+    """Close-to-close daily returns from an equity curve of any bar frequency.
+
+    * The last equity value of each day is that day's close.
+    * The first observation of the curve is the starting state: if it is the
+      only observation of its day it is treated as the prior close; otherwise
+      the first day's return is measured from it.
+    * Trading days inside the span with no observation are flat (return 0).
+    """
+    if len(equity_curve) < 2:
+        return [], []
+    day_close: dict[date, float] = {}
+    counts: dict[date, int] = defaultdict(int)
+    for p in equity_curve:
+        d = _to_date(p.timestamp)
+        day_close[d] = float(p.capital)
+        counts[d] += 1
+    data_days = sorted(day_close)
+    first_day = data_days[0]
+    calendar = sorted(set(session_days(first_day, data_days[-1], trading_days)) | set(data_days))
+
+    prev = float(equity_curve[0].capital)
+    out_days: list[date] = []
+    out_rets: list[float] = []
+    for d in calendar:
+        if d == first_day and counts[d] == 1:
+            prev = day_close[d]
+            continue
+        close = day_close.get(d, prev)
+        out_rets.append(close / prev - 1.0 if prev > 0 else 0.0)
+        out_days.append(d)
+        prev = close
+    return out_days, out_rets
+
+
+def daily_returns_from_trades(
+    trades: Sequence[ClosedTrade],
+    initial_capital: float,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+    trading_days: Optional[Iterable[Any]] = None,
+) -> tuple[list[date], list[float]]:
+    """Daily returns from closed trades (P&L booked on the exit date).
+
+    Every trading day in ``[start, end]`` (default: first entry date → last
+    exit date) is included; days without exits have zero return.  Returns are
+    relative to the running equity ``initial_capital + realised P&L``.
+    """
+    if not trades:
+        return [], []
+    pnl_by_day: dict[date, float] = defaultdict(float)
+    for t in trades:
+        pnl_by_day[_to_date(t.exit_timestamp)] += float(t.net_pnl)
+    first = start or min(_to_date(t.entry_timestamp) for t in trades)
+    last = end or max(pnl_by_day)
+    calendar = sorted(
+        set(session_days(first, last, trading_days))
+        | {d for d in pnl_by_day if first <= d <= last}
+    )
+    equity = float(initial_capital)
+    days: list[date] = []
+    rets: list[float] = []
+    for d in calendar:
+        pnl = pnl_by_day.get(d, 0.0)
+        rets.append(pnl / equity if equity > 0 else 0.0)
+        days.append(d)
+        equity += pnl
+    return days, rets
+
+
+def annualised_sharpe(
+    returns: Sequence[float],
+    risk_free_rate: float = 0.0,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """Annualised Sharpe of per-period returns.
+
+    ``risk_free_rate`` is an ANNUAL simple rate, converted to
+    ``rf / periods_per_year`` per period.  Uses the sample standard deviation.
+    Returns 0.0 when undefined (< 2 observations or zero dispersion).
+    """
+    if len(returns) < 2:
+        return 0.0
+    rf_p = risk_free_rate / periods_per_year
+    mean = sum(returns) / len(returns)
+    sd = statistics.stdev(returns)
+    if sd <= 0:
+        return 0.0
+    return (mean - rf_p) / sd * math.sqrt(periods_per_year)
+
+
+def annualised_sortino(
+    returns: Sequence[float],
+    risk_free_rate: float = 0.0,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """Annualised Sortino ratio with the per-period risk-free rate as target.
+
+    Downside deviation = sqrt(mean(min(r - rf_p, 0)^2)) over ALL observations.
+    Returns ``inf`` when there is no downside and the mean excess return is
+    positive, 0.0 when it is not (both cases are *undefined* ratios).
+    """
+    if not returns:
+        return 0.0
+    rf_p = risk_free_rate / periods_per_year
+    excess_mean = sum(returns) / len(returns) - rf_p
+    downside_var = sum(min(r - rf_p, 0.0) ** 2 for r in returns) / len(returns)
+    if downside_var <= 0:
+        return float("inf") if excess_mean > 0 else 0.0
+    return excess_mean / math.sqrt(downside_var) * math.sqrt(periods_per_year)
+
+
+def is_defined(metrics: "BacktestMetrics", name: str) -> bool:
+    """True if ``metrics.<name>`` is a finite, well-defined number."""
+    if name in (getattr(metrics, "undefined_metrics", None) or []):
+        return False
+    val = getattr(metrics, name, None)
+    return isinstance(val, (int, float)) and math.isfinite(val)
+
 
 @dataclass
 class BacktestMetrics:
@@ -126,6 +322,15 @@ class BacktestMetrics:
     beats_benchmark: Optional[bool] = None
     benchmark_comparison_note: Optional[str] = None  # Human-readable verdict
 
+    # === STATISTICAL BASIS ===
+    # Names of ratios whose denominator was zero (value is inf or 0.0 and must
+    # not be treated as a real number — e.g. profit_factor with no losses).
+    undefined_metrics: list[str] = field(default_factory=list)
+    # Daily returns behind sharpe/sortino/annualised return (see module doc).
+    daily_returns: list[float] = field(default_factory=list)
+    periods_per_year: int = TRADING_DAYS_PER_YEAR
+    risk_free_rate: float = 0.0
+
 @dataclass
 class ComparisonReport:
     headers: list[str]
@@ -142,58 +347,51 @@ class MetricsCalculator:
         risk_free_rate: float = 0.065,
         benchmark_prices: Optional[Any] = None,  # pandas DataFrame with 'close' column
         benchmark_name: str = "NIFTY50",
+        trading_days: Optional[Iterable[Any]] = None,
     ) -> BacktestMetrics:
-        
+        """Compute all metrics.
+
+        ``risk_free_rate`` is annual.  ``trading_days`` optionally supplies the
+        exchange calendar used to insert zero-return days (default Mon–Fri).
+        Sharpe/Sortino/annualised return use daily returns (see module doc).
+        """
+
         # Guard clause: No trades
         if not trade_history:
             return MetricsCalculator._zero_metrics(initial_capital)
-        
+
+        undefined: list[str] = []
+        ppy = TRADING_DAYS_PER_YEAR
+
         final_capital = equity_curve[-1].capital if equity_curve else initial_capital
         total_return_amount = final_capital - initial_capital
         total_return_pct = (total_return_amount / initial_capital) * 100 if initial_capital > 0 else 0.0
-        
-        # Daily Returns & Sharpe/Sortino
-        daily_returns = []
+
+        # Daily returns (one per trading day, zero-P&L days included)
         if len(equity_curve) > 1:
-            for i in range(1, len(equity_curve)):
-                prev_cap = equity_curve[i-1].capital
-                curr_cap = equity_curve[i].capital
-                if prev_cap > 0:
-                    daily_returns.append((curr_cap / prev_cap) - 1.0)
-                else:
-                    daily_returns.append(0.0)
-                    
+            _, daily_returns = daily_returns_from_equity(equity_curve, trading_days)
+        else:
+            _, daily_returns = daily_returns_from_trades(
+                trade_history, initial_capital, trading_days=trading_days
+            )
+
         annualized_return_pct = 0.0
         sharpe = 0.0
         sortino = 0.0
-        
+
         if daily_returns:
             avg_daily_return = sum(daily_returns) / len(daily_returns)
-            # Use population std dev or sample std dev? Let's use statistics.pstdev for population if length > 0
-            if len(daily_returns) >= 2:
-                std_daily_return = statistics.stdev(daily_returns)
-            else:
-                std_daily_return = 0.0
-                
-            annualized_return = avg_daily_return * 252
-            annualized_return_pct = annualized_return * 100
-            
-            if std_daily_return > 0:
-                annualized_std = std_daily_return * math.sqrt(252)
-                sharpe = (annualized_return - risk_free_rate) / annualized_std
-            
-            downside_returns = [r for r in daily_returns if r < 0]
-            if not downside_returns:
-                sortino = 999.0
-            else:
-                # Semi-deviation: use all N observations in denominator (standard Sortino formula)
-                downside_variance = sum(r**2 for r in downside_returns) / len(daily_returns)
-                downside_std = math.sqrt(downside_variance) * math.sqrt(252)
-                if downside_std > 0:
-                    sortino = (annualized_return - risk_free_rate) / downside_std
-                else:
-                    sortino = 999.0
-                    
+            annualized_return_pct = avg_daily_return * ppy * 100
+            sharpe = annualised_sharpe(daily_returns, risk_free_rate, ppy)
+            if len(daily_returns) < 2 or statistics.stdev(daily_returns) <= 0:
+                undefined.append("sharpe_ratio")
+            sortino = annualised_sortino(daily_returns, risk_free_rate, ppy)
+            rf_p = risk_free_rate / ppy
+            if all(r >= rf_p for r in daily_returns):
+                undefined.append("sortino_ratio")
+        else:
+            undefined += ["sharpe_ratio", "sortino_ratio"]
+
         # Drawdowns
         max_drawdown_amount = 0.0
         max_drawdown_pct = 0.0
@@ -312,13 +510,17 @@ class MetricsCalculator:
         gross_wins = sum(t.net_pnl for t in wins)
         gross_losses = abs(sum(t.net_pnl for t in losses))
         
+        # Zero denominators are reported as inf (or 0.0 for 0/0) and flagged —
+        # never as a finite sentinel that could pass a ">= threshold" check.
         if gross_losses == 0:
-            profit_factor = 999.0 if gross_wins > 0 else 0.0
+            profit_factor = float("inf") if gross_wins > 0 else 0.0
+            undefined.append("profit_factor")
         else:
             profit_factor = gross_wins / gross_losses
-            
+
         if avg_loss_amount == 0:
-            payoff_ratio = 999.0 if avg_win_amount > 0 else 0.0
+            payoff_ratio = float("inf") if avg_win_amount > 0 else 0.0
+            undefined.append("payoff_ratio")
         else:
             payoff_ratio = avg_win_amount / avg_loss_amount
             
@@ -522,6 +724,10 @@ class MetricsCalculator:
             has_edge=has_edge,
             strategy_grade=grade,
             assessment="",
+            undefined_metrics=undefined,
+            daily_returns=list(daily_returns),
+            periods_per_year=ppy,
+            risk_free_rate=risk_free_rate,
         )
         # === Benchmark comparison ===
         if benchmark_prices is not None and len(benchmark_prices) > 1:
@@ -532,29 +738,25 @@ class MetricsCalculator:
 
                 alpha = metrics.total_return_pct - benchmark_return
 
-                trading_days = max(len(equity_curve), 1)
-                alpha_annualized = alpha * (252 / trading_days)
+                # Annualise over the number of DAILY observations, not bars.
+                n_days = max(len(daily_returns), 1)
+                alpha_annualized = alpha * (ppy / n_days)
 
                 information_ratio = 0.0
-                if len(equity_curve) > 1:
-                    strategy_returns = [
-                        equity_curve[i].capital / equity_curve[i - 1].capital - 1
-                        for i in range(1, len(equity_curve))
-                        if equity_curve[i - 1].capital > 0
-                    ]
+                if len(daily_returns) > 1:
                     bm_returns = [
                         float(benchmark_prices.iloc[i]['close']) / float(benchmark_prices.iloc[i - 1]['close']) - 1
                         for i in range(1, len(benchmark_prices))
                         if float(benchmark_prices.iloc[i - 1]['close']) > 0
                     ]
-                    min_len = min(len(strategy_returns), len(bm_returns))
+                    min_len = min(len(daily_returns), len(bm_returns))
                     if min_len > 1:
-                        excess = [s - b for s, b in zip(strategy_returns[:min_len], bm_returns[:min_len])]
+                        excess = [s - b for s, b in zip(daily_returns[:min_len], bm_returns[:min_len])]
                         mean_ex = sum(excess) / len(excess)
                         variance = sum((r - mean_ex) ** 2 for r in excess) / len(excess)
-                        tracking_error = math.sqrt(variance) * math.sqrt(252)
+                        tracking_error = math.sqrt(variance) * math.sqrt(ppy)
                         if tracking_error > 0:
-                            information_ratio = (mean_ex * 252) / tracking_error
+                            information_ratio = (mean_ex * ppy) / tracking_error
 
                 metrics.benchmark_return_pct = round(benchmark_return, 2)
                 metrics.benchmark_index = benchmark_name
@@ -617,7 +819,8 @@ class MetricsCalculator:
             trailing_sl_count=0, trailing_sl_pct=0.0, forced_eod_count=0, forced_eod_avg_pnl=0.0,
             trades_by_regime={}, best_regime="", worst_regime="",
             trades_by_day_of_week={}, trades_by_hour={}, best_day_of_week="", worst_day_of_week="",
-            is_profitable=False, has_edge=False, strategy_grade="F", assessment="No trades generated"
+            is_profitable=False, has_edge=False, strategy_grade="F", assessment="No trades generated",
+            undefined_metrics=["profit_factor", "payoff_ratio", "sharpe_ratio", "sortino_ratio"],
         )
         return m
 
@@ -704,6 +907,31 @@ class MetricsCalculator:
         return "\n".join(lines)
 
     @staticmethod
+    def composite_score(m: BacktestMetrics) -> float:
+        """Bounded composite score in [-0.3, 1.0] used to rank backtests.
+
+        Every component is normalised to a comparable scale before weighting
+        (win rate is a fraction, not a percentage), so no single metric
+        dominates.  The score is non-decreasing in Sharpe, win rate and profit
+        factor and non-increasing in max drawdown:
+
+            0.3 · clip(sharpe / 3, -1, 1)
+          + 0.2 · clip(win_rate / 100, 0, 1)
+          + 0.2 · clip(profit_factor / 3, 0, 1)      (NaN → 0, inf → 1)
+          + 0.3 · clip(1 - max_drawdown_pct / 100, 0, 1)
+        """
+        def _clip(x: float, lo: float, hi: float) -> float:
+            if x != x:  # NaN
+                return lo
+            return max(lo, min(hi, x))
+
+        sharpe_c = _clip(m.sharpe_ratio / 3.0, -1.0, 1.0)
+        wr_c = _clip(m.win_rate / 100.0, 0.0, 1.0)
+        pf_c = _clip(m.profit_factor / 3.0, 0.0, 1.0)
+        dd_c = _clip(1.0 - m.max_drawdown_pct / 100.0, 0.0, 1.0)
+        return sharpe_c * 0.3 + wr_c * 0.2 + pf_c * 0.2 + dd_c * 0.3
+
+    @staticmethod
     def compare_backtests(results: list[BacktestMetrics], labels: list[str] = None) -> ComparisonReport:
         if not labels or len(labels) != len(results):
             labels = [f"Run {i+1}" for i in range(len(results))]
@@ -726,13 +954,8 @@ class MetricsCalculator:
                 "values": [extractor(r) for r in results]
             })
             
-        scores = []
-        for i, m in enumerate(results):
-            score = (m.sharpe_ratio * 0.3) + (max(min(m.win_rate / 100, 1.0), 0.0) * 0.2) + (max(min(m.profit_factor / 3.0, 1.0), 0.0) * 0.2) + (max(1.0 - m.max_drawdown_pct/100, 0.0) * 0.3)
-            # Alternative requested composite score formula: sharpe * 0.3 + win_rate * 0.2 + profit_factor * 0.2 + (1 - max_dd/100) * 0.3
-            score = m.sharpe_ratio * 0.3 + m.win_rate * 0.2 + m.profit_factor * 0.2 + (1 - m.max_drawdown_pct/100) * 0.3
-            scores.append((labels[i], score))
-            
+        scores = [(labels[i], MetricsCalculator.composite_score(m)) for i, m in enumerate(results)]
+
         scores.sort(key=lambda x: x[1], reverse=True)
         best_overall = scores[0][0] if scores else ""
         

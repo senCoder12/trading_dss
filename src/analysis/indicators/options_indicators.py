@@ -932,38 +932,39 @@ class OptionsIndicators:
         elif oi_structure.ce_oi_change_net > oi_structure.pe_oi_change_net:
             score -= 1.0
 
-        # Proximity to OI-based support/resistance
+        # Proximity to OI-based support/resistance — SIGNED distance: only a
+        # wall on the correct side counts.  (abs() scored a broken support as
+        # "support holding" and a broken resistance as "capping".)
         if spot_price > 0 and oi_structure.max_pe_oi_strike > 0:
-            dist_to_support_pct = abs(spot_price - oi_structure.max_pe_oi_strike) / spot_price * 100
-            if dist_to_support_pct <= 1.0:
-                score += 1.0  # Near support = bullish (support holding)
+            below_pct = (spot_price - oi_structure.max_pe_oi_strike) / spot_price * 100
+            if 0.0 <= below_pct <= 1.0:
+                score += 1.0  # resting just above defended support
 
         if spot_price > 0 and oi_structure.max_ce_oi_strike > 0:
-            dist_to_resistance_pct = abs(spot_price - oi_structure.max_ce_oi_strike) / spot_price * 100
-            if dist_to_resistance_pct <= 1.0:
-                score -= 1.0  # Near resistance = bearish
+            above_pct = (oi_structure.max_ce_oi_strike - spot_price) / spot_price * 100
+            if 0.0 <= above_pct <= 1.0:
+                score -= 1.0  # pressing into defended resistance
 
-        # Max pain pull
-        max_pain_weight = 0.5
-        if days_to_expiry < 2:
-            max_pain_weight = 1.0  # Gravitational pull strongest near expiry
-            warnings_list.append("Near expiry — max pain gravitational pull strengthened.")
+        # Max pain pull — only in the last session before expiry and only
+        # when spot is within a plausible pinning distance.  As a daily vote
+        # it fired ±0.5 on every cycle (discrete strikes never equal spot).
+        if (
+            days_to_expiry <= 1
+            and spot_price > 0
+            and max_pain.max_pain_strike > 0
+            and abs(max_pain.max_pain_strike - spot_price) / spot_price <= 0.015
+        ):
+            warnings_list.append("Near expiry — max pain gravitational pull considered.")
+            if max_pain.max_pain_strike > spot_price:
+                score += 1.0
+            elif max_pain.max_pain_strike < spot_price:
+                score -= 1.0
 
-        if max_pain.max_pain_strike > spot_price:
-            score += max_pain_weight  # Bullish pull (price should move up towards max pain)
-        elif max_pain.max_pain_strike < spot_price:
-            score -= max_pain_weight  # Bearish pull
-
-        # ATM buildup signal
-        if oi_change.atm_signal == "BEARISH_ATM_CE_ADDING":
-            score -= 1.0  # Short buildup at ATM CE = bearish
-        elif oi_change.atm_signal == "BULLISH_ATM_PE_ADDING":
-            score += 1.0  # Long buildup at ATM PE = bullish
-
-        # IV skew — high skew (puts expensive) = fear = contrarian bullish
+        # (ATM put-vs-call OI adding is the same put-writing-vs-call-writing
+        # factor as PCR and net OI change — it no longer votes a third time.
+        # Index put skew is structural, so it is reported, not voted, here.)
         if iv_analysis.iv_skew > 5.0:
-            score += 0.5
-            warnings_list.append("High IV skew: puts are expensive — contrarian bullish signal.")
+            warnings_list.append("High IV skew: puts are expensive.")
 
         # ── Advanced Metrics Votes (when available) ────────────────────────
         if advanced_metrics is not None:
@@ -984,33 +985,30 @@ class OptionsIndicators:
                 adv_put_call_skew = float(getattr(advanced_metrics, "put_call_skew", 0.0) or 0.0)
                 adv_skew_regime = getattr(advanced_metrics, "skew_regime", "BALANCED") or "BALANCED"
 
-                # GEX regime vote: positive GEX = rangebound = dampen directional signal
+                # GEX scaling is applied to the FINAL score below (it used to
+                # scale only the votes accumulated so far).
                 if adv_gex_regime == "RANGEBOUND":
-                    score *= 0.7  # Dampen existing score — market makers will pin price
                     warnings_list.append("GEX positive (rangebound) — dealer hedging dampens directional move")
                 elif adv_gex_regime == "TRENDING":
-                    score *= 1.15  # Amplify — GEX negative means dealers amplify moves
                     warnings_list.append("GEX negative (trending) — dealer flow amplifies directional move")
 
-                # UOA: unusual options activity
-                if adv_uoa_direction == "BULLISH":
-                    score += 1.0
-                    warnings_list.append(f"UOA: unusual bullish activity at {len(adv_uoa_strikes)} strikes")
-                elif adv_uoa_direction == "BEARISH":
-                    score -= 1.0
-                    warnings_list.append(f"UOA: unusual bearish activity at {len(adv_uoa_strikes)} strikes")
+                # UOA compares each strike to the chain-average volume, so ATM
+                # strikes are always "unusual" — reported, not voted.
+                if adv_uoa_direction in ("BULLISH", "BEARISH"):
+                    warnings_list.append(
+                        f"UOA: unusual {adv_uoa_direction.lower()} activity at {len(adv_uoa_strikes)} strikes"
+                    )
 
-                # OI walls: proximity adjustment
+                # OI walls duplicate the max-OI support/resistance factor above;
+                # reported only.
                 if spot_price > 0:
                     if adv_nearest_ce_wall > 0:
                         dist_to_ce_wall = (adv_nearest_ce_wall - spot_price) / spot_price * 100
                         if 0 < dist_to_ce_wall < 0.5:
-                            score -= 0.5  # Hitting resistance wall = bearish friction
                             warnings_list.append(f"CE wall at {adv_nearest_ce_wall:.0f} — {dist_to_ce_wall:.2f}% above spot, resistance likely")
                     if adv_nearest_pe_wall > 0:
                         dist_to_pe_wall = (spot_price - adv_nearest_pe_wall) / spot_price * 100
                         if 0 < dist_to_pe_wall < 0.5:
-                            score += 0.5  # Resting on support wall = bullish
                             warnings_list.append(f"PE wall at {adv_nearest_pe_wall:.0f} — support {dist_to_pe_wall:.2f}% below spot")
 
                 # IV percentile: adjust confidence direction
@@ -1021,15 +1019,22 @@ class OptionsIndicators:
                     warnings_list.append(f"IV Percentile {adv_iv_percentile:.0f}% — options cheap, low risk for option buyers")
 
                 # Put-call skew: deep put skew = institutional hedging = usually pre-crash
+                # Same-strike PE−CE IV is largely a parity/carry artefact, not
+                # risk-reversal skew — reported, not voted.
                 if adv_skew_regime == "PUT_SKEW" and adv_put_call_skew > 3.0:
-                    score -= 0.5
                     warnings_list.append(f"Strong put skew ({adv_put_call_skew:.1f}) — institutional downside hedging")
                 elif adv_skew_regime == "CALL_SKEW" and adv_put_call_skew < -3.0:
-                    score += 0.5
                     warnings_list.append(f"Unusual call skew ({adv_put_call_skew:.1f}) — institutional upside positioning")
 
             except Exception as _adv_e:
                 logger.debug("Advanced metrics integration failed: %s", _adv_e)
+
+        # GEX scales the whole positioning score (dealer hedging dampens or
+        # amplifies whatever the OI picture implies).
+        if adv_gex_regime == "RANGEBOUND":
+            score *= 0.7
+        elif adv_gex_regime == "TRENDING":
+            score *= 1.15
 
         # --- Vote mapping ---
         if score >= 3.0:
