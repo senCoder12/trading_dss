@@ -5,7 +5,8 @@ Forward test of ONE pre-registered rule — nothing is tuned here.
 RULE (frozen at registration, 2026-11-07; found by a post-hoc search, so it
 is a hypothesis, not a validated edge):
 
-    index      NIFTY50, BANKNIFTY
+    index      NIFTY50, BANKNIFTY (the rule was found on these); other indices,
+               e.g. SENSEX, use the SAME frozen rule via --indices in a SEPARATE ledger
     decision   5-minute bars starting 11:30 <= t < 13:30 IST
     direction  the live score's direction (SignalGenerator.model_score,
                regime-safe, |score| >= 0.25)
@@ -135,12 +136,12 @@ def read_ledger(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def update(db: Path, ledger: Path, since: str | None) -> int:
+def update(db: Path, ledger: Path, since: str | None, indices: tuple = INDICES) -> int:
     ledger.parent.mkdir(parents=True, exist_ok=True)
     done = {(r["index_id"], r["day"]) for r in read_ledger(ledger)}
     today = datetime.now(_IST).date()
     new = []
-    for idx in INDICES:
+    for idx in indices:
         bars = load_bars_filled(db, idx)
         days = sorted({b["timestamp"].date() for b in bars})
         todo = {d for d in days if (idx, d.isoformat()) not in done and d < today
@@ -170,7 +171,7 @@ def update(db: Path, ledger: Path, since: str | None) -> int:
     return 0
 
 
-def summary(ledger: Path) -> int:
+def summary(ledger: Path, indices: tuple = INDICES) -> int:
     rows = [r for r in read_ledger(ledger) if r.get("ts")]
     for label, sel in (("FORWARD (after registration)", [r for r in rows if r["forward"]]),
                        ("history in ledger (NOT forward)", [r for r in rows if not r["forward"]])):
@@ -183,7 +184,7 @@ def summary(ledger: Path) -> int:
         sr = sharpe_ratio(net)
         print(f"  gross mean {gross.mean():+.3f} R · net mean {net.mean():+.3f} R · "
               f"hit(3R) {np.mean(gross >= TARGET_R - 1e-9):.2f} · PSR(SR>0) {probabilistic_sharpe_ratio(sr, 0.0, n, sk, ku):.2f}")
-        for idx in INDICES:
+        for idx in indices:
             v = np.array([r["r_net"] for r in sel if r["index_id"] == idx])
             if len(v):
                 print(f"  {idx}: n={len(v)} net {v.mean():+.3f}")
@@ -195,17 +196,24 @@ def summary(ledger: Path) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--db", type=Path, default=ROOT / "data" / "db" / "trading_dss.db")
-    ap.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
+    ap.add_argument("--indices", default=",".join(INDICES),
+                    help="same frozen rule on other indices (default ledger is then separate)")
+    ap.add_argument("--ledger", type=Path, default=None)
     ap.add_argument("--since", default=None, help="only label sessions on/after YYYY-MM-DD")
     ap.add_argument("--update", action="store_true", help="label completed sessions into the ledger")
     ap.add_argument("--summary", action="store_true")
     args = ap.parse_args()
     import logging
     logging.basicConfig(level=logging.ERROR)
+    indices = tuple(i.strip().upper() for i in args.indices.split(",") if i.strip())
+    ledger = args.ledger or (
+        DEFAULT_LEDGER if indices == INDICES
+        else DEFAULT_LEDGER.with_name(f"{RULE_ID}_{'_'.join(indices)}.jsonl")
+    )
     if args.update:
-        update(args.db, args.ledger, args.since)
+        update(args.db, ledger, args.since, indices)
     if args.summary or not args.update:
-        summary(args.ledger)
+        summary(ledger, indices)
     return 0
 
 
