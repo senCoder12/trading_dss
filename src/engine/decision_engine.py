@@ -93,6 +93,76 @@ _MAX_MONITOR_PRICE_AGE_SECONDS: int = 600
 _MISSING_PRICE_ALERT_CYCLES: int = 2
 # Options stop trading at 15:30 IST — after that today's expiry is dead.
 _OPTIONS_CLOSE_HOUR, _OPTIONS_CLOSE_MINUTE = 15, 30
+# Intraday series: stored 5m history + 5m bars built from recent 1m bars.
+# 300 bars (~4 sessions): EMA200 and MACD warm up on 5m data
+_INTRADAY_5M_BARS: int = 300
+_RECENT_1M_BARS: int = 1500          # ~4 sessions of 375 one-minute bars
+_SESSION_OPEN_MIN = 9 * 60 + 15
+_SESSION_CLOSE_MIN = 15 * 60 + 30
+
+
+def merge_intraday_5m(
+    stored_5m_desc: list[dict],
+    rows_1m_desc: list[dict],
+    ref_now: datetime,
+    limit: int,
+) -> list[dict]:
+    """Stored 5m bars + 5m bars aggregated from 1m bars, newest first.
+
+    * 1m bars outside the 09:15-15:30 session are ignored (post-market
+      ticks were being stored as bars).
+    * A 5m bucket is used only once it has closed (bucket start + 5 min
+      <= *ref_now*) — the forming bar is excluded, as in the calibration.
+    * Stored 5m bars at or after the first aggregated bucket are dropped so
+      the two sources never overlap.
+    Returns the same newest-first order as the price-history query.
+    """
+    buckets: dict[datetime, dict] = {}
+    for r in reversed(rows_1m_desc or []):          # oldest → newest
+        try:
+            ts = datetime.fromisoformat(str(r["timestamp"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        ts = ts.replace(tzinfo=_IST) if ts.tzinfo is None else ts.astimezone(_IST)
+        minute = ts.hour * 60 + ts.minute
+        if not (_SESSION_OPEN_MIN <= minute < _SESSION_CLOSE_MIN):
+            continue
+        start = ts.replace(minute=ts.minute - ts.minute % 5, second=0, microsecond=0)
+        if start + timedelta(minutes=5) > ref_now:
+            continue                                  # still forming
+        try:
+            o, h, l, c = (float(r[k]) for k in ("open", "high", "low", "close"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        b = buckets.get(start)
+        if b is None:
+            buckets[start] = {"open": o, "high": h, "low": l, "close": c,
+                              "volume": float(r.get("volume") or 0)}
+        else:
+            b["high"] = max(b["high"], h)
+            b["low"] = min(b["low"], l)
+            b["close"] = c
+            b["volume"] += float(r.get("volume") or 0)
+
+    built = [
+        {"timestamp": start.isoformat(), "timeframe": "5m", "source": "resampled_1m", **bar}
+        for start, bar in sorted(buckets.items())
+    ]
+    if not built:
+        return list(stored_5m_desc or [])[:limit]
+
+    first_built = datetime.fromisoformat(built[0]["timestamp"])
+    older: list[dict] = []
+    for r in stored_5m_desc or []:
+        try:
+            ts = datetime.fromisoformat(str(r["timestamp"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        ts = ts.replace(tzinfo=_IST) if ts.tzinfo is None else ts.astimezone(_IST)
+        if ts < first_built:
+            older.append(r)
+    merged_desc = list(reversed(built)) + older        # newest first
+    return merged_desc[:limit]
 
 
 def resample_session_bars(df: Optional[pd.DataFrame], rule: str) -> Optional[pd.DataFrame]:
@@ -1375,17 +1445,22 @@ class DecisionEngine:
 
         _intraday_tf = "5m"
         try:
-            intraday_rows = self._db.fetch_all(
-                # 300 bars (~4 sessions): EMA200 and MACD warm up on 5m data
-                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "5m", as_of_ts, 300)
+            # The live pipeline writes only 1m bars; stored 5m bars come from
+            # historical backfill and stop at the last backfill.  Using them
+            # alone made every intraday decision "stale" (and NO_TRADE).  Build
+            # the current session's 5m bars from 1m bars and append them to
+            # the stored 5m history.
+            stored_5m = self._db.fetch_all(
+                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "5m", as_of_ts, _INTRADAY_5M_BARS)
             )
-            if not intraday_rows:
-                intraday_rows = self._db.fetch_all(
-                    Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "1m", as_of_ts, 500)
-                )
-                if intraday_rows:
-                    _intraday_tf = "1m"
-                    logger.debug("Step 1: using 1m intraday fallback for %s (%d bars)", index_id, len(intraday_rows))
+            recent_1m = self._db.fetch_all(
+                Q.LIST_PRICE_HISTORY_LIMIT, (index_id, "1m", as_of_ts, _RECENT_1M_BARS)
+            )
+            intraday_rows = merge_intraday_5m(stored_5m, recent_1m, ref_now, _INTRADAY_5M_BARS)
+            if not intraday_rows and recent_1m:
+                intraday_rows = recent_1m
+                _intraday_tf = "1m"
+                logger.debug("Step 1: using 1m intraday fallback for %s (%d bars)", index_id, len(intraday_rows))
         except Exception:
             logger.debug("Step 1: intraday unavailable for %s", index_id)
 
