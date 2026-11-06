@@ -97,7 +97,8 @@ class DataCollector:
         self.options_fetcher = OptionsChainFetcher(
             scraper=self.nse_scraper,
             bse_scraper=self.bse_scraper,
-            broker_client=self.data_router.broker_client
+            broker_client=self.data_router.broker_client,
+            db=self.db,
         )
         self.historical_manager = HistoricalDataManager(registry=self.registry, db=self.db)
         self.fii_dii_fetcher = FIIDIIFetcher(scraper=self.nse_scraper)
@@ -590,12 +591,22 @@ class DataCollector:
                 )
                 if component == "nse":
                     self.nse_scraper = NSEScraper(rate_limiter=self._nse_limiter)
-                    self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper, bse_scraper=self.bse_scraper)
+                    self.options_fetcher = OptionsChainFetcher(
+                        scraper=self.nse_scraper,
+                        bse_scraper=self.bse_scraper,
+                        broker_client=self.data_router.broker_client,
+                        db=self.db,
+                    )
                     self.fii_dii_fetcher = FIIDIIFetcher(scraper=self.nse_scraper)
                     self.vix_tracker = VIXTracker(scraper=self.nse_scraper)
                 elif component == "bse":
                     self.bse_scraper = BSEScraper()
-                    self.options_fetcher = OptionsChainFetcher(scraper=self.nse_scraper, bse_scraper=self.bse_scraper)
+                    self.options_fetcher = OptionsChainFetcher(
+                        scraper=self.nse_scraper,
+                        bse_scraper=self.bse_scraper,
+                        broker_client=self.data_router.broker_client,
+                        db=self.db,
+                    )
 
     def _reset_failure(self, component: str) -> None:
         self._failures[component] = 0

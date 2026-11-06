@@ -606,16 +606,17 @@ class NSEScraper:
         Requires an 'expiry' date (format: dd-MMM-yyyy) to return full data.
         If expiry is None, this might return empty or metadata depending on NSE state.
         """
-        params = {"symbol": symbol}
+        # /api/option-chain-indices now returns 404; v3 serves indices and
+        # equities from one endpoint, selected by the `type` param.
+        params = {
+            "type": "Equities" if type.lower() == "equities" else "Indices",
+            "symbol": symbol,
+        }
         if expiry:
             params["expiry"] = expiry
 
-        endpoint = _ENDPOINTS["option_chain_indices"]
-        if type.lower() == "equities":
-            endpoint = _ENDPOINTS["option_chain_equities"]
-
         return self._call(
-            endpoint,
+            _ENDPOINTS["option_chain_v3"],
             params=params,
             cache_key=cache_key,
             cache_ttl=cache_ttl,

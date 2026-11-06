@@ -14,6 +14,7 @@ from typing import Optional
 
 from config.settings import settings
 from src.data.index_registry import IndexRegistry
+from src.data.options_chain import OptionsChainFetcher
 from src.database.db_manager import DatabaseManager
 from src.utils.market_hours import MarketHoursManager
 
@@ -39,6 +40,26 @@ def get_db() -> DatabaseManager:
 def get_market_hours() -> MarketHoursManager:
     """Return a MarketHoursManager singleton."""
     return MarketHoursManager()
+
+
+_broker_client = None
+
+
+def set_broker_client(client) -> None:
+    """Wire the live broker client (Angel One) into API-side fetchers.
+
+    Clears the cached OptionsChainFetcher so the next request builds one
+    with broker fallback enabled.
+    """
+    global _broker_client
+    _broker_client = client
+    get_options_fetcher.cache_clear()
+
+
+@lru_cache(maxsize=1)
+def get_options_fetcher() -> OptionsChainFetcher:
+    """Return the process-wide OptionsChainFetcher singleton."""
+    return OptionsChainFetcher(broker_client=_broker_client, db=get_db())
 
 
 # ── Optional heavy components ────────────────────────────────────────────────
