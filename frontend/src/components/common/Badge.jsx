@@ -21,6 +21,8 @@ const VARIANT_TONE = {
   ERROR: 'danger', UNHEALTHY: 'danger', UNKNOWN: 'neutral',
   CRITICAL: 'danger', NOISE: 'neutral',
   PRIORITY: 'success', ACTIVE: 'brand', WATCHLIST: 'neutral',
+  // Decision source: LIVE engine vs SHADOW model must never look alike
+  LIVE: 'success', SHADOW: 'violet',
 };
 
 // Severity reads differently from confidence: HIGH severity is bad.

@@ -46,6 +46,12 @@ export const api = {
     get(`/signals/history?days=${days}${indexId ? `&index_id=${indexId}` : ''}`),
   getPerformance: (days = 30) => get(`/signals/performance?days=${days}`),
 
+  // Shadow model (evaluation only — never traded)
+  getShadowLatest: () => get('/shadow/latest'),
+  getShadowSummary: (date) => get(`/shadow/summary${date ? `?date=${date}` : ''}`),
+  getShadowHistory: (indexId, limit = 200) =>
+    get(`/shadow/history?limit=${limit}${indexId ? `&index_id=${indexId}` : ''}`),
+
   // Portfolio
   getPortfolio: () => get('/portfolio/summary'),
   getPositions: () => get('/portfolio/positions'),

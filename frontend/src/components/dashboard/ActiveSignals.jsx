@@ -27,6 +27,10 @@ export default function ActiveSignals({ limit = 6 }) {
   }
 
   return (
+    <>
+    <div className="px-5 pt-3 pb-1">
+      <Badge variant="LIVE" size="xs" dot>LIVE engine</Badge>
+    </div>
     <ul className="divide-y divide-line">
       {signals.slice(0, limit).map((sig) => {
         const { Icon, cls } = ICON[sig.signal_type] ?? ICON.NO_TRADE;
@@ -59,5 +63,6 @@ export default function ActiveSignals({ limit = 6 }) {
         );
       })}
     </ul>
+    </>
   );
 }

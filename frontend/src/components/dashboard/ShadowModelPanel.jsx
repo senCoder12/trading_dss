@@ -6,9 +6,9 @@ import { Badge } from '../common/Badge';
 import { EmptyState } from '../common/EmptyState';
 
 const DECISION_STYLE = {
-  BUY: 'text-green-400',
-  SELL: 'text-red-400',
-  NEUTRAL: 'text-slate-400',
+  BUY: 'text-up',
+  SELL: 'text-down',
+  NEUTRAL: 'text-ink-muted',
 };
 
 function time(iso) {
@@ -33,22 +33,22 @@ function topComponents(components) {
     .slice(0, 6);
 }
 
-const VOTE_STYLE = { BULLISH: 'text-green-400', BEARISH: 'text-red-400' };
+const VOTE_STYLE = { BULLISH: 'text-up', BEARISH: 'text-down', STRONG_BULLISH: 'text-up', STRONG_BEARISH: 'text-down' };
 
 function Row({ d }) {
   const [open, setOpen] = useState(false);
   const warnings = d.warnings ?? [];
   const reason = (d.reasoning || '').split('\n')[0];
   return (
-    <div className="px-4 py-2.5 hover:bg-fuchsia-500/5 cursor-pointer" onClick={() => setOpen(!open)}>
+    <div className="px-5 py-3 hover:bg-violet/5 cursor-pointer" onClick={() => setOpen(!open)}>
       <div className="grid grid-cols-12 items-center gap-2 text-xs">
-        <span className="col-span-2 text-slate-100 font-semibold">{d.index_id}</span>
+        <span className="col-span-2 text-ink font-medium">{d.index_id}</span>
         <span className="col-span-2 flex items-center gap-1.5">
           <Badge variant="LIVE" size="xs">LIVE</Badge>
-          <span className={`font-mono ${DECISION_STYLE[d.live_decision] ?? 'text-slate-500'}`}>
+          <span className={`font-mono ${DECISION_STYLE[d.live_decision] ?? 'text-ink-faint'}`}>
             {d.live_decision ?? '—'}
           </span>
-          <span className="text-slate-500 font-mono">{time(d.live_generated_at)}</span>
+          <span className="text-ink-faint font-mono">{time(d.live_generated_at)}</span>
         </span>
         <span className="col-span-3 flex items-center gap-1.5">
           <Badge variant="SHADOW" size="xs">SHADOW</Badge>
@@ -56,21 +56,21 @@ function Row({ d }) {
             {d.decision}
             {d.forced_neutral && <span title="Forced NEUTRAL: stale or missing inputs">*</span>}
           </span>
-          <span className="text-slate-400 font-mono" title="Calibrated P(win)">
+          <span className="text-ink-muted font-mono" title="Calibrated P(win)">
             P={d.confidence_score != null ? d.confidence_score.toFixed(2) : '—'}
           </span>
         </span>
-        <span className="col-span-2 text-slate-400 truncate" title={d.regime}>{d.regime ?? '—'}</span>
+        <span className="col-span-2 text-ink-muted truncate" title={d.regime}>{d.regime ?? '—'}</span>
         <span className="col-span-1">
           {d.agree === null ? (
-            <span className="text-slate-500">—</span>
+            <span className="text-ink-faint">—</span>
           ) : d.agree ? (
-            <Check className="w-3.5 h-3.5 text-emerald-400" aria-label="agrees with live" />
+            <Check className="w-3.5 h-3.5 text-up" aria-label="agrees with live" />
           ) : (
-            <X className="w-3.5 h-3.5 text-amber-400" aria-label="differs from live" />
+            <X className="w-3.5 h-3.5 text-warn" aria-label="differs from live" />
           )}
         </span>
-        <span className="col-span-2 flex items-center gap-1 justify-end text-amber-400">
+        <span className="col-span-2 flex items-center gap-1 justify-end text-warn">
           {warnings.length > 0 && (
             <>
               <AlertTriangle className="w-3.5 h-3.5" />
@@ -79,16 +79,16 @@ function Row({ d }) {
           )}
         </span>
       </div>
-      <div className="text-[11px] text-slate-400 mt-1 truncate" title={reason}>{reason}</div>
+      <div className="text-[11px] text-ink-faint mt-1 truncate" title={reason}>{reason}</div>
       {open && (
         <div className="mt-2 space-y-1.5 text-[11px]">
-          <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-300 font-mono">
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-ink-muted font-mono">
             {topComponents(d.components).map(([n, v, vote]) => (
               <span key={n}>
                 {n}:{' '}
-                {vote && <span className={VOTE_STYLE[vote] ?? 'text-slate-400'}>{vote}</span>}
+                {vote && <span className={VOTE_STYLE[vote] ?? 'text-ink-muted'}>{vote}</span>}
                 {v !== null && (
-                  <span className={v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : ''}>
+                  <span className={v > 0 ? 'text-up' : v < 0 ? 'text-down' : ''}>
                     {vote ? ` (${v.toFixed(1)})` : v.toFixed(3)}
                   </span>
                 )}
@@ -96,7 +96,7 @@ function Row({ d }) {
             ))}
           </div>
           {warnings.map((w, i) => (
-            <div key={i} className="text-amber-300/90">⚠ {w}</div>
+            <div key={i} className="text-warn">⚠ {w}</div>
           ))}
         </div>
       )}
@@ -123,17 +123,17 @@ export default function ShadowModelPanel() {
   const decisions = data?.decisions ?? [];
   return (
     <Card
-      className="border-dashed border-fuchsia-500/50"
+      className="border-2 border-dashed border-violet/60"
       padding={false}
       title={
         <span className="flex items-center gap-2">
-          <FlaskConical className="w-4 h-4 text-fuchsia-300" />
+          <FlaskConical className="w-4 h-4 text-violet" />
           Shadow model — evaluation only, NOT traded
         </span>
       }
       actions={
-        <span className="flex items-center gap-2 text-[11px] text-slate-400">
-          <Badge variant="SHADOW" size="xs">SHADOW</Badge>
+        <span className="flex items-center gap-2 text-[11px] text-ink-faint">
+          <Badge variant="SHADOW" size="xs" dot>SHADOW</Badge>
           {run && (
             <span className="font-mono">
               {run.model_branch ?? ''} @ {run.model_commit} · run {time(run.as_of)} · {run.status}
@@ -143,12 +143,12 @@ export default function ShadowModelPanel() {
       }
     >
       {error ? (
-        <div className="p-4 text-xs text-red-400">Shadow API error: {error}</div>
+        <div className="p-5 text-xs text-down">Shadow API error: {error}</div>
       ) : !run ? (
         <EmptyState icon={FlaskConical} title="No shadow runs yet" message="The shadow runner records a decision every 5 minutes during market hours." />
       ) : (
-        <div className="divide-y divide-slate-700/50">
-          <div className="grid grid-cols-12 gap-2 px-4 py-1.5 text-[10px] uppercase tracking-wide text-slate-500">
+        <div className="divide-y divide-line">
+          <div className="grid grid-cols-12 gap-2 px-5 py-2 text-[10px] uppercase tracking-wide text-ink-faint">
             <span className="col-span-2">Index</span>
             <span className="col-span-2">Live decision</span>
             <span className="col-span-3">Shadow decision</span>
@@ -157,7 +157,7 @@ export default function ShadowModelPanel() {
             <span className="col-span-2 text-right">Warnings</span>
           </div>
           {decisions.map((d) => <Row key={d.index_id} d={d} />)}
-          <div className="px-4 py-2 text-[10px] text-slate-500">
+          <div className="px-5 py-2.5 text-[10px] text-ink-faint">
             * forced NEUTRAL (stale or missing inputs). Shadow decisions are stored for analysis and never reach live signals or trades.
           </div>
         </div>

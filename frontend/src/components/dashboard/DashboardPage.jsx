@@ -14,6 +14,7 @@ import { Page } from '../layout/Page';
 import ChartPanel from '../chart/ChartPanel';
 import ActiveSignals from './ActiveSignals';
 import QuickAlerts, { useQuickAlerts } from './QuickAlerts';
+import ShadowModelPanel from './ShadowModelPanel';
 import { formatCurrency, formatPercentage, formatPnL, formatPrice } from '../../utils/formatters';
 import { WATCHLIST, SHORT_NAMES } from '../../utils/constants';
 
@@ -142,6 +143,9 @@ export default function DashboardPage() {
           </div>
         </ErrorBoundary>
       </div>
+
+      {/* Shadow model: evaluation only, never traded */}
+      <ErrorBoundary><ShadowModelPanel /></ErrorBoundary>
     </Page>
   );
 }
