@@ -421,8 +421,10 @@ class SignalGenerator:
         self._check_cooldown(index_id, direction, now, warnings)
 
         # ── Step 6: Entry / Exit Levels ────────────────────────────────
+        stop_atr, target_atr = self._calibration.label_multiples()
         entry_price, target_price, stop_loss, rr_ratio = self._calculate_levels(
             direction, current_spot_price, technical, regime, confidence_level,
+            stop_atr=stop_atr, target_atr=target_atr,
         )
 
         # ── R:R Gate — reject signals with insufficient risk/reward ────
@@ -1005,59 +1007,33 @@ class SignalGenerator:
         technical: TechnicalAnalysisResult,
         regime: MarketRegime,
         confidence_level: str,
+        stop_atr: float = 1.0,
+        target_atr: float = 1.5,
     ) -> tuple[float, float, float, float]:
-        """Return ``(entry, target, stop_loss, risk_reward_ratio)``."""
+        """Return ``(entry, target, stop_loss, risk_reward_ratio)``.
+
+        The stop and target are the SAME ATR multiples the calibration
+        labelled a win/loss with (``stop_atr`` / ``target_atr`` from the
+        calibration file), so the calibrated P(win) describes this exact
+        trade.  The old levels mixed a support-based stop with an
+        ATR × regime-multiplier target; on 5m data that gave R:R ≈ 0.3–0.5
+        and ~70 % of otherwise-valid signals failed the R:R gate — and the
+        probability, had it existed, would have described a different trade.
+        OI walls still cap the target, in the RiskManager, on a real chain.
+        """
         import math
         atr = technical.volatility.atr_value
         if not atr or not math.isfinite(atr) or atr <= 0:
-            atr = entry_price * 0.005  # fallback: 0.5% of price
-
-        sl_mult = regime.stop_loss_multiplier
-        if not sl_mult or not math.isfinite(sl_mult) or sl_mult <= 0:
-            sl_mult = 1.5  # fallback
-        rr = 1.5 if confidence_level == "HIGH" else 2.0
-
-        support = technical.immediate_support
-        resistance = technical.immediate_resistance
-        if not support or not math.isfinite(support) or support <= 0:
-            support = entry_price * 0.98   # fallback: 2% below entry
-        if not resistance or not math.isfinite(resistance) or resistance <= 0:
-            resistance = entry_price * 1.02  # fallback: 2% above entry
-
-        # Override S/R with OI walls when available — they are stronger levels
-        if technical.options is not None:
-            ce_wall = getattr(technical.options, "nearest_ce_wall", 0.0) or 0.0
-            pe_wall = getattr(technical.options, "nearest_pe_wall", 0.0) or 0.0
-
-            if direction == "BUY_CALL":
-                # Use PE wall as stop (strongest support), CE wall as target cap
-                if pe_wall > 0 and pe_wall < entry_price:
-                    support = max(support, pe_wall)  # Use the stronger of S/R and PE wall
-                if ce_wall > 0 and ce_wall > entry_price:
-                    resistance = min(resistance, ce_wall)  # Cap target at CE wall
-            else:  # BUY_PUT
-                # Use CE wall as stop (strongest resistance), PE wall as target cap
-                if ce_wall > 0 and ce_wall > entry_price:
-                    resistance = min(resistance, ce_wall)
-                if pe_wall > 0 and pe_wall < entry_price:
-                    support = max(support, pe_wall)
-
-        # Use S/R directly with small buffer; ATR for target distance (profit taking)
-        sr_buffer_pct = 0.002  # 0.2% buffer below support / above resistance
+            atr = entry_price * 0.002  # fallback: ~a 5m ATR on an index
+        stop_dist = stop_atr * atr
+        tgt_dist = target_atr * atr
         if direction == "BUY_CALL":
-            stop_loss = support * (1.0 - sr_buffer_pct)  # just below support
-            target = entry_price + atr * sl_mult * rr
-        else:  # BUY_PUT
-            stop_loss = resistance * (1.0 + sr_buffer_pct)  # just above resistance
-            target = entry_price - atr * sl_mult * rr
-
+            stop_loss, target = entry_price - stop_dist, entry_price + tgt_dist
+        else:
+            stop_loss, target = entry_price + stop_dist, entry_price - tgt_dist
         stop_loss = max(stop_loss, 0.01)
         target = max(target, 0.01)
-
-        sl_dist = abs(entry_price - stop_loss)
-        tgt_dist = abs(entry_price - target)
-        rr_ratio = round(tgt_dist / sl_dist, 2) if sl_dist > 0 else rr
-
+        rr_ratio = round(tgt_dist / stop_dist, 2) if stop_dist > 0 else 0.0
         return entry_price, round(target, 2), round(stop_loss, 2), rr_ratio
 
     # ------------------------------------------------------------------

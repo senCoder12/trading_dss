@@ -708,7 +708,7 @@ class PreLaunchValidator:
         try:
             from src.paper_trading.paper_engine import PaperTradingEngine, PaperTradingConfig
             config = PaperTradingConfig(initial_capital=100_000.0)
-            engine = PaperTradingEngine(self._db, None, config)
+            engine = PaperTradingEngine(self._db, config)
             capital = engine.current_capital
             return self._pass("Paper engine", f"initialised (₹{capital:,.0f})", section)
         except Exception as exc:
@@ -721,7 +721,7 @@ class PreLaunchValidator:
         try:
             from src.paper_trading.paper_engine import PaperTradingEngine, PaperTradingConfig
             config = PaperTradingConfig(initial_capital=100_000.0)
-            engine = PaperTradingEngine(self._db, None, config)
+            engine = PaperTradingEngine(self._db, config)
             engine.save_state()
             engine.load_state()
             return self._pass("State persistence", "save/load working", section)
@@ -735,7 +735,7 @@ class PreLaunchValidator:
         try:
             from src.paper_trading.paper_engine import PaperTradingEngine, PaperTradingConfig
             config = PaperTradingConfig(initial_capital=100_000.0)
-            engine = PaperTradingEngine(self._db, None, config)
+            engine = PaperTradingEngine(self._db, config)
             positions = engine.get_open_positions()
             return self._pass("Position tracking", f"verified ({len(positions)} open)", section)
         except Exception as exc:

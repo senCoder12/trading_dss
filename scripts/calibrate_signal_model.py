@@ -62,8 +62,10 @@ from src.engine.signal_generator import SignalGenerator  # noqa: E402
 _IST = ZoneInfo("Asia/Kolkata")
 WINDOW = 300
 HORIZON = 12          # 5m bars = 60 minutes
-TARGET_ATR = 1.5
-STOP_ATR = 1.0
+from src.engine.signal_calibration import DEFAULT_STOP_ATR, DEFAULT_TARGET_ATR  # noqa: E402
+
+TARGET_ATR = DEFAULT_TARGET_ATR   # live levels use the same multiples
+STOP_ATR = DEFAULT_STOP_ATR
 FIRST_ENTRY = dtime(9, 30)
 LAST_ENTRY = dtime(14, 25)
 EDGES = [0.25, 0.40, 0.55, 0.70, 0.90, 1.20, 99.0]

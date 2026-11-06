@@ -19,6 +19,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import get_db, get_index_registry
+
+def _json_safe(obj: Any) -> Any:
+    """Replace non-finite floats with None (recursively).
+
+    Undefined metrics (e.g. profit factor with no losing trades) are now
+    ``inf`` instead of a fake 999; JSON cannot carry inf/NaN and Starlette
+    would raise a 500, so they are reported as null.
+    """
+    import math as _math
+
+    if isinstance(obj, float):
+        return obj if _math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
 from src.data.index_registry import IndexRegistry
 from src.database.db_manager import DatabaseManager
 
@@ -120,7 +138,7 @@ async def run_backtest(
         result = runner.run(config)
         m = result.metrics
 
-        return {
+        return _json_safe({
             "index_id": result.index_id,
             "start_date": str(result.start_date),
             "end_date": str(result.end_date),
@@ -183,7 +201,7 @@ async def run_backtest(
                     "forced_eod": {"count": m.forced_eod_count, "avg_pnl": m.forced_eod_avg_pnl},
                 },
             },
-        }
+        })
 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -218,7 +236,7 @@ async def get_latest_backtest(
             detail=f"No backtest results found for {index_id}",
         )
 
-    m = entry.get("metrics_at_approval", {})
+    m = _json_safe(entry.get("metrics_at_approval", {}) or {})
     return BacktestMetricsSummary(
         index_id=index_id,
         total_return_pct=m.get("return_pct"),

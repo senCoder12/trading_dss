@@ -621,3 +621,22 @@ class TestLevelsAndOutput:
         tech = _technical(smart_money=_smart_money(bias="BEARISH"))
         warns = SignalGenerator._smart_money_warnings("BUY_CALL", tech)
         assert warns and "disagrees" in warns[0]
+
+
+class TestLevelsMatchCalibration:
+    def test_levels_are_calibrated_atr_multiples(self, tmp_path):
+        sig = _signal(_gen(tmp_path))
+        atr = 120.0
+        assert sig.entry_price - sig.stop_loss == pytest.approx(1.0 * atr, abs=0.01)
+        assert sig.target_price - sig.entry_price == pytest.approx(1.5 * atr, abs=0.01)
+        assert sig.risk_reward_ratio == pytest.approx(1.5)
+
+    def test_custom_label_multiples_are_used(self, tmp_path):
+        _calibration(tmp_path, p=0.6)
+        payload = json.loads((tmp_path / "cal.json").read_text())
+        payload["label"] = {"stop_atr": 0.8, "target_atr": 1.6}
+        (tmp_path / "cal.json").write_text(json.dumps(payload))
+        gen = SignalGenerator(_mock_db(), calibration=SignalCalibration(tmp_path / "cal.json"))
+        sig = _signal(gen)
+        assert sig.entry_price - sig.stop_loss == pytest.approx(0.8 * 120.0, abs=0.01)
+        assert sig.risk_reward_ratio == pytest.approx(2.0)

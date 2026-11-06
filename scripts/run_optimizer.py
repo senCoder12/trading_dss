@@ -248,12 +248,20 @@ def _run_for_index(
             )
 
             try:
+                is_best = _params_to_key(eval_r.params) == _params_to_key(opt_result.best_params)
                 rob_report = tester.run_full_robustness_test(
                     params=eval_r.params,
                     base_config=base_config,
                     original_metrics=eval_r.metrics,
                     trade_history=trade_history,
                     parameter_space=space,
+                    # Multiple-testing correction: the best of N trials is
+                    # judged by its DEFLATED Sharpe, not the raw one.
+                    deflated_sharpe=(
+                        opt_result.best_dsr.dsr
+                        if is_best and opt_result.best_dsr is not None else None
+                    ),
+                    n_trials=opt_result.n_trials or None,
                 )
                 key = _params_to_key(eval_r.params)
                 robustness_reports[key] = rob_report
@@ -283,7 +291,12 @@ def _run_for_index(
         best_key = _params_to_key(opt_result.best_params)
         best_rob = robustness_reports.get(best_key)
 
-        if best_rob and best_rob.is_approved:
+        if best_rob and best_rob.is_approved and not opt_result.best_approved:
+            print(
+                f"\n\u274c Auto-approve skipped for {index_id}: robustness passed but the "
+                "optimiser did not approve (deflated Sharpe < threshold or holdout failed)."
+            )
+        elif best_rob and best_rob.is_approved:
             mgr = ApprovedParameterManager()
             mgr.save_approved_params(
                 index_id=index_id,

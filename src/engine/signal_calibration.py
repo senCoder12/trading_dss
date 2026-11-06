@@ -44,6 +44,10 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "signal_calibrat
 CALIBRATION_VERSION = 1
 POOLED_KEY = "ALL"
 
+# Trade definition used to label outcomes (live levels use the same).
+DEFAULT_STOP_ATR = 1.0
+DEFAULT_TARGET_ATR = 1.5
+
 # Beta prior pseudo-counts for shrinkage toward 50 %.
 _PRIOR_WINS = 2.0
 _PRIOR_LOSSES = 2.0
@@ -134,6 +138,7 @@ class SignalCalibration:
         self._status = "not loaded"
         self._mtime: Optional[float] = None
         self._loaded = False
+        self._label: dict = {}
 
     @property
     def status(self) -> str:
@@ -164,6 +169,7 @@ class SignalCalibration:
                 if age > self._max_age_days:
                     self._status = f"calibration is {age} days old — recalibrate"
                     return
+                self._label = dict(payload.get("label") or {})
                 for key, m in payload.get("models", {}).items():
                     bins = [Bin(**b) for b in m["bins"]]
                     self._models[key.upper()] = _Model(bins, bool(m.get("validated")), m.get("meta", {}))
@@ -172,6 +178,18 @@ class SignalCalibration:
                 logger.exception("SignalCalibration: could not load %s", self._path)
                 self._status = f"calibration file unreadable: {exc}"
                 self._models = {}
+
+    def label_multiples(self) -> tuple[float, float]:
+        """(stop ATR multiple, target ATR multiple) the calibration labelled with."""
+        self._ensure_loaded()
+        try:
+            stop = float(self._label.get("stop_atr", DEFAULT_STOP_ATR))
+            target = float(self._label.get("target_atr", DEFAULT_TARGET_ATR))
+            if stop > 0 and target > 0:
+                return stop, target
+        except (TypeError, ValueError):
+            pass
+        return DEFAULT_STOP_ATR, DEFAULT_TARGET_ATR
 
     def lookup(self, index_id: str, abs_score: float) -> tuple[Optional[float], str]:
         """Return ``(P(win) | None, reason)`` for a directional score."""
