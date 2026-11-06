@@ -626,6 +626,64 @@ SELECT MAX(date) AS latest_date FROM fii_dii_activity
 """
 
 # ============================================================================
+# fii_futures_positions — participant-wise futures open interest (contracts)
+#
+# Source: NSE end-of-day archive fao_participant_oi_DDMMYYYY.csv. Kept apart
+# from fii_dii_activity, which holds cash/F&O *turnover in ₹ crore*. Positions
+# are contract counts and must never be mixed with those values.
+# Created by migration v20 only. Deliberately not in models.TABLE_DDL, so
+# initialise_schema() does not create it before the migration is approved.
+# ============================================================================
+
+CREATE_FII_FUTURES_POSITIONS = """
+CREATE TABLE IF NOT EXISTS fii_futures_positions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date       TEXT    NOT NULL,   -- YYYY-MM-DD; positions as of that day's close
+    participant      TEXT    NOT NULL CHECK (participant IN ('FII','DII','PRO','CLIENT')),
+    instrument       TEXT    NOT NULL CHECK (instrument IN ('INDEX_FUT','STOCK_FUT')),
+    long_contracts   INTEGER NOT NULL CHECK (long_contracts  >= 0),
+    short_contracts  INTEGER NOT NULL CHECK (short_contracts >= 0),
+    net_contracts    INTEGER NOT NULL CHECK (net_contracts = long_contracts - short_contracts),
+    source           TEXT    NOT NULL,   -- e.g. 'nse_archive'
+    fetched_at       TEXT    NOT NULL,   -- IST ISO-8601
+    UNIQUE (trade_date, participant, instrument)
+)
+"""
+
+CREATE_FII_FUTURES_POSITIONS_IDX = """
+CREATE INDEX IF NOT EXISTS idx_fii_fut_pos_lookup
+ON fii_futures_positions (participant, instrument, trade_date)
+"""
+
+# Idempotent: re-loading the same day rewrites identical values.
+UPSERT_FII_FUTURES_POSITION = """
+INSERT INTO fii_futures_positions
+    (trade_date, participant, instrument, long_contracts, short_contracts,
+     net_contracts, source, fetched_at)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(trade_date, participant, instrument) DO UPDATE SET
+    long_contracts  = excluded.long_contracts,
+    short_contracts = excluded.short_contracts,
+    net_contracts   = excluded.net_contracts,
+    source          = excluded.source,
+    fetched_at      = excluded.fetched_at
+"""
+
+# Point-in-time read: day D's positions are published after D's close.
+GET_FII_INDEX_FUT_NET_BEFORE_DATE = """
+SELECT trade_date, net_contracts FROM fii_futures_positions
+WHERE participant = 'FII' AND instrument = 'INDEX_FUT' AND trade_date < ?
+ORDER BY trade_date DESC
+LIMIT 1
+"""
+
+LIST_FII_FUTURES_TRADE_DATES = """
+SELECT DISTINCT trade_date FROM fii_futures_positions
+WHERE trade_date >= ? AND trade_date <= ?
+"""
+
+# ============================================================================
 # vix_data
 # ============================================================================
 
@@ -959,6 +1017,43 @@ ON CONFLICT(timestamp, index_id) DO UPDATE SET
 
 GET_LATEST_FUTURES_BASIS = """
 SELECT * FROM futures_basis WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1
+"""
+
+# ============================================================================
+# futures_depth_1m — near-month futures order-book depth, 1-minute aggregates
+# ============================================================================
+
+UPSERT_FUTURES_DEPTH_1M = """
+INSERT INTO futures_depth_1m
+    (index_id, timestamp, fut_token, fut_close, open_interest, volume,
+     samples, crossed_samples, spread_avg, bid_qty_5_avg, ask_qty_5_avg,
+     depth_imb_avg, depth_imb_last, book_imb_avg, book_imb_last,
+     total_buy_qty_last, total_sell_qty_last, ofi)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(index_id, timestamp) DO UPDATE SET
+    fut_token           = excluded.fut_token,
+    fut_close           = excluded.fut_close,
+    open_interest       = excluded.open_interest,
+    volume              = excluded.volume,
+    samples             = excluded.samples,
+    crossed_samples     = excluded.crossed_samples,
+    spread_avg          = excluded.spread_avg,
+    bid_qty_5_avg       = excluded.bid_qty_5_avg,
+    ask_qty_5_avg       = excluded.ask_qty_5_avg,
+    depth_imb_avg       = excluded.depth_imb_avg,
+    depth_imb_last      = excluded.depth_imb_last,
+    book_imb_avg        = excluded.book_imb_avg,
+    book_imb_last       = excluded.book_imb_last,
+    total_buy_qty_last  = excluded.total_buy_qty_last,
+    total_sell_qty_last = excluded.total_sell_qty_last,
+    ofi                 = excluded.ofi
+"""
+
+LIST_FUTURES_DEPTH_1M = """
+SELECT * FROM futures_depth_1m
+WHERE index_id = ? AND timestamp >= ? AND timestamp < ?
+ORDER BY timestamp ASC
 """
 
 # ============================================================================

@@ -795,6 +795,36 @@ TABLE_DDL: dict[str, list[str]] = {
         """,
         "CREATE INDEX IF NOT EXISTS idx_gex_wb_sym_date ON gex_wall_breaks (symbol, date)",
     ],
+
+    # ── Near-month index futures order-book depth, 1-minute aggregates ────
+    # Built from Angel One SnapQuote ticks (DataRouter). Spot indices have no
+    # order book, so depth is taken from the near-month futures contract.
+    "futures_depth_1m": [
+        """
+        CREATE TABLE IF NOT EXISTS futures_depth_1m (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            index_id           TEXT    NOT NULL,
+            timestamp          TEXT    NOT NULL,   -- minute start, IST ISO-8601
+            fut_token          TEXT    NOT NULL,
+            fut_close          REAL    NOT NULL,   -- last futures LTP in the minute
+            open_interest      INTEGER NOT NULL DEFAULT 0,
+            volume             INTEGER NOT NULL DEFAULT 0,  -- futures qty traded in the minute
+            samples            INTEGER NOT NULL,   -- depth snapshots aggregated
+            crossed_samples    INTEGER NOT NULL DEFAULT 0,  -- bid > ask (data-quality flag)
+            spread_avg         REAL,
+            bid_qty_5_avg      REAL,
+            ask_qty_5_avg      REAL,
+            depth_imb_avg      REAL,               -- mean top-5 imbalance, [-1, 1]
+            depth_imb_last     REAL,
+            book_imb_avg       REAL,               -- mean whole-book imbalance, [-1, 1]
+            book_imb_last      REAL,
+            total_buy_qty_last  REAL,
+            total_sell_qty_last REAL,
+            ofi                REAL    NOT NULL DEFAULT 0,  -- best-level order flow imbalance, summed
+            UNIQUE (index_id, timestamp)
+        )
+        """,
+    ],
 }
 
 # Ordered list of table names to ensure FK-safe creation order
@@ -820,6 +850,7 @@ TABLE_CREATION_ORDER: list[str] = [
     "gex_snapshots",
     "gex_strike_data",
     "gex_wall_breaks",
+    "futures_depth_1m",
 ]
 
 
@@ -946,5 +977,22 @@ EXPECTED_SCHEMA: dict[str, dict[str, str]] = {
         "id": "INTEGER", "symbol": "TEXT", "wall_type": "TEXT",
         "wall_price": "REAL", "break_time": "TEXT",
         "volume_confirmed": "INTEGER", "date": "TEXT",
+    },
+    "futures_depth_1m": {
+        "id": "INTEGER", "index_id": "TEXT", "timestamp": "TEXT",
+        "fut_token": "TEXT", "fut_close": "REAL", "open_interest": "INTEGER",
+        "volume": "INTEGER", "samples": "INTEGER", "crossed_samples": "INTEGER",
+        "spread_avg": "REAL", "bid_qty_5_avg": "REAL", "ask_qty_5_avg": "REAL",
+        "depth_imb_avg": "REAL", "depth_imb_last": "REAL",
+        "book_imb_avg": "REAL", "book_imb_last": "REAL",
+        "total_buy_qty_last": "REAL", "total_sell_qty_last": "REAL",
+        "ofi": "REAL",
+    },
+    # Created by migration v20 (DDL in queries.CREATE_FII_FUTURES_POSITIONS)
+    "fii_futures_positions": {
+        "id": "INTEGER", "trade_date": "TEXT", "participant": "TEXT",
+        "instrument": "TEXT", "long_contracts": "INTEGER",
+        "short_contracts": "INTEGER", "net_contracts": "INTEGER",
+        "source": "TEXT", "fetched_at": "TEXT",
     },
 }
