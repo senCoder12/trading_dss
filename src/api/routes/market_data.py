@@ -19,14 +19,65 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import get_db, get_index_registry
+from src.api.dependencies import get_db, get_index_registry, get_options_fetcher
 from src.data.index_registry import IndexRegistry
+from src.data.options_chain import OptionsChainFetcher
 from src.database import queries as Q
 from src.database.db_manager import DatabaseManager
 from src.utils.date_utils import get_ist_now
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_OPTIONS_STALE_SECONDS = 15 * 60  # refresh live when DB data is older than 15 min
+
+
+def _refresh_options_if_stale(
+    index_id: str,
+    option_symbol: str,
+    db: DatabaseManager,
+    fetcher: OptionsChainFetcher,
+) -> bool:
+    """Fetch fresh options chain from NSE and save to DB if latest DB snapshot is stale.
+    Returns True if a refresh was performed (callers should bust their cache keys)."""
+    ts_row = db.fetch_one(
+        "SELECT MAX(timestamp) AS ts FROM options_chain_snapshot WHERE index_id = ?",
+        (index_id,),
+    )
+    latest_ts = ts_row["ts"] if ts_row and ts_row.get("ts") else None
+    if latest_ts:
+        try:
+            latest_dt = datetime.fromisoformat(latest_ts)
+            age = (get_ist_now().replace(tzinfo=None) - latest_dt.replace(tzinfo=None)).total_seconds()
+            if age < _OPTIONS_STALE_SECONDS:
+                return False
+        except Exception:
+            pass
+    try:
+        chain = fetcher.get_options_chain(option_symbol)
+        if chain:
+            fetcher.save_to_db(chain, db)
+            logger.info("Options chain refreshed for %s (snapshot age: %s)", index_id, latest_ts or "none")
+            return True
+    except Exception as exc:
+        logger.warning("Live options fetch failed for %s: %s", index_id, exc)
+    return False
+
+
+def _prev_day_close(db: DatabaseManager, index_id: str, as_of_iso: str) -> Optional[float]:
+    """Close of the last daily bar dated strictly before as_of's calendar day.
+
+    Compares dates, not timestamps: daily bars are stamped 00:00, so after the
+    close the current day's own bar would otherwise count as "previous".
+    """
+    row = db.fetch_one(
+        "SELECT close FROM price_data WHERE index_id = ? AND timeframe = '1d' "
+        "AND substr(timestamp, 1, 10) < substr(?, 1, 10) "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (index_id, as_of_iso),
+    )
+    return row["close"] if row else None
+
 
 def _fetch_bars(db: DatabaseManager, index_id: str, timeframe: str, since_iso: str, until_iso: str) -> list[dict]:
     rows = db.fetch_all(Q.LIST_PRICE_HISTORY, (index_id, timeframe, since_iso, until_iso))
@@ -252,16 +303,10 @@ async def get_prices(
             indices.append(IndexPrice(index_id=defn.id))
             continue
 
-        # Get previous day close for change calculation
-        prev = db.fetch_one(
-            "SELECT close FROM price_data WHERE index_id = ? AND timeframe = '1d' "
-            "ORDER BY timestamp DESC LIMIT 1",
-            (defn.id,),
-        )
-        prev_close = prev["close"] if prev else None
+        prev_close = _prev_day_close(db, defn.id, row["timestamp"])
         ltp = row["close"]
         change = round(ltp - prev_close, 2) if prev_close and ltp else None
-        change_pct = round((change / prev_close) * 100, 2) if prev_close and change else None
+        change_pct = round((change / prev_close) * 100, 2) if prev_close and change is not None else None
 
         indices.append(IndexPrice(
             index_id=defn.id,
@@ -294,15 +339,10 @@ async def get_price_detail(
     if row is None:
         return PriceDetail(index_id=index_id)
 
-    prev = db.fetch_one(
-        "SELECT close FROM price_data WHERE index_id = ? AND timeframe = '1d' "
-        "AND timestamp < ? ORDER BY timestamp DESC LIMIT 1",
-        (index_id, row["timestamp"]),
-    )
-    prev_close = prev["close"] if prev else None
+    prev_close = _prev_day_close(db, index_id, row["timestamp"])
     ltp = row["close"]
     change = round(ltp - prev_close, 2) if prev_close and ltp else None
-    change_pct = round((change / prev_close) * 100, 2) if prev_close and change else None
+    change_pct = round((change / prev_close) * 100, 2) if prev_close and change is not None else None
 
     return PriceDetail(
         index_id=index_id,
@@ -511,6 +551,7 @@ async def get_options_summary(
     index_id: str,
     db: DatabaseManager = Depends(get_db),
     registry: IndexRegistry = Depends(get_index_registry),
+    fetcher: OptionsChainFetcher = Depends(get_options_fetcher),
 ):
     index_id = index_id.upper()
     defn = registry.get_or_none(index_id)
@@ -519,7 +560,10 @@ async def get_options_summary(
     if not defn.has_options:
         raise HTTPException(status_code=400, detail=f"{index_id} does not have options")
 
+    sym = defn.option_symbol or index_id
     cache_key = f"options_{index_id}"
+    if _refresh_options_if_stale(index_id, sym, db, fetcher):
+        _cache.pop(cache_key, None)
     cached = _cached(cache_key, ttl=60)
     if cached:
         return cached
@@ -610,6 +654,7 @@ async def get_options_chain(
     expiry: Optional[str] = Query(default=None, description="Expiry date YYYY-MM-DD. Omit for nearest."),
     db: DatabaseManager = Depends(get_db),
     registry: IndexRegistry = Depends(get_index_registry),
+    fetcher: OptionsChainFetcher = Depends(get_options_fetcher),
 ):
     """Return the full options chain table (all strikes, CE + PE) for a given expiry."""
     index_id = index_id.upper()
@@ -619,7 +664,10 @@ async def get_options_chain(
     if not defn.has_options:
         raise HTTPException(status_code=400, detail=f"{index_id} does not have options")
 
+    sym = defn.option_symbol or index_id
     cache_key = f"chain_{index_id}_{expiry or 'nearest'}"
+    if _refresh_options_if_stale(index_id, sym, db, fetcher):
+        _cache.pop(cache_key, None)
     cached = _cached(cache_key, ttl=60)
     if cached:
         return cached

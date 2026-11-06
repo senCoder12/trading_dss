@@ -24,6 +24,7 @@ from src.api.dependencies import (
     get_db,
     get_index_registry,
     get_market_hours,
+    get_options_fetcher,
 )
 from src.data.index_registry import IndexRegistry
 from src.database.db_manager import DatabaseManager
@@ -114,6 +115,16 @@ def test_registry(tmp_path: Path) -> IndexRegistry:
     return IndexRegistry.from_file(p)
 
 
+class _OfflineOptionsFetcher:
+    """Stands in for OptionsChainFetcher: no network, never returns a chain."""
+
+    def get_options_chain(self, *args, **kwargs):
+        return None
+
+    def save_to_db(self, *args, **kwargs):
+        pass
+
+
 @pytest.fixture()
 def client(test_db: DatabaseManager, test_registry: IndexRegistry) -> TestClient:
     """Create a TestClient with overridden dependencies."""
@@ -121,6 +132,8 @@ def client(test_db: DatabaseManager, test_registry: IndexRegistry) -> TestClient
     app.dependency_overrides[get_db] = lambda: test_db
     app.dependency_overrides[get_index_registry] = lambda: test_registry
     app.dependency_overrides[get_market_hours] = lambda: MarketHoursManager()
+    # Options routes live-refresh from NSE/broker when the DB is stale; keep tests offline
+    app.dependency_overrides[get_options_fetcher] = lambda: _OfflineOptionsFetcher()
 
     # Ensure kill switch is off at start of each test
     deactivate_kill_switch()
