@@ -726,6 +726,8 @@ class DecisionEngine:
             fii_futures_net=_fii_net,
         )
         step_timings["2_technical"] = int((time.monotonic() - t0) * 1000)
+        if technical_result is not None:
+            technical_result.futures_flow = self._futures_flow(index_id, now)
 
         # ── Step 3: News Assessment ────────────────────────────────────
         t0 = time.monotonic()
@@ -1114,6 +1116,20 @@ class DecisionEngine:
         if age > _MAX_MONITOR_PRICE_AGE_SECONDS:
             return 0.0, f"latest price is {age:.0f}s old"
         return price, None
+
+    def _futures_flow(self, index_id: str, now: datetime):
+        """Futures buildup / order-flow signal at *now* (as_of-bounded)."""
+        try:
+            from src.analysis.futures_flow import LOOKBACK_MIN, compute_futures_flow  # noqa: PLC0415
+
+            rows = self._db.fetch_all(
+                Q.LIST_FUTURES_DEPTH_1M,
+                (index_id, (now - timedelta(minutes=LOOKBACK_MIN + 2)).isoformat(), now.isoformat()),
+            )
+            return compute_futures_flow(rows, now)
+        except Exception:
+            logger.debug("futures flow unavailable for %s", index_id, exc_info=True)
+            return None
 
     def _option_mark(self, pos, now: datetime) -> Optional[float]:
         """Latest option premium for an open position's contract, or None.

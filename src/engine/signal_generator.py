@@ -913,6 +913,20 @@ class SignalGenerator:
         tf_confluence = getattr(technical, "timeframe_confluence_score", 0.0) or 0.0
         tf_agreement = getattr(technical, "tf_agreement", "UNKNOWN") or "UNKNOWN"
         score = cls._calculate_weighted_score(votes, regime, tf_confluence, tf_agreement)
+
+        # Near-month futures buildup + order flow: the only volume/OI source an
+        # index has.  Blended in only when available, so history without
+        # futures data is scored exactly as before.
+        flow = getattr(technical, "futures_flow", None)
+        if flow is not None and getattr(flow, "available", False):
+            from src.analysis.futures_flow import FLOW_WEIGHT, blend_score  # noqa: PLC0415
+
+            score = blend_score(score, flow, _VOTE_NUMERIC)
+            votes = dict(votes)
+            votes["futures_flow"] = (
+                _VOTE_NUMERIC.get(flow.vote, 0.0), flow.confidence, FLOW_WEIGHT,
+            )
+            available = set(available) | {"futures_flow"}
         return score, votes, available
 
     @staticmethod

@@ -103,6 +103,9 @@ class TechnicalAnalysisResult:
     volume_available: bool = True
     # Components that failed to compute (treated as unavailable, not NEUTRAL)
     unavailable_components: list[str] = field(default_factory=list)
+    # Near-month futures positioning/order flow (src/analysis/futures_flow);
+    # attached by the engine / calibration replay, None when not computed.
+    futures_flow: Optional[object] = None
 
     # Multi-timeframe confluence
     timeframe_confluence_score: float = 0.0   # -1.0 to 1.0 (agreement across TFs)

@@ -124,7 +124,27 @@ def label(bars: list[dict], t: int, direction: str, atr: float) -> int | None:
     return 0                  # timeout: an option buyer bled theta
 
 
-def replay(index_id: str, bars: list[dict], stride: int) -> list[dict]:
+def load_futures(db_path: Path, index_id: str) -> list[dict]:
+    """All stored 1-minute futures rows for *index_id*, oldest first."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in con.execute(
+            "SELECT timestamp, fut_close, open_interest, volume, ofi FROM futures_depth_1m "
+            "WHERE index_id = ? ORDER BY timestamp ASC", (index_id,),
+        )]
+    except sqlite3.Error:
+        rows = []
+    con.close()
+    return rows
+
+
+def replay(index_id: str, bars: list[dict], stride: int, futures: list[dict] | None = None) -> list[dict]:
+    import bisect
+    from datetime import timedelta
+    from src.analysis.futures_flow import LOOKBACK_MIN, compute_futures_flow
+
+    fut_ts = [r["timestamp"] for r in (futures or [])]
     agg = TechnicalAggregator()
     rd = RegimeDetector(db=None)  # the detector does not query the DB
     samples: list[dict] = []
@@ -139,6 +159,11 @@ def replay(index_id: str, bars: list[dict], stride: int) -> list[dict]:
                 htf_df=resample_session_bars(df, "15min"),
             )
             regime = rd.detect_regime(index_id, df, tech, as_of=ts)
+            if fut_ts:
+                decision_at = ts + timedelta(minutes=5)
+                lo = bisect.bisect_left(fut_ts, (decision_at - timedelta(minutes=LOOKBACK_MIN + 2)).isoformat())
+                hi = bisect.bisect_right(fut_ts, decision_at.isoformat())
+                tech.futures_flow = compute_futures_flow(futures[lo:hi], decision_at)
         except Exception as exc:  # one bad window must not end the run
             logging.getLogger(__name__).debug("skip %s: %s", ts, exc)
             continue
@@ -159,6 +184,8 @@ def replay(index_id: str, bars: list[dict], stride: int) -> list[dict]:
             "ts": ts.isoformat(), "index_id": index_id, "score": round(score, 4),
             "abs_score": round(abs(score), 4), "direction": direction, "win": y,
             "regime": regime.regime, "components": sorted(comps),
+            # for re-labelling under other trade definitions (calibration_grid.py)
+            "t": t, "atr": round(atr, 4),
         })
     return samples
 
@@ -244,7 +271,10 @@ def main() -> int:
     for index_id in [i.strip().upper() for i in args.indices.split(",") if i.strip()]:
         bars = load_bars(args.db, index_id)
         t0 = time.time()
-        samples = replay(index_id, bars, args.stride) if len(bars) > WINDOW + HORIZON else []
+        samples = (
+            replay(index_id, bars, args.stride, load_futures(args.db, index_id))
+            if len(bars) > WINDOW + HORIZON else []
+        )
         print(f"{index_id}: {len(bars)} bars → {len(samples)} labelled samples "
               f"({time.time() - t0:.0f}s)")
         all_samples.extend(samples)
