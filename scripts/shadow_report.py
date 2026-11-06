@@ -51,8 +51,13 @@ def main() -> int:
                 parts = []
                 for name, c in comps.items():
                     if isinstance(c, dict):
-                        contrib = c.get("weighted_contribution", c.get("score"))
-                        parts.append(f"{name}={contrib:+.2f}" if isinstance(contrib, (int, float)) else f"{name}={contrib}")
+                        contrib = c.get("weighted_contribution", c.get("score", c.get("vote")))
+                        if isinstance(contrib, (int, float)):
+                            parts.append(f"{name}={contrib:+.2f}")
+                        else:
+                            vote = c.get("vote")
+                            score = c.get("score")
+                            parts.append(f"{name}={vote or contrib}" + (f"({score:+.1f})" if isinstance(score, (int, float)) else ""))
                 print(f"  {'':<11} components: {', '.join(parts)}")
             for w in json.loads(r["warnings_json"] or "[]")[:4]:
                 print(f"  {'':<11} ⚠ {w[:140]}")

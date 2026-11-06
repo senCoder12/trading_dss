@@ -89,6 +89,14 @@ def fake_model(tmp_path) -> Path:
                     self.registry = SimpleNamespace(get_trading_universe=lambda major_only: [
                         SimpleNamespace(id='NIFTY50'), SimpleNamespace(id='BANKNIFTY')])
                 def run_full_cycle(self, index_id, as_of=None):
+                    if index_id == 'FINNIFTY':   # model short-circuits: no vote_breakdown
+                        sig = SimpleNamespace(signal_type='NO_TRADE', confidence_score=0.0, confidence_level='LOW',
+                            weighted_score=1.5, vote_breakdown={}, reasoning='NO_TRADE: Model not tradeable', warnings=[])
+                        tech = SimpleNamespace(unavailable_components=[], volume_available=True,
+                            votes={'trend': 'BULLISH', 'momentum': 'NEUTRAL'}, overall_signal='BUY',
+                            smart_money=SimpleNamespace(score=42.0))
+                        return SimpleNamespace(index_id=index_id, signal=sig, is_actionable=False, warnings=[],
+                            regime=SimpleNamespace(regime='TREND_UP', warnings=[]), technical_result=tech)
                     # side effect like the real engine: write a signal row
                     self.db.conn.execute("INSERT INTO trading_signals (index_id, generated_at, signal_type, confidence_level) VALUES (?, ?, 'SHADOW_WRITE', 'X')", (index_id, as_of.isoformat()))
                     self.db.conn.commit()
@@ -209,3 +217,14 @@ def test_live_code_does_not_import_shadow() -> None:
         ROOT / "scripts" / "run_system.py",
     ]:
         assert "src.shadow" not in path.read_text(), f"{path} imports shadow code"
+
+
+def test_short_circuit_keeps_component_votes(prod_db, fake_model, tmp_path) -> None:
+    store = ShadowStore(tmp_path / "shadow" / "shadow.db")
+    runner = ShadowRunner(prod_db=prod_db, model_root=fake_model, store=store,
+                          work_dir=tmp_path / "shadow" / "work", python=sys.executable, indices=["FINNIFTY"])
+    run_id = runner.run_once(as_of=AS_OF, market_open=True)
+    r = store.conn.execute("SELECT * FROM shadow_decisions WHERE run_id=?", (run_id,)).fetchone()
+    comps = json.loads(r["components_json"])
+    assert comps == {"trend": {"vote": "BULLISH"}, "momentum": {"vote": "NEUTRAL"}, "smart_money": {"score": 42.0}}
+    assert r["decision"] == "NEUTRAL" and r["weighted_score"] == 1.5

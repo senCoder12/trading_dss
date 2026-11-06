@@ -15,17 +15,25 @@ function time(iso) {
   return iso ? iso.slice(11, 16) : '—';
 }
 
+// Numeric contributions when the model scored; per-component votes (BULLISH/…)
+// when it short-circuited (e.g. not tradeable).
 function topComponents(components) {
   if (!components || typeof components !== 'object') return [];
   return Object.entries(components)
     .map(([name, c]) => {
-      const v = c && typeof c === 'object' ? (c.weighted_contribution ?? c.score) : c;
-      return [name, typeof v === 'number' ? v : null];
+      if (c && typeof c === 'object') {
+        const num = c.weighted_contribution ?? c.score;
+        if (typeof num === 'number') return [name, num, c.vote ?? null];
+        if (c.vote) return [name, null, c.vote];
+      }
+      return [name, typeof c === 'number' ? c : null, null];
     })
-    .filter(([, v]) => v !== null)
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-    .slice(0, 4);
+    .filter(([, v, vote]) => v !== null || vote)
+    .sort((a, b) => Math.abs(b[1] ?? 0) - Math.abs(a[1] ?? 0))
+    .slice(0, 6);
 }
+
+const VOTE_STYLE = { BULLISH: 'text-green-400', BEARISH: 'text-red-400' };
 
 function Row({ d }) {
   const [open, setOpen] = useState(false);
@@ -75,9 +83,15 @@ function Row({ d }) {
       {open && (
         <div className="mt-2 space-y-1.5 text-[11px]">
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-300 font-mono">
-            {topComponents(d.components).map(([n, v]) => (
+            {topComponents(d.components).map(([n, v, vote]) => (
               <span key={n}>
-                {n}: <span className={v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : ''}>{v.toFixed(3)}</span>
+                {n}:{' '}
+                {vote && <span className={VOTE_STYLE[vote] ?? 'text-slate-400'}>{vote}</span>}
+                {v !== null && (
+                  <span className={v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : ''}>
+                    {vote ? ` (${v.toFixed(1)})` : v.toFixed(3)}
+                  </span>
+                )}
               </span>
             ))}
           </div>

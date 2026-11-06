@@ -246,6 +246,12 @@ class ShadowRunner:
                         + r.get("regime_warnings", []) + f["warnings"] + fii_warn
                     if r.get("unavailable_components"):
                         warnings.append(f"Unavailable components (neutral): {', '.join(r['unavailable_components'])}")
+                    components = r.get("vote_breakdown") or {}
+                    if not components:
+                        # Model short-circuited (e.g. not tradeable): keep the per-component votes
+                        components = {k: {"vote": v} for k, v in (r.get("technical_votes") or {}).items()}
+                        if r.get("smart_money_score") is not None:
+                            components.setdefault("smart_money", {})["score"] = r["smart_money_score"]
                     model_decision = to_decision(r.get("signal_type"))
                     decision = "NEUTRAL" if (f["forced_neutral"] or r.get("error")) else model_decision
                     live_decision = to_decision(lv.get("signal_type")) if lv else None
@@ -256,7 +262,7 @@ class ShadowRunner:
                         "confidence_score": r.get("confidence_score"),
                         "confidence_level": r.get("confidence_level"),
                         "weighted_score": r.get("weighted_score"), "regime": r.get("regime"),
-                        "components_json": r.get("vote_breakdown") or {},
+                        "components_json": components,
                         "reasoning": r.get("reasoning") or (r.get("traceback") or ""),
                         "warnings_json": list(dict.fromkeys(w for w in warnings if w)),
                         "data_freshness_json": {k: v for k, v in f.items() if k != "warnings"},

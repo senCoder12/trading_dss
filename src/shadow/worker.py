@@ -45,6 +45,10 @@ def _serialize(res) -> dict:
         "regime_warnings": list(_g(res.regime, "warnings", []) or []),
         "unavailable_components": list(_g(tech, "unavailable_components", []) or []),
         "volume_available": _g(tech, "volume_available"),
+        # Per-component votes are available even when the model short-circuits to NO_TRADE
+        "technical_votes": dict(_g(tech, "votes", {}) or {}),
+        "overall_signal": _g(tech, "overall_signal"),
+        "smart_money_score": _g(_g(tech, "smart_money"), "score"),
         "refined": refined,
     }
 
