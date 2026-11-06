@@ -15,6 +15,7 @@ Coverage:
 from __future__ import annotations
 
 import math
+import statistics
 import sqlite3
 import uuid
 from datetime import date, datetime
@@ -532,3 +533,51 @@ class TestRollingHistory:
         assert len(history) == 3
         timestamps = [h.timestamp for h in history]
         assert timestamps == sorted(timestamps)
+
+
+# ---------------------------------------------------------------------------
+# Daily-return Sharpe (was per-trade ₹ P&L × √252)
+# ---------------------------------------------------------------------------
+
+
+class TestDailyReturnSharpe:
+    MON, TUE, WED, THU = (date(2026, 11, d) for d in (2, 3, 4, 5))
+
+    def _on(self, day: date, pnl: float) -> PaperTrade:
+        import dataclasses
+        ts = datetime(day.year, day.month, day.day, 14, 0, tzinfo=_IST)
+        return dataclasses.replace(_make_trade(pnl), exit_timestamp=ts)
+
+    def test_sharpe_from_daily_returns_on_capital_incl_zero_days(self):
+        from src.paper_trading.edge_tracker import annualised_sharpe, daily_equity_returns
+
+        tracker = EdgeTracker(_InMemoryDB(), capital=200_000.0)
+        trades = [self._on(self.MON, 1_000.0), self._on(self.MON, 500.0), self._on(self.THU, -400.0)]
+        a = tracker.assess_edge(trades)
+
+        returns = daily_equity_returns(
+            {self.MON: 1_500.0, self.THU: -400.0}, self.MON, self.THU, 200_000.0,
+        )
+        assert len(returns) == 4                       # Tue and Wed are zero-return days
+        assert a.sharpe_ratio == pytest.approx(annualised_sharpe(returns))
+
+        old_per_trade = statistics.mean([1_000, 500, -400]) / statistics.stdev([1_000, 500, -400]) * math.sqrt(252)
+        assert a.sharpe_ratio != pytest.approx(old_per_trade, rel=0.05)
+
+    def test_single_day_has_no_sharpe(self):
+        tracker = EdgeTracker(_InMemoryDB())
+        assert tracker.assess_edge(_wins(25)).sharpe_ratio == 0.0
+
+    def test_db_rows_use_window_bounds(self):
+        from src.paper_trading.edge_tracker import annualised_sharpe, daily_equity_returns
+
+        tracker = EdgeTracker(_InMemoryDB(), capital=100_000.0)
+        rows = [
+            {"outcome": "WIN", "actual_pnl": 800.0, "closed_at": f"{self.MON.isoformat()}T11:00:00+05:30"},
+            {"outcome": "LOSS", "actual_pnl": -300.0, "closed_at": f"{self.TUE.isoformat()}T11:00:00+05:30"},
+        ]
+        m = tracker._compute_metrics_from_dicts(rows, start=self.MON, end=self.THU)
+        expected = annualised_sharpe(daily_equity_returns(
+            {self.MON: 800.0, self.TUE: -300.0}, self.MON, self.THU, 100_000.0,
+        ))
+        assert m["sharpe_ratio"] == pytest.approx(expected)

@@ -59,13 +59,14 @@ def _ts(hour: int, minute: int = 0, day: int = 10) -> datetime:
 
 @dataclass
 class _Signal:
-    """Minimal signal matching PaperTradingEngine's duck-typing."""
+    """Minimal risk-approved, option-native signal (RefinedSignal duck-type)."""
 
     signal_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     index_id: str = "NIFTY50"
     signal_type: str = "BUY_CALL"
     confidence_level: str = "HIGH"
     confidence_score: float = 0.80
+    generated_at: datetime = field(default_factory=lambda: _ts(10, 30))
     entry_price: float = 22_000.0
     target_price: float = 22_200.0
     stop_loss: float = 21_900.0
@@ -73,13 +74,25 @@ class _Signal:
     position_size_modifier: float = 1.0
     regime: str = "TRENDING"
     weighted_score: float = 0.8
-    refined_entry: float = 0.0
-    refined_target: float = 0.0
-    refined_stop_loss: float = 0.0
-    recommended_strike: Optional[float] = None
-    recommended_expiry: Optional[str] = None
-    option_premium: Optional[float] = 180.0
-    days_to_expiry: Optional[int] = 5
+    refined_entry: float = 22_000.0
+    refined_target: float = 22_200.0
+    refined_stop_loss: float = 21_900.0
+    # option contract approved by the risk manager (premium ₹/unit)
+    option_type: str = "CE"
+    recommended_strike: Optional[float] = 22_000.0
+    recommended_expiry: Optional[str] = "2024-06-13"
+    lots: int = 1
+    lot_size: int = 50
+    quantity: int = 50
+    entry_premium: float = 180.5
+    premium_mid: float = 180.0
+    half_spread: float = 0.5
+    premium_stop: float = 120.0
+    premium_target: float = 260.0
+    option_iv: float = 0.14
+    max_loss_amount: float = 3_000.0
+    is_hero_zero: bool = False
+    is_valid: bool = True
 
 
 def _market(ltp: float = 22_000.0, index: str = "NIFTY50") -> dict:
@@ -148,6 +161,16 @@ class _InMemoryDB:
                 daily_ledger_json    TEXT NOT NULL DEFAULT '{}',
                 updated_at           TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS options_chain_snapshot (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                index_id TEXT, timestamp TEXT, expiry_date TEXT, strike_price REAL,
+                option_type TEXT, ltp REAL, bid_price REAL, ask_price REAL
+            );
+            CREATE TABLE IF NOT EXISTS price_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                index_id TEXT, timestamp TEXT, open REAL, high REAL, low REAL,
+                close REAL, volume REAL, timeframe TEXT
+            );
             CREATE TABLE IF NOT EXISTS daily_prices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 index_id TEXT,
@@ -197,15 +220,11 @@ def _make_engine(
         min_confidence=confidence,
         active_indices=["NIFTY50", "BANKNIFTY"],
         signal_types=["BUY_CALL", "BUY_PUT"],
-        use_live_spread=False,
-        fallback_slippage_points=2.0,
         track_missed_signals=True,
         track_no_trade_reasons=True,
     )
     with (
         patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(10, 30)),
-        patch("src.paper_trading.paper_engine.get_current_expiry", return_value=date(2024, 6, 13)),
-        patch("src.paper_trading.paper_engine.calc_days_to_expiry", return_value=3),
         patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
     ):
         mock_index = MagicMock()
@@ -214,6 +233,16 @@ def _make_engine(
         engine = PaperTradingEngine(db=db, config=cfg, telegram_bot=None)
     engine._warmed_up = True
     return engine, db
+
+
+def _quote(db, ts: datetime, mid: float, index: str = "NIFTY50", strike: float = 22_000.0,
+           opt: str = "CE", half: float = 0.5) -> None:
+    """One options_chain_snapshot row for the test contract (bid/ask around *mid*)."""
+    db.execute(
+        "INSERT INTO options_chain_snapshot (index_id, timestamp, expiry_date, strike_price, "
+        "option_type, ltp, bid_price, ask_price) VALUES (?, ?, '2024-06-13', ?, ?, ?, ?, ?)",
+        (index, ts.isoformat(), strike, opt, mid, mid - half, mid + half),
+    )
 
 
 def _make_trade(net_pnl: float, confidence: str = "HIGH") -> PaperTrade:
@@ -309,16 +338,15 @@ class TestFullSystemStartup:
 
 
 class TestPaperTradeLifecycle:
-    """Signal → position → exit → P&L → summary."""
+    """Signal → order → fill at the option ask → premium exit → P&L → summary."""
 
     def _open_position(self):
         engine, db = _make_engine()
         sig = _Signal()
+        _quote(db, _ts(10, 31), 181.0)          # first quote after decision + latency
 
         with (
-            patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(10, 30)),
-            patch("src.paper_trading.paper_engine.get_current_expiry", return_value=date(2024, 6, 13)),
-            patch("src.paper_trading.paper_engine.calc_days_to_expiry", return_value=3),
+            patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(10, 32)),
             patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
         ):
             mock_index = MagicMock()
@@ -332,13 +360,17 @@ class TestPaperTradeLifecycle:
         engine, db, result = self._open_position()
         assert result is not None
         assert len(engine.get_open_positions()) == 1
+        pos = engine.get_open_positions()[0]
+        assert pos.execution_price == pytest.approx(181.5)      # the ask, not index LTP
+        assert engine.cash == pytest.approx(100_000.0 - 181.5 * 50 - pos.entry_cost)
 
     def test_target_hit_closes_position(self):
         """Price moving past target closes position as WIN."""
         engine, db, result = self._open_position()
         pos = engine.get_open_positions()[0]
 
-        prices = {"NIFTY50": pos.target + 10}
+        _quote(db, _ts(13, 59), pos.target + 5)   # premium through the target
+        prices = {"NIFTY50": 22_050.0}
         with (
             patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(14, 0)),
             patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
@@ -359,7 +391,8 @@ class TestPaperTradeLifecycle:
         engine, db, result = self._open_position()
         pos = engine.get_open_positions()[0]
 
-        prices = {"NIFTY50": pos.stop_loss - 10}
+        _quote(db, _ts(11, 29), pos.stop_loss - 5)  # premium through the stop
+        prices = {"NIFTY50": 21_990.0}
         with (
             patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(11, 30)),
             patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
@@ -379,7 +412,8 @@ class TestPaperTradeLifecycle:
         engine, db, result = self._open_position()
         pos = engine.get_open_positions()[0]
 
-        prices = {"NIFTY50": pos.target + 10}
+        _quote(db, _ts(13, 59), pos.target + 5)   # premium through the target
+        prices = {"NIFTY50": 22_050.0}
         with (
             patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(14, 0)),
             patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
@@ -399,7 +433,8 @@ class TestPaperTradeLifecycle:
         engine, db, result = self._open_position()
         pos = engine.get_open_positions()[0]
 
-        prices = {"NIFTY50": pos.target + 10}
+        _quote(db, _ts(13, 59), pos.target + 5)   # premium through the target
+        prices = {"NIFTY50": 22_050.0}
         with (
             patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(14, 0)),
             patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
@@ -738,26 +773,24 @@ class TestFullDaySimulation:
 
         # ── 9:30: First signal ─────────────────────────────────────────────
         sig = _Signal(index_id="NIFTY50", signal_type="BUY_CALL",
-                      confidence_level="HIGH")
+                      confidence_level="HIGH", generated_at=_ts(9, 30))
+        _quote(db, _ts(9, 31), 181.0)
         with (
-            patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(9, 30)),
-            patch("src.paper_trading.paper_engine.get_current_expiry", return_value=date(2024, 6, 13)),
-            patch("src.paper_trading.paper_engine.calc_days_to_expiry", return_value=3),
+            patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(9, 32)),
             patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
         ):
             mock_idx = MagicMock()
             mock_idx.lot_size = 50
             mock_reg.return_value.get_index.return_value = mock_idx
-            result = engine.on_signal(sig, _market(22_000.0))
-
-        # Position may or may not be created (9:30 is within market hours)
-        # At minimum it should not raise
+            result = engine.on_signal(sig, {**_market(22_000.0), "timestamp": _ts(9, 30)})
+        assert result is not None  # filled at the 09:31 ask
 
         # ── 10:00: Watchdog health check ──────────────────────────────────
         health_checks = watchdog._run_all_checks()
         assert len(health_checks) > 0
 
         # ── 12:00: Mid-day price update ───────────────────────────────────
+        _quote(db, _ts(11, 59), 200.0)
         prices_12 = {"NIFTY50": 22_100.0}
         with (
             patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(12, 0)),
@@ -781,8 +814,9 @@ class TestFullDaySimulation:
             mock_reg.return_value.get_index.return_value = mock_idx
             engine.update_positions(prices_eod)
 
-        # After 15:25 all positions must be closed
+        # After the 15:15 forced exit all positions must be closed
         assert len(engine.get_open_positions()) == 0
+        assert engine.trade_history and engine.trade_history[-1].exit_reason == "FORCED_EOD"
 
         # ── 15:45: Daily report ───────────────────────────────────────────
         reporter = AutomatedReporter(db, engine, telegram_bot=None)
@@ -812,8 +846,6 @@ class TestFullDaySimulation:
 
         with (
             patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(10, 30)),
-            patch("src.paper_trading.paper_engine.get_current_expiry", return_value=date(2024, 6, 13)),
-            patch("src.paper_trading.paper_engine.calc_days_to_expiry", return_value=3),
             patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
         ):
             mock_idx = MagicMock()
@@ -831,10 +863,9 @@ class TestFullDaySimulation:
 
         def _open(index: str, signal_type: str = "BUY_CALL"):
             sig = _Signal(index_id=index, signal_type=signal_type)
+            _quote(db, _ts(10, 31), 181.0, index=index)
             with (
-                patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(10, 30)),
-                patch("src.paper_trading.paper_engine.get_current_expiry", return_value=date(2024, 6, 13)),
-                patch("src.paper_trading.paper_engine.calc_days_to_expiry", return_value=3),
+                patch("src.paper_trading.paper_engine.get_ist_now", return_value=_ts(10, 32)),
                 patch("src.paper_trading.paper_engine.get_registry") as mock_reg,
             ):
                 mock_idx = MagicMock()
@@ -847,6 +878,5 @@ class TestFullDaySimulation:
 
         positions = engine.get_open_positions()
         indices = {p.index_id for p in positions}
-        # Both indices should be independently tradeable
-        # (exact count depends on capital/position limits)
-        assert len(positions) >= 1
+        # Both indices are independently tradeable (1 per index, 2 same-direction)
+        assert indices == {"NIFTY50", "BANKNIFTY"}

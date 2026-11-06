@@ -6,7 +6,7 @@ by analysing a rolling window of recent paper trades.
 
 Usage (called at market close each day)::
 
-    tracker = EdgeTracker(db)
+    tracker = EdgeTracker(db, capital=paper_engine.config.initial_capital)
     assessment = tracker.assess_edge(paper_engine.trade_history[-200:])
 
     if assessment.edge_status in ("WEAKENING", "GONE"):
@@ -26,11 +26,99 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from config.constants import IST_TIMEZONE
+from src.engine.option_contract import RISK_FREE_RATE
 from src.utils.date_utils import get_ist_now
+from src.utils.market_hours import is_trading_day
 
 logger = logging.getLogger(__name__)
 
 _IST = ZoneInfo(IST_TIMEZONE)
+
+TRADING_DAYS_PER_YEAR = 252
+
+
+# ---------------------------------------------------------------------------
+# Daily-return risk metrics (shared with the paper engine)
+# ---------------------------------------------------------------------------
+
+
+def daily_equity_returns(
+    pnl_by_day: dict,
+    start: date,
+    end: date,
+    start_equity: float,
+) -> list[float]:
+    """Daily returns on equity for every trading day in ``[start, end]``.
+
+    Days without a closed trade are **included as zero-return days** (an
+    idle account still exists that day); weekends/holidays are skipped
+    unless they carry P&L.  ``return_d = pnl_d / equity at the start of d``
+    and equity compounds, so returns are fractions (0.01 = 1 %).
+    """
+    if start is None or end is None or end < start or start_equity <= 0:
+        return []
+    days = {d for d in pnl_by_day if start <= d <= end}
+    d = start
+    while d <= end:
+        if is_trading_day(d):
+            days.add(d)
+        d += timedelta(days=1)
+    equity = float(start_equity)
+    out: list[float] = []
+    for d in sorted(days):
+        if equity <= 0:
+            break
+        pnl = float(pnl_by_day.get(d, 0.0))
+        out.append(pnl / equity)
+        equity += pnl
+    return out
+
+
+def annualised_sharpe(
+    daily_returns: list[float],
+    rf_annual: float = RISK_FREE_RATE,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """Annualised Sharpe of *daily_returns* (fractions) over a fractional
+    annual risk-free rate — both sides in the same units."""
+    if len(daily_returns) < 2:
+        return 0.0
+    rf = rf_annual / periods_per_year
+    excess = [r - rf for r in daily_returns]
+    sd = statistics.stdev(excess)
+    if sd < 1e-12:
+        return 0.0
+    return statistics.mean(excess) / sd * math.sqrt(periods_per_year)
+
+
+def annualised_sortino(
+    daily_returns: list[float],
+    rf_annual: float = RISK_FREE_RATE,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """Annualised Sortino (downside deviation over all days, target = rf)."""
+    n = len(daily_returns)
+    if n < 2:
+        return 0.0
+    rf = rf_annual / periods_per_year
+    excess = [r - rf for r in daily_returns]
+    downside = math.sqrt(sum(min(e, 0.0) ** 2 for e in excess) / n)
+    if downside < 1e-12:
+        return 0.0
+    return statistics.mean(excess) / downside * math.sqrt(periods_per_year)
+
+
+def _as_date(value) -> Optional[date]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +138,7 @@ class EdgeAssessment:
     win_rate: float           # 0–100
     profit_factor: float      # gross_wins / abs(gross_losses); inf if no losses
     expected_value: float     # mean net P&L per trade (₹)
-    sharpe_ratio: float       # annualised per-trade Sharpe
+    sharpe_ratio: float       # annualised Sharpe of DAILY returns on capital (zero days included)
 
     # Trend vs previous window
     win_rate_trend: str       # "IMPROVING" / "STABLE" / "DECLINING"
@@ -85,6 +173,8 @@ class EdgeTracker:
     ----------
     db:
         DatabaseManager instance (used by ``get_rolling_edge_history``).
+    capital:
+        Account equity the ₹ P&L is measured against (daily-return Sharpe).
     """
 
     # ── Thresholds ──────────────────────────────────────────────────────
@@ -98,8 +188,9 @@ class EdgeTracker:
     # Trend sensitivity: ±5% relative change = STABLE band
     _TREND_STABLE_BAND: float = 0.05
 
-    def __init__(self, db) -> None:
+    def __init__(self, db, capital: float = 100_000.0) -> None:
         self.db = db
+        self.capital = float(capital)
 
         # Running history of raw metrics from each assess_edge() call.
         # Each entry: {"win_rate": float, "profit_factor": float, "ev": float}
@@ -183,7 +274,8 @@ class EdgeTracker:
         For each calendar day D, the assessment is based on all trades closed
         in the trailing ``rolling_window_days``-day window ending on D.
 
-        Queries the ``trading_signals`` table (populated by ``_persist_trade``).
+        Queries the ``trading_signals`` table (outcomes written by the live
+        ``RiskManager.close_position``; the paper ledger keeps its own trades).
         Returns oldest-first so it is ready for charting.
         """
         today = get_ist_now().date()
@@ -193,6 +285,10 @@ class EdgeTracker:
         if not rows:
             logger.debug("EdgeTracker: no closed trades in DB for rolling history")
             return []
+        # Days before the first recorded trade are not zero-return days.
+        first_day = min(
+            (d for d in (_as_date(r.get("closed_at")) for r in rows) if d), default=fetch_from,
+        )
 
         history: list[EdgeAssessment] = []
         rolling_metrics: list[dict] = []  # Used for trend detection within the loop
@@ -209,7 +305,9 @@ class EdgeTracker:
                 <= window_end.isoformat()
             ]
 
-            metrics = self._compute_metrics_from_dicts(window_rows)
+            metrics = self._compute_metrics_from_dicts(
+                window_rows, start=max(window_start, first_day), end=window_end,
+            )
             trade_count = metrics["trade_count"]
 
             win_rate_trend = self._trend_from_history(
@@ -263,10 +361,13 @@ class EdgeTracker:
 
         pnls = [float(getattr(t, "net_pnl", 0.0)) for t in trades]
         outcomes = [getattr(t, "outcome", "LOSS") for t in trades]
+        days = [_as_date(getattr(t, "exit_timestamp", None)) for t in trades]
 
-        return self._metrics_from_pnls_outcomes(pnls, outcomes, trade_count)
+        return self._metrics_from_pnls_outcomes(pnls, outcomes, trade_count, days)
 
-    def _compute_metrics_from_dicts(self, rows: list[dict]) -> dict:
+    def _compute_metrics_from_dicts(
+        self, rows: list[dict], start: Optional[date] = None, end: Optional[date] = None,
+    ) -> dict:
         """Compute metrics from DB rows (must have 'outcome' and 'actual_pnl')."""
         trade_count = len(rows)
         if trade_count == 0:
@@ -274,11 +375,18 @@ class EdgeTracker:
 
         pnls = [float(r.get("actual_pnl") or 0.0) for r in rows]
         outcomes = [r.get("outcome") or "LOSS" for r in rows]
+        days = [_as_date(r.get("closed_at")) for r in rows]
 
-        return self._metrics_from_pnls_outcomes(pnls, outcomes, trade_count)
+        return self._metrics_from_pnls_outcomes(pnls, outcomes, trade_count, days, start, end)
 
     def _metrics_from_pnls_outcomes(
-        self, pnls: list[float], outcomes: list[str], trade_count: int
+        self,
+        pnls: list[float],
+        outcomes: list[str],
+        trade_count: int,
+        days: Optional[list] = None,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
     ) -> dict:
         wins = [p for p, o in zip(pnls, outcomes) if o == "WIN"]
         losses = [p for p, o in zip(pnls, outcomes) if o == "LOSS"]
@@ -294,7 +402,7 @@ class EdgeTracker:
 
         expected_value = sum(pnls) / trade_count if pnls else 0.0
 
-        sharpe = self._compute_sharpe(pnls)
+        sharpe = self._compute_sharpe(pnls, days or [], start, end)
 
         return {
             "trade_count": trade_count,
@@ -314,19 +422,32 @@ class EdgeTracker:
             "sharpe_ratio": 0.0,
         }
 
-    @staticmethod
-    def _compute_sharpe(pnls: list[float]) -> float:
-        """Per-trade annualised Sharpe ratio (252 trading-day convention)."""
-        if len(pnls) < 2:
+    def _compute_sharpe(
+        self,
+        pnls: list[float],
+        days: list,
+        start: Optional[date] = None,
+        end: Optional[date] = None,
+    ) -> float:
+        """Annualised Sharpe of DAILY returns on ``self.capital``.
+
+        Trade P&L is summed per exit day; every trading day in
+        ``[start, end]`` (default: first → last trade day) is a return,
+        zero-P&L days included.  Per-trade ₹ P&L × √252 (the old formula)
+        is not a Sharpe ratio: it ignores capital and trade frequency.
+        """
+        pnl_by_day: dict[date, float] = {}
+        for pnl, d in zip(pnls, days):
+            if d is not None:
+                pnl_by_day[d] = pnl_by_day.get(d, 0.0) + pnl
+        if not pnl_by_day:
             return 0.0
+        start = start or min(pnl_by_day)
+        end = end or max(pnl_by_day)
         try:
-            mean_pnl = statistics.mean(pnls)
-            std_pnl = statistics.stdev(pnls)
-            if std_pnl == 0:
-                return 0.0
-            # Annualise assuming ~252 trades per year is a rough proxy
-            return (mean_pnl / std_pnl) * math.sqrt(252)
+            return annualised_sharpe(daily_equity_returns(pnl_by_day, start, end, self.capital))
         except Exception:
+            logger.debug("EdgeTracker: Sharpe computation failed", exc_info=True)
             return 0.0
 
     # ------------------------------------------------------------------
