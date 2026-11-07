@@ -372,6 +372,18 @@ class TestMasterFilter:
 
         assert set(result) == {"REL", "TCS"}
 
+    def test_market_closed_skips_volume_participation(self, thresholds):
+        """Pre-open/after-hours: zero intraday volume must not reject everything."""
+        t = time(9, 0)  # 09:00 pre-open job
+        quote = make_quote(symbol="REL", avg_volume_20d=1_000_000, volume=0)
+        oi = make_oi(symbol="REL")
+
+        filter = LiquidityFilter(thresholds)
+        assert filter.get_liquid_symbols({"REL": quote}, {"REL": oi}, t) == []
+        assert filter.get_liquid_symbols(
+            {"REL": quote}, {"REL": oi}, t, market_open=False,
+        ) == ["REL"]
+
     def test_all_fail_hard_filters(self, thresholds):
         """All stocks fail hard filters → empty result."""
         quote1 = make_quote(symbol="REL", ltp=50.0)  # Price too low

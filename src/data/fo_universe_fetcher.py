@@ -222,19 +222,79 @@ class FOUniverseFetcher:
         )
         return response
 
-    def _fetch_fallback_endpoint(self) -> Optional[dict]:
+    def _fetch_fallback_endpoint(self) -> Optional[list[dict]]:
         """
-        Fallback: fetch from /api/master-quote and filter by F&O flag.
+        Fallback F&O stock list when the primary index endpoint is down.
 
-        This is less reliable but may work if primary is unavailable.
+        1. GET /api/underlying-information
+           -> {"data": {"UnderlyingList": [{"symbol", "underlying"}, ...]}}
+        2. GET /api/master-quote -> ["360ONE", "ABB", ...]  (symbols only)
+
+        Returns entries shaped like the primary endpoint's ``data`` rows so
+        ``_merge_and_parse`` can consume them unchanged.
         """
-        response = self._scraper._call("/api/master-quote")
-        if not response:
-            return None
+        try:
+            resp = self._scraper._call("/api/underlying-information")
+            data = resp.get("data", {}) if isinstance(resp, dict) else {}
+            rows = data.get("UnderlyingList", []) if isinstance(data, dict) else []
+            entries = [
+                {"symbol": r.get("symbol"), "meta": {"companyName": r.get("underlying", "")}}
+                for r in rows if r.get("symbol")
+            ]
+            if entries:
+                logger.info("F&O list from /api/underlying-information: %d stocks", len(entries))
+                return entries
+        except Exception as e:
+            logger.warning("underlying-information fallback failed: %s", e)
 
-        # Filter to F&O-eligible entries only
-        # (Implementation depends on actual NSE response structure)
-        return response
+        try:
+            resp = self._scraper._call("/api/master-quote")
+            if isinstance(resp, list):
+                entries = [{"symbol": s} for s in resp if isinstance(s, str) and s]
+                if entries:
+                    logger.info("F&O list from /api/master-quote: %d stocks", len(entries))
+                    return entries
+        except Exception as e:
+            logger.warning("master-quote fallback failed: %s", e)
+
+        return None
+
+    @staticmethod
+    def _fetch_lot_sizes_angel() -> dict[str, int]:
+        """
+        Lot sizes from Angel One's public instrument master (no login needed).
+
+        Uses NFO FUTSTK rows; when a symbol has several expiries (lot-size
+        revision in progress) the nearest expiry wins.
+        """
+        import pandas as pd  # noqa: PLC0415
+        import requests  # noqa: PLC0415
+
+        url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        try:
+            resp = requests.get(url, timeout=60)
+            resp.raise_for_status()
+            df = pd.DataFrame(resp.json())
+        except Exception as e:
+            logger.warning("Angel scrip master download failed: %s", e)
+            return {}
+
+        fut = df[(df["exch_seg"] == "NFO") & (df["instrumenttype"] == "FUTSTK")].copy()
+        if fut.empty:
+            return {}
+        fut["_exp"] = pd.to_datetime(fut["expiry"], format="%d%b%Y", errors="coerce")
+        fut = fut.dropna(subset=["_exp"]).sort_values("_exp")
+        lot_sizes: dict[str, int] = {}
+        for name, lot in zip(fut["name"], fut["lotsize"]):
+            sym = str(name).upper()
+            if sym in lot_sizes:
+                continue
+            try:
+                lot_sizes[sym] = int(float(lot))
+            except (TypeError, ValueError):
+                continue
+        logger.info("Lot sizes from Angel scrip master: %d symbols", len(lot_sizes))
+        return lot_sizes
 
     @retry(
         stop=stop_after_attempt(3),
@@ -256,8 +316,8 @@ class FOUniverseFetcher:
         """
         response = self._scraper._call(self._LOT_SIZE_ENDPOINT)
         if not response:
-            logger.warning("Lot size endpoint returned no data; using fallback lot_size=1")
-            return {}
+            logger.warning("NSE lot size endpoint returned no data; trying Angel scrip master")
+            return self._fetch_lot_sizes_angel()
 
         lot_sizes = {}
         for entry in response.get("data", []):

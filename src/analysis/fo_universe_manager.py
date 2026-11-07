@@ -201,7 +201,11 @@ class FOUniverseManager:
                     quotes[sym] = dc_replace(q, avg_volume_20d=avg_vols[sym])
 
             # 4. Liquidity filter (OI data empty here; fetched for liquid stocks in step 5)
-            liquid_symbols = self.liquidity_filter.get_liquid_symbols(quotes, {})
+            # Pre-open (09:00 job) today's volume is 0, so skip the
+            # intraday participation step outside market hours.
+            liquid_symbols = self.liquidity_filter.get_liquid_symbols(
+                quotes, {}, market_open=self.market_hours.is_market_open(),
+            )
             filter_stats = FilterResult(
                 total_input=len(quotes),
                 passed=len(liquid_symbols),

@@ -211,9 +211,16 @@ class LiquidityFilter:
         quotes: dict[str, StockQuote],
         oi_data: dict[str, StockOIData],
         current_time: Optional[time] = None,
+        market_open: bool = True,
     ) -> list[str]:
         """
         Master filter: hard filters + time-adjusted volume.
+
+        The time-adjusted volume step compares today's volume with the
+        20-day average, which only means something while the session is
+        running. Pass ``market_open=False`` (pre-open, after close,
+        holidays) to skip it; today's volume is then 0 or stale and the
+        step would reject every symbol.
 
         Parameters
         ----------
@@ -234,7 +241,7 @@ class LiquidityFilter:
         hard_passed_quotes = {s: quotes[s] for s in hard_passed}
 
         # Step 2: time-adjusted volume (only on survivors from step 1)
-        if self._time_of_day_adjustments:
+        if self._time_of_day_adjustments and market_open:
             liquid = self.apply_time_adjusted_volume_filter(
                 hard_passed_quotes, current_time
             )
