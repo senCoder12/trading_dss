@@ -7,6 +7,7 @@ GET /api/universe/options-chain/{symbol}  — options chain for one symbol
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -118,6 +119,88 @@ class OptionsChainResponse(BaseModel):
     strikes: list[OptionStrike]
 
 
+_nse_scraper = None
+
+
+def _get_nse_scraper():
+    """Lazily created NSE scraper shared by live chain requests."""
+    global _nse_scraper
+    if _nse_scraper is None:
+        from src.data.nse_scraper import NSEScraper  # noqa: PLC0415
+        _nse_scraper = NSEScraper()
+    return _nse_scraper
+
+
+def _live_chain(symbol: str, kind: str, expiry: Optional[str]):
+    """
+    Fetch an option chain from NSE v3 (cached 60s).
+
+    ``kind`` is "Equities" or "Indices"; ``symbol`` is the NSE option
+    symbol (e.g. RELIANCE, NIFTY).
+
+    Returns (spot, expiries, selected_expiry, rows) with rows shaped like
+    options_chain_snapshot rows, or None when NSE has no chain.
+    """
+    cache_key = f"live_chain:{kind}:{symbol}:{expiry or ''}"
+    cached = _cached(cache_key, ttl=60)
+    if cached is not None:
+        return cached
+
+    scraper = _get_nse_scraper()
+    meta = scraper.get_option_chain_meta(symbol) or {}
+    expiries = meta.get("expiryDates") or []
+    if not expiries:
+        return None
+    selected = expiry or expiries[0]
+    if selected not in expiries:
+        raise HTTPException(status_code=400, detail=f"Expiry {selected} not available")
+
+    resp = scraper.get_option_chain_v3(symbol, type=kind, expiry=selected) or {}
+    records = resp.get("records") or {}
+    data = records.get("data") or []
+    if not data:
+        return None
+
+    spot = float(records.get("underlyingValue") or 0)
+    rows = []
+    for entry in data:
+        for opt in ("CE", "PE"):
+            leg = entry.get(opt)
+            if not leg:
+                continue
+            rows.append({
+                "strike_price": float(leg.get("strikePrice") or entry.get("strikePrice") or 0),
+                "option_type": opt,
+                "open_interest": int(leg.get("openInterest") or 0),
+                "oi_change": int(leg.get("changeinOpenInterest") or 0),
+                "volume": int(leg.get("totalTradedVolume") or 0),
+                "iv": float(leg.get("impliedVolatility") or 0.0),
+                "ltp": float(leg.get("lastPrice") or 0.0),
+            })
+    rows.sort(key=lambda r: r["strike_price"])
+    return _set_cache(cache_key, (spot, expiries, selected, rows))
+
+
+def _max_pain(strikes: list[OptionStrike]) -> Optional[float]:
+    """
+    Strike at which option writers' total payout at expiry is smallest.
+
+    payout(K) = sum over strikes s of
+        ce_oi(s) * max(K - s, 0) + pe_oi(s) * max(s - K, 0)
+    """
+    if not strikes or not any(s.ce_oi or s.pe_oi for s in strikes):
+        return None
+    best_strike, best_pain = None, None
+    for k in strikes:
+        pain = sum(
+            s.ce_oi * max(k.strike - s.strike, 0) + s.pe_oi * max(s.strike - k.strike, 0)
+            for s in strikes
+        )
+        if best_pain is None or pain < best_pain:
+            best_strike, best_pain = k.strike, pain
+    return best_strike
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("/snapshot", response_model=UniverseSnapshotResponse)
@@ -210,43 +293,53 @@ async def get_options_chain(
     try:
         symbol = symbol.upper()
 
-        # Query latest price for the symbol
-        price_row = db.fetch_one(
-            "SELECT close FROM price_data WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
+        # Index chains are recorded in options_chain_snapshot; stock chains
+        # are not, so stocks fall back to a live NSE v3 fetch.
+        index_row = db.fetch_one(
+            "SELECT option_symbol, lot_size FROM index_master WHERE id = ? AND has_options = 1",
             (symbol,)
         )
-
-        if not price_row:
-            raise HTTPException(status_code=404, detail=f"No price data for {symbol}")
-
-        spot_price = price_row.get("close", 0)
-
-        # Get available expiries
+        today_iso = get_ist_now().date().isoformat()
         expiry_rows = db.fetch_all(
-            "SELECT DISTINCT expiry_date FROM options_chain_snapshot WHERE index_id = ? ORDER BY expiry_date ASC",
-            (symbol,)
+            "SELECT DISTINCT expiry_date FROM options_chain_snapshot "
+            "WHERE index_id = ? AND expiry_date >= ? ORDER BY expiry_date ASC",
+            (symbol, today_iso)
         )
         available_expiries = [r["expiry_date"] for r in expiry_rows]
 
-        if not available_expiries:
-            raise HTTPException(status_code=404, detail=f"No options chain for {symbol}")
+        if available_expiries:
+            price_row = db.fetch_one(
+                "SELECT close FROM price_data WHERE index_id = ? ORDER BY timestamp DESC LIMIT 1",
+                (symbol,)
+            )
+            if not price_row:
+                raise HTTPException(status_code=404, detail=f"No price data for {symbol}")
+            spot_price = price_row.get("close", 0)
 
-        # Use provided expiry or first available
-        selected_expiry = expiry or available_expiries[0]
+            selected_expiry = expiry or available_expiries[0]
+            if selected_expiry not in available_expiries:
+                raise HTTPException(status_code=400, detail=f"Expiry {selected_expiry} not available")
 
-        if selected_expiry not in available_expiries:
-            raise HTTPException(status_code=400, detail=f"Expiry {selected_expiry} not available")
-
-        # Get options chain for this expiry
-        chain_rows = db.fetch_all(
-            """
-            SELECT strike_price, option_type, open_interest, oi_change, volume, iv, ltp
-            FROM options_chain_snapshot
-            WHERE index_id = ? AND expiry_date = ?
-            ORDER BY strike_price ASC
-            """,
-            (symbol, selected_expiry)
-        )
+            chain_rows = db.fetch_all(
+                """
+                SELECT strike_price, option_type, open_interest, oi_change, volume, iv, ltp
+                FROM options_chain_snapshot
+                WHERE index_id = ? AND expiry_date = ?
+                  AND timestamp = (
+                      SELECT MAX(timestamp) FROM options_chain_snapshot
+                      WHERE index_id = ? AND expiry_date = ?
+                  )
+                ORDER BY strike_price ASC
+                """,
+                (symbol, selected_expiry, symbol, selected_expiry)
+            )
+        else:
+            nse_symbol = (index_row or {}).get("option_symbol") or symbol
+            kind = "Indices" if index_row else "Equities"
+            live = await asyncio.to_thread(_live_chain, nse_symbol, kind, expiry)
+            if live is None:
+                raise HTTPException(status_code=404, detail=f"No options chain for {symbol}")
+            spot_price, available_expiries, selected_expiry, chain_rows = live
 
         if not chain_rows:
             raise HTTPException(status_code=404, detail=f"No chain data for {symbol} on {selected_expiry}")
@@ -289,14 +382,30 @@ async def get_options_chain(
         total_pe_oi = sum(s.pe_oi for s in strikes)
         pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 0
 
-        # Find ATM and max pain
+        # ATM and max pain
         atm_strike = min(strikes, key=lambda s: abs(s.strike - spot_price)).strike
-        max_pain_strike = atm_strike  # Simplified; could calculate properly
+        max_pain_strike = _max_pain(strikes) or atm_strike
+
+        # OI change % vs the implied previous OI (current - change)
+        ce_change = sum(s.ce_oi_change for s in strikes)
+        pe_change = sum(s.pe_oi_change for s in strikes)
+        ce_prev = total_ce_oi - ce_change
+        pe_prev = total_pe_oi - pe_change
+        ce_oi_change_pct = round(ce_change / ce_prev * 100, 2) if ce_prev > 0 else 0.0
+        pe_oi_change_pct = round(pe_change / pe_prev * 100, 2) if pe_prev > 0 else 0.0
+
+        if index_row:
+            lot_row = index_row
+        else:
+            lot_row = db.fetch_one(
+                "SELECT lot_size FROM fo_universe WHERE symbol = ?", (symbol,)
+            )
+        lot_size = int(lot_row["lot_size"]) if lot_row and lot_row.get("lot_size") else 0
 
         result = OptionsChainResponse(
             symbol=symbol,
             spot_price=spot_price,
-            lot_size=250,  # Default, should query from index_master
+            lot_size=lot_size,
             expiry_date=selected_expiry,
             available_expiries=available_expiries,
             atm_strike=atm_strike,
@@ -304,8 +413,8 @@ async def get_options_chain(
             pcr=round(pcr, 2),
             total_ce_oi=total_ce_oi,
             total_pe_oi=total_pe_oi,
-            ce_oi_change_pct=0.0,  # Would calculate from previous snapshot
-            pe_oi_change_pct=0.0,
+            ce_oi_change_pct=ce_oi_change_pct,
+            pe_oi_change_pct=pe_oi_change_pct,
             strikes=strikes,
         )
 
