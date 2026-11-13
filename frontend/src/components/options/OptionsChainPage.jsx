@@ -143,7 +143,8 @@ function computeBias(data, strikes) {
     else if (painDiff < -0.5) { score += 10; reasons.push('Below max pain'); }
   }
   if (ceLB > ceSB) { score += 5; } else if (ceSB > ceLB) { score -= 10; reasons.push('Call writing'); }
-  if (peLB > peSB) { score += 10; reasons.push('Put buying'); } else if (peSB > peLB) { score -= 5; reasons.push('Put writing'); }
+  // Put long buildup (buyers) is bearish; put short buildup (writers = support) is bullish.
+  if (peSB > peLB) { score += 10; reasons.push('Put writing'); } else if (peLB > peSB) { score -= 5; reasons.push('Put buying'); }
 
   const verdict = score > 75 ? 'Strongly bullish' : score > 60 ? 'Bullish' : score < 25 ? 'Strongly bearish' : score < 40 ? 'Bearish' : 'Neutral';
   const tone = score > 60 ? 'up' : score < 40 ? 'down' : 'neutral';
