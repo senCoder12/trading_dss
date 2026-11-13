@@ -22,6 +22,17 @@ from src.analysis.fo_liquidity_filter import (
     FilterResult,
 )
 from src.data.fo_bulk_fetcher import StockQuote, StockOIData
+import src.analysis.fo_liquidity_filter as _lf
+from unittest.mock import patch
+
+
+def _at(*args):
+    """datetime stand-in whose now() returns a fixed moment (tz-aware)."""
+    class _Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(*args, tzinfo=tz)
+    return _Fixed
 
 _IST = ZoneInfo(IST_TIMEZONE)
 
@@ -209,13 +220,18 @@ class TestHardFilters:
         assert len(result) == 0
 
     def test_no_options_data(self, thresholds):
-        """Fail when symbol not in oi_data."""
+        """Fail when OI was fetched but this symbol has none."""
         quote = make_quote()
-        oi = {}  # Empty
+        oi = {"OTHER": make_oi(symbol="OTHER")}  # populated, TEST missing
         filter = LiquidityFilter(thresholds)
 
         result = filter.apply_hard_filters({"TEST": quote}, oi)
         assert len(result) == 0
+
+    def test_empty_oi_data_skips_oi_checks(self, thresholds):
+        """Pre-OI stage (empty oi_data) must not reject on options."""
+        filter = LiquidityFilter(thresholds)
+        assert filter.apply_hard_filters({"TEST": make_quote()}, {}) == ["TEST"]
 
     def test_oi_too_low(self, thresholds):
         """Fail when total_oi < min_total_oi."""
@@ -245,13 +261,24 @@ class TestHardFilters:
         assert len(result) == 0
 
     def test_stock_sleeping(self, thresholds):
-        """Fail when price_change_pct < min_price_change_pct."""
+        """Fail when price_change_pct < min_price_change_pct (market hours)."""
         quote = make_quote(price_change_pct=0.1)  # Below min_price_change_pct=0.3
         oi = make_oi()
         filter = LiquidityFilter(thresholds)
 
-        result = filter.apply_hard_filters({"TEST": quote}, {"TEST": oi})
+        with patch.object(_lf, "datetime", _at(2026, 11, 9, 11, 0)):  # Mon 11:00
+            result = filter.apply_hard_filters({"TEST": quote}, {"TEST": oi})
         assert len(result) == 0
+
+    def test_stock_sleeping_ignored_outside_market_hours(self, thresholds):
+        """Zero-move stocks are not rejected pre-open / on weekends."""
+        quote = make_quote(price_change_pct=0.0)
+        oi = make_oi()
+        filter = LiquidityFilter(thresholds)
+
+        with patch.object(_lf, "datetime", _at(2026, 11, 8, 11, 0)):  # Sunday
+            result = filter.apply_hard_filters({"TEST": quote}, {"TEST": oi})
+        assert result == ["TEST"]
 
     def test_all_filters_pass(self, thresholds):
         """Stock passes all filters."""

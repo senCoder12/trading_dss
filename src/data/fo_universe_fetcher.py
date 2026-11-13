@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -99,6 +99,10 @@ class FOUniverseFetcher:
 
         return self.fetch_fo_universe()
 
+    def get_stock(self, symbol: str) -> Optional[FOUniverseStock]:
+        """Return cached metadata for one symbol, or None."""
+        return self._cache.get(symbol)
+
     def get_symbols(self) -> list[str]:
         """
         Return list of symbols from cache.
@@ -182,6 +186,10 @@ class FOUniverseFetcher:
 
         # Merge and parse
         stocks = self._merge_and_parse(primary_data, lot_sizes)
+
+        # Fallback sources carry no sector/ISIN; keep what the DB already
+        # knows and look up only the gaps.
+        stocks = self._fill_metadata(stocks)
 
         # Validate count
         if len(stocks) < 100:
@@ -394,6 +402,83 @@ class FOUniverseFetcher:
 
         return stocks
 
+    _METADATA_LOOKUP_LIMIT = 40
+
+    def _fill_metadata(self, stocks: list[FOUniverseStock]) -> list[FOUniverseStock]:
+        """
+        Fill blank company_name / ISIN / sector (and lot_size <= 1).
+
+        1. From the existing fo_universe row (previous good fetch).
+        2. Remaining unknown sectors: NSE GetQuoteApi, capped per run.
+        """
+        try:
+            known = {
+                r["symbol"]: r
+                for r in self._db.fetch_all(
+                    "SELECT symbol, company_name, isin, sector, lot_size FROM fo_universe"
+                )
+            }
+        except Exception as e:
+            logger.warning("Could not read existing fo_universe metadata: %s", e)
+            known = {}
+
+        out = []
+        for st in stocks:
+            row = known.get(st.symbol)
+            if row:
+                st = dc_replace(
+                    st,
+                    company_name=st.company_name or row["company_name"] or "",
+                    isin=st.isin or row["isin"] or "",
+                    sector=(st.sector if st.sector not in ("", "unknown")
+                            else (row["sector"] or "unknown")),
+                    lot_size=st.lot_size if st.lot_size > 1 else (row["lot_size"] or st.lot_size),
+                )
+            out.append(st)
+
+        missing = [i for i, st in enumerate(out) if st.sector in ("", "unknown")]
+        for i in missing[: self._METADATA_LOOKUP_LIMIT]:
+            meta = self._lookup_symbol_metadata(out[i].symbol)
+            if meta:
+                out[i] = dc_replace(
+                    out[i],
+                    company_name=out[i].company_name or meta.get("company_name", ""),
+                    isin=out[i].isin or meta.get("isin", ""),
+                    sector=meta.get("sector") or out[i].sector,
+                )
+        if missing:
+            logger.info(
+                "Metadata lookup for %d/%d symbols with unknown sector",
+                min(len(missing), self._METADATA_LOOKUP_LIMIT), len(missing),
+            )
+        return out
+
+    def _lookup_symbol_metadata(self, symbol: str) -> Optional[dict]:
+        """company_name / isin / sector (basic industry) from NSE GetQuoteApi."""
+        try:
+            resp = self._scraper._call(
+                "/api/NextApi/apiClient/GetQuoteApi",
+                params={
+                    "functionName": "getSymbolData",
+                    "marketType": "N",
+                    "series": "EQ",
+                    "symbol": symbol,
+                },
+            )
+            eq = (resp or {}).get("equityResponse") or []
+            if not eq:
+                return None
+            meta = eq[0].get("metaData") or {}
+            sec = eq[0].get("secInfo") or {}
+            return {
+                "company_name": (meta.get("companyName") or "").strip(),
+                "isin": (meta.get("isinCode") or "").strip(),
+                "sector": (sec.get("basicIndustry") or sec.get("industryInfo") or "").strip(),
+            }
+        except Exception as e:
+            logger.debug("Metadata lookup failed for %s: %s", symbol, e)
+            return None
+
     def _track_history(self, new_stocks: list[FOUniverseStock]) -> None:
         """
         Compare new stocks against cache; emit ADDED/REMOVED events.
@@ -401,7 +486,18 @@ class FOUniverseFetcher:
         Writes to fo_universe_history table.
         """
         today = datetime.now(tz=_IST).date().isoformat()
-        old_symbols = set(self._cache.keys())
+        if self._cache:
+            old_lots = {sym: st.lot_size for sym, st in self._cache.items()}
+        else:
+            # Fresh process: compare against the persisted universe, otherwise
+            # every startup logs the whole universe as ADDED.
+            old_lots = {
+                r["symbol"]: r["lot_size"]
+                for r in self._db.fetch_all(
+                    "SELECT symbol, lot_size FROM fo_universe WHERE is_active = 1"
+                )
+            }
+        old_symbols = set(old_lots)
         new_symbols = {s.symbol for s in new_stocks}
 
         # ADDED events
@@ -420,11 +516,13 @@ class FOUniverseFetcher:
         # REMOVED events
         removed = old_symbols - new_symbols
         for symbol in removed:
-            old_stock = self._cache[symbol]
             try:
                 self._db.execute(
                     Q.INSERT_FO_UNIVERSE_HISTORY,
-                    (symbol, "REMOVED", today, old_stock.lot_size),
+                    (symbol, "REMOVED", today, old_lots[symbol]),
+                )
+                self._db.execute(
+                    "UPDATE fo_universe SET is_active = 0 WHERE symbol = ?", (symbol,)
                 )
                 logger.info("F&O history: %s REMOVED", symbol)
             except Exception as e:

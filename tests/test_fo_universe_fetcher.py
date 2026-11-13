@@ -426,3 +426,101 @@ def test_empty_lot_size_response_defaults_to_one(
     # Find RELIANCE and check its lot size defaults to 1
     reliance = next(s for s in stocks if s.symbol == "RELIANCE")
     assert reliance.lot_size == 1
+
+
+# ── Fallback sources / metadata preservation (NSE endpoints 404 since 2026) ──
+
+
+@pytest.fixture(autouse=True)
+def _no_angel_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never hit the real Angel scrip master from unit tests."""
+    monkeypatch.setattr(
+        FOUniverseFetcher, "_fetch_lot_sizes_angel", staticmethod(lambda: {})
+    )
+
+
+def _underlying_info(n: int) -> dict:
+    return {"data": {"UnderlyingList": [
+        {"symbol": f"S{i}", "underlying": f"Stock {i} Ltd"} for i in range(n)
+    ]}}
+
+
+def test_fallback_uses_underlying_information(
+    fetcher: FOUniverseFetcher, mock_scraper: MagicMock
+) -> None:
+    """Primary 404 -> /api/underlying-information supplies symbols + names."""
+    mock_scraper._call.side_effect = lambda ep, **kw: (
+        _underlying_info(120) if ep == "/api/underlying-information" else None
+    )
+    stocks = fetcher.fetch_fo_universe()
+
+    assert len(stocks) == 120
+    assert stocks[0].company_name == "Stock 0 Ltd"
+
+
+def test_fallback_master_quote_symbol_list(
+    fetcher: FOUniverseFetcher, mock_scraper: MagicMock
+) -> None:
+    """/api/master-quote returns a bare list of symbols."""
+    mock_scraper._call.side_effect = lambda ep, **kw: (
+        [f"S{i}" for i in range(110)] if ep == "/api/master-quote" else None
+    )
+    assert len(fetcher.fetch_fo_universe()) == 110
+
+
+def test_fill_metadata_keeps_known_values(
+    fetcher: FOUniverseFetcher, mock_db: MagicMock, mock_scraper: MagicMock
+) -> None:
+    """Blank sector/ISIN/lot from a fallback source never replace DB values."""
+    mock_db.fetch_all.return_value = [{
+        "symbol": "RELIANCE", "company_name": "Reliance Industries Ltd",
+        "isin": "INE002A01018", "sector": "Refineries & Marketing", "lot_size": 500,
+    }]
+    st = FOUniverseStock(
+        symbol="RELIANCE", company_name="", series="EQ", isin="", lot_size=1,
+        underlying_value=0.0, sector="unknown", is_active=True, last_updated="x",
+    )
+    out = fetcher._fill_metadata([st])[0]
+
+    assert out.sector == "Refineries & Marketing"
+    assert out.isin == "INE002A01018"
+    assert out.company_name == "Reliance Industries Ltd"
+    assert out.lot_size == 500
+    mock_scraper._call.assert_not_called()  # nothing left to look up
+
+
+def test_fill_metadata_looks_up_unknown_sector(
+    fetcher: FOUniverseFetcher, mock_db: MagicMock, mock_scraper: MagicMock
+) -> None:
+    """New symbols with no DB row get sector from NSE GetQuoteApi."""
+    mock_db.fetch_all.return_value = []
+    mock_scraper._call.return_value = {"equityResponse": [{
+        "metaData": {"companyName": "Radico Khaitan Limited", "isinCode": "INE944F01028"},
+        "secInfo": {"basicIndustry": "Breweries & Distilleries"},
+    }]}
+    st = FOUniverseStock(
+        symbol="RADICO", company_name="", series="EQ", isin="", lot_size=325,
+        underlying_value=0.0, sector="unknown", is_active=True, last_updated="x",
+    )
+    out = fetcher._fill_metadata([st])[0]
+
+    assert out.sector == "Breweries & Distilleries"
+    assert out.isin == "INE944F01028"
+
+
+def test_history_fresh_process_compares_against_db(
+    fetcher: FOUniverseFetcher, mock_db: MagicMock
+) -> None:
+    """Empty cache: diff vs persisted universe, not 'everything ADDED'."""
+    mock_db.fetch_all.return_value = [
+        {"symbol": "A", "lot_size": 10}, {"symbol": "OLD", "lot_size": 20},
+    ]
+    mk = lambda s: FOUniverseStock(  # noqa: E731
+        symbol=s, company_name="", series="EQ", isin="", lot_size=10,
+        underlying_value=0.0, sector="unknown", is_active=True, last_updated="x",
+    )
+    fetcher._track_history([mk("A"), mk("NEW")])
+
+    events = [c.args[1][:2] for c in mock_db.execute.call_args_list
+              if "fo_universe_history" in c.args[0]]
+    assert sorted(events) == [("NEW", "ADDED"), ("OLD", "REMOVED")]

@@ -213,8 +213,13 @@ class FOUniverseManager:
             )
             logger.info("Liquidity filter: %d → %d", len(quotes), len(liquid_symbols))
 
-            # 5. Fetch OI for liquid stocks (limit to top 40 for speed)
-            oi_candidates = liquid_symbols[:40]
+            # 5. Fetch OI for the 40 most traded liquid stocks (by 20d turnover).
+            #    liquid_symbols is alphabetical, so a plain slice only covered A–C.
+            oi_candidates = sorted(
+                liquid_symbols,
+                key=lambda sym: quotes[sym].avg_volume_20d * quotes[sym].ltp,
+                reverse=True,
+            )[:40]
             oi_data = self.fo_bulk_fetcher.fetch_oi_for_symbols(oi_candidates)
 
             # 6. Score universe
@@ -239,9 +244,13 @@ class FOUniverseManager:
             # 9. Top sector (by presence in top 15)
             sector_counts = {}
             for score in priority_watchlist:
-                # TODO: enhance with sector metadata when available
-                sector_counts["unknown"] = sector_counts.get("unknown", 0) + 1
+                meta = self.fo_universe_fetcher.get_stock(score.symbol)
+                sector = meta.sector if meta and meta.sector else "unknown"
+                if sector != "unknown":
+                    sector_counts[sector] = sector_counts.get(sector, 0) + 1
             top_sector = max(sector_counts, key=sector_counts.get) if sector_counts else "unknown"
+            if sector_counts and sector_counts[top_sector] < 2:
+                top_sector = "mixed"  # no sector holds 2+ of the top 15
 
             snapshot = UniverseSnapshot(
                 timestamp=datetime.now(_IST),
@@ -257,7 +266,7 @@ class FOUniverseManager:
             )
 
             # 10. Persist and update state
-            self._persist_snapshot(snapshot)
+            self._persist_snapshot(snapshot, quotes)
             with self._snapshot_lock:
                 self._current_snapshot = snapshot
                 self._last_intraday_refresh = datetime.now(_IST)
@@ -303,10 +312,15 @@ class FOUniverseManager:
             top_30_symbols = [s.symbol for s in current.active_universe[:30]]
 
             # 2. Fetch fresh quotes and OI for just those 30
-            quotes = self.fo_bulk_fetcher.fetch_all_quotes()
+            # Quote only those 30: on the NSE per-symbol fallback each symbol
+            # costs one request from the shared 25/min NSE budget.
+            quotes = self.fo_bulk_fetcher.fetch_all_quotes(top_30_symbols)
             quotes_top_30 = {s: quotes[s] for s in top_30_symbols if s in quotes}
 
             avg_vols = self.fo_bulk_fetcher.fetch_avg_volumes(list(quotes_top_30.keys()))
+            for sym, q in quotes_top_30.items():
+                if sym in avg_vols and avg_vols[sym] > 0:
+                    quotes_top_30[sym] = dc_replace(q, avg_volume_20d=avg_vols[sym])
             oi_data = self.fo_bulk_fetcher.fetch_oi_for_symbols(top_30_symbols)
 
             # 3. Re-score just the top 30
@@ -476,7 +490,20 @@ class FOUniverseManager:
         except Exception as e:
             logger.error("Pre-market refresh failed: %s", e, exc_info=True)
 
-    def _persist_snapshot(self, snapshot: UniverseSnapshot) -> None:
+    def _score_row(self, score: StockScore, quotes: Optional[dict]) -> dict:
+        """Score fields plus display data the API/UI needs (ltp, lot, sector, name)."""
+        row = asdict(score)
+        quote = (quotes or {}).get(score.symbol)
+        meta = self.fo_universe_fetcher.get_stock(score.symbol)
+        row["ltp"] = float(quote.ltp) if quote is not None else 0.0
+        row["lot_size"] = meta.lot_size if meta else 0
+        row["sector"] = meta.sector if meta and meta.sector else "unknown"
+        row["company_name"] = meta.company_name if meta else ""
+        return row
+
+    def _persist_snapshot(
+        self, snapshot: UniverseSnapshot, quotes: Optional[dict] = None,
+    ) -> None:
         """
         Save snapshot to database.
 
@@ -484,16 +511,18 @@ class FOUniverseManager:
         ----------
         snapshot:
             Snapshot to persist.
+        quotes:
+            Quotes used for scoring; supplies each row's ltp.
         """
         today = datetime.now(_IST).date().isoformat()
 
         # Convert scores to JSON
         active_json = json.dumps(
-            [asdict(s) for s in snapshot.active_universe],
+            [self._score_row(s, quotes) for s in snapshot.active_universe],
             default=str,
         )
         priority_json = json.dumps(
-            [asdict(s) for s in snapshot.priority_watchlist],
+            [self._score_row(s, quotes) for s in snapshot.priority_watchlist],
             default=str,
         )
         filter_json = json.dumps(

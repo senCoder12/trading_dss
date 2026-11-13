@@ -848,12 +848,15 @@ INSERT INTO fo_universe
 VALUES
     (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(symbol) DO UPDATE SET
-    company_name     = excluded.company_name,
+    -- never overwrite known metadata with a blank / placeholder value
+    company_name     = COALESCE(NULLIF(excluded.company_name, ''), fo_universe.company_name),
     series           = excluded.series,
-    isin             = excluded.isin,
-    lot_size         = excluded.lot_size,
+    isin             = COALESCE(NULLIF(excluded.isin, ''), fo_universe.isin),
+    lot_size         = CASE WHEN excluded.lot_size > 1 THEN excluded.lot_size
+                            ELSE fo_universe.lot_size END,
     underlying_value = excluded.underlying_value,
-    sector           = excluded.sector,
+    sector           = CASE WHEN excluded.sector IN ('', 'unknown') THEN fo_universe.sector
+                            ELSE excluded.sector END,
     is_active        = excluded.is_active,
     last_updated     = excluded.last_updated
 """

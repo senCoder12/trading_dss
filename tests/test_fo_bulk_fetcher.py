@@ -141,6 +141,26 @@ class TestFOBulkFetcherParseQuote:
         assert quote.bid_ask_spread_pct == 0.0  # No division by zero
 
 
+def _nse_chain(ce_oi, pe_oi, ce_iv, pe_iv, strike=2500.0, expiry="18-Jan-2024",
+               ce_chg=0, pe_chg=0):
+    """Minimal NSE option-chain-v3 response for one ATM strike."""
+    return {
+        "records": {
+            "underlyingValue": strike,
+            "expiryDates": [expiry],
+            "data": [{
+                "strikePrice": strike,
+                "expiryDates": expiry,
+                "CE": {"openInterest": ce_oi, "impliedVolatility": ce_iv,
+                       "changeinOpenInterest": ce_chg},
+                "PE": {"openInterest": pe_oi, "impliedVolatility": pe_iv,
+                       "changeinOpenInterest": pe_chg},
+            }],
+        },
+        "filtered": {},
+    }
+
+
 class TestFOBulkFetcherParseOI:
     """Test OI data parsing."""
 
@@ -153,14 +173,7 @@ class TestFOBulkFetcherParseOI:
 
     def test_parse_oi_data_valid(self, fetcher):
         """Parse a valid OI chain response."""
-        chain = {
-            "expiry": "2024-01-18",
-            "atmStrike": 2500.0,
-            "totalCeOi": 500000,
-            "totalPeOi": 600000,
-            "atmCeIv": 17.5,
-            "atmPeIv": 18.5,
-        }
+        chain = _nse_chain(500000, 600000, 17.5, 18.5)
         oi = fetcher._parse_oi_data("RELIANCE", chain)
 
         assert oi is not None
@@ -172,18 +185,19 @@ class TestFOBulkFetcherParseOI:
 
     def test_parse_oi_zero_ce_oi(self, fetcher):
         """Handle zero CE OI (avoid division by zero in PCR)."""
-        chain = {
-            "expiry": "2024-01-18",
-            "atmStrike": 2500.0,
-            "totalCeOi": 0,
-            "totalPeOi": 100000,
-            "atmCeIv": 10.0,
-            "atmPeIv": 10.0,
-        }
+        chain = _nse_chain(0, 100000, 10.0, 10.0)
         oi = fetcher._parse_oi_data("RELIANCE", chain)
 
         assert oi is not None
         assert oi.pcr == 0.0  # PE / 0 = 0
+
+    def test_parse_oi_first_look_uses_nse_day_change(self, fetcher):
+        """Without a previous snapshot, OI change = NSE changeinOpenInterest."""
+        chain = _nse_chain(500000, 600000, 17.5, 18.5, ce_chg=1200, pe_chg=-300)
+        oi = fetcher._parse_oi_data("RELIANCE", chain)
+
+        assert oi.ce_oi_change == 1200
+        assert oi.pe_oi_change == -300
 
 
 class TestFOBulkFetcherBatching:
@@ -209,11 +223,16 @@ class TestFOBulkFetcherBatching:
         """Fetch quotes in batches, respecting batch_size."""
         symbols = [f"SYM{i}" for i in range(125)]  # 3 batches of 50
         fetcher._fo_universe.get_symbols.return_value = symbols
+        # Token map normally comes from the Angel master; token == symbol here
+        fetcher._token_map = {s: s for s in symbols}
+        fetcher._reverse_token_map = {s: s for s in symbols}
+        fetcher._master_loaded_date = datetime.now(tz=_IST).date()
 
-        # Mock API responses
+        # Mock API responses (SNAP_QUOTE carries close and volume)
         def mock_bulk_quotes(mode, exchange_tokens):
-            fetched = [{"symbol": sym, "ltp": 100.0, "bid": 99.9, "ask": 100.1}
-                      for sym in exchange_tokens.get("NSE", [])]
+            fetched = [{"symbolToken": tok, "ltp": 100.0, "close": 99.0,
+                        "volume": 1000, "bid": 99.9, "ask": 100.1}
+                      for tok in exchange_tokens.get("NSE", [])]
             return {"fetched": fetched, "unfetched": []}
 
         fetcher._smart_api.get_bulk_quotes.side_effect = mock_bulk_quotes
@@ -223,6 +242,61 @@ class TestFOBulkFetcherBatching:
         # Should have batched into 3 calls
         assert fetcher._smart_api.get_bulk_quotes.call_count == 3
         assert len(quotes) == 125
+
+    def test_ltp_only_quotes_fall_back_to_nse(self, fetcher):
+        """LTP-mode quotes (no close/volume) trigger the NSE fallback."""
+        symbols = ["AAA", "BBB"]
+        fetcher._fo_universe.get_symbols.return_value = symbols
+        fetcher._token_map = {s: s for s in symbols}
+        fetcher._reverse_token_map = {s: s for s in symbols}
+        fetcher._master_loaded_date = datetime.now(tz=_IST).date()
+        fetcher._smart_api.get_bulk_quotes.side_effect = lambda mode, et: {
+            "fetched": [{"symbolToken": t, "ltp": 100.0} for t in et["NSE"]],
+            "unfetched": [],
+        }
+        fetcher._nse_scraper = Mock()
+        fetcher._fallback_fetch_quotes_nse = Mock(return_value={"AAA": "q", "BBB": "q"})
+
+        assert fetcher.fetch_all_quotes() == {"AAA": "q", "BBB": "q"}
+        fetcher._fallback_fetch_quotes_nse.assert_called_once_with(symbols)
+
+    def test_partial_nse_fallback_raises(self, fetcher):
+        """NSE fallback below 70% coverage is an error, not a small universe."""
+        symbols = [f"S{i}" for i in range(10)]
+        fetcher._fo_universe.get_symbols.return_value = symbols
+        fetcher._smart_api.get_bulk_quotes.return_value = None
+        fetcher._nse_scraper = Mock()
+        fetcher._fallback_fetch_quotes_nse = Mock(
+            return_value={s: "q" for s in symbols[:6]}
+        )
+
+        with pytest.raises(DataFetchError):
+            fetcher.fetch_all_quotes()
+
+    def test_explicit_symbols_skip_universe(self, fetcher):
+        """A symbol subset is quoted instead of the whole universe."""
+        fetcher._token_map = {"AAA": "1"}
+        fetcher._reverse_token_map = {"1": "AAA"}
+        fetcher._master_loaded_date = datetime.now(tz=_IST).date()
+        fetcher._smart_api.get_bulk_quotes.return_value = {
+            "fetched": [{"symbolToken": "1", "ltp": 100.0, "close": 99.0, "volume": 10}],
+            "unfetched": [],
+        }
+
+        quotes = fetcher.fetch_all_quotes(["AAA"])
+
+        assert list(quotes) == ["AAA"]
+        fetcher._fo_universe.get_symbols.assert_not_called()
+
+    def test_per_symbol_fallback_stops_after_consecutive_failures(self, fetcher):
+        """Five failed NSE requests in a row end the per-symbol loop."""
+        fetcher._nse_scraper = Mock()
+        fetcher._nse_scraper._call.return_value = None
+
+        quotes = fetcher._fetch_quotes_nse_per_symbol([f"S{i}" for i in range(50)])
+
+        assert quotes == {}
+        assert fetcher._nse_scraper._call.call_count == 5
 
     def test_fetch_all_quotes_failure_threshold(self, fetcher):
         """Fail if >30% of symbols fail."""
@@ -309,7 +383,7 @@ class TestFOBulkFetcherOIHistory:
         return FOBulkFetcher(db, api, universe)
 
     def test_oi_change_calculation(self, fetcher):
-        """Calculate OI changes from previous snapshot."""
+        """OI change is NSE's day change on every fetch; IV change is vs history."""
         now = datetime.now(tz=_IST)
 
         # Seed history with previous snapshot
@@ -330,25 +404,44 @@ class TestFOBulkFetcherOIHistory:
         )
         fetcher._oi_history["RELIANCE"] = prev_oi
 
-        # Mock API for new snapshot
-        chain = {
-            "expiry": "2024-01-18",
-            "atmStrike": 2500.0,
-            "totalCeOi": 550000,  # +50k change
-            "totalPeOi": 580000,  # -20k change
-            "atmCeIv": 18.5,
-            "atmPeIv": 18.7,
+        # Totals moved +50k / -20k vs the previous snapshot, but NSE's day
+        # change says +1200 / -300: the day change is what is reported.
+        fetcher._nse_scraper = Mock()
+        fetcher._nse_scraper.get_option_chain_meta.return_value = {
+            "expiryDates": ["18-Jan-2024"],
         }
-        fetcher._smart_api.get_option_chain.return_value = chain
+        fetcher._nse_scraper.get_option_chain_v3.return_value = _nse_chain(
+            550000, 580000, 18.5, 18.7, ce_chg=1200, pe_chg=-300,
+        )
 
-        # Fetch new OI (will calculate changes)
         oi_data = fetcher.fetch_oi_for_symbols(["RELIANCE"])
 
         assert "RELIANCE" in oi_data
         oi = oi_data["RELIANCE"]
-        assert oi.ce_oi_change == 50000
-        assert oi.pe_oi_change == -20000
+        assert oi.ce_oi_change == 1200
+        assert oi.pe_oi_change == -300
         assert abs(oi.iv_change - 0.6) < 0.01  # (18.6 - 18.0) = 0.6
+        fetcher._nse_scraper.get_option_chain_v3.assert_called_once_with(
+            "RELIANCE", type="Equities", expiry="18-Jan-2024",
+        )
+
+    def test_oi_without_nse_does_not_call_smartapi(self, fetcher):
+        """SmartAPI optionGreek has no OI, so it is never used as a source."""
+        assert fetcher.fetch_oi_for_symbols(["RELIANCE"]) == {}
+        fetcher._smart_api.get_option_chain.assert_not_called()
+
+    def test_stock_expiry_resolved_once_per_day(self, fetcher):
+        """Expiry meta is fetched once and reused by later OI runs."""
+        fetcher._nse_scraper = Mock()
+        fetcher._nse_scraper.get_option_chain_meta.return_value = {
+            "expiryDates": ["18-Jan-2024"],
+        }
+        fetcher._nse_scraper.get_option_chain_v3.return_value = None
+
+        fetcher.fetch_oi_for_symbols(["RELIANCE"])
+        fetcher.fetch_oi_for_symbols(["INFY"])
+
+        assert fetcher._nse_scraper.get_option_chain_meta.call_count == 1
 
     def test_reset_oi_history(self, fetcher):
         """Reset OI history (call at market open)."""
